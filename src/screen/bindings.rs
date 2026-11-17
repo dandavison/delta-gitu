@@ -1,6 +1,5 @@
 //! Every operation a key can be bound to, by menu: its keys, its name in
-//! config, what it does, and, if the user set its keys, where and what they
-//! replaced.
+//! config, what it does, and, if the user set its keys, the default keys.
 
 use std::sync::Arc;
 
@@ -58,15 +57,8 @@ fn items(config: &Config) -> Vec<Item> {
                 (format!("  {name:name_width$}  "), Style::new()),
                 (listed.op.description().into_owned(), Style::new()),
             ];
-            if let Some(set_in) = listed.set_in {
-                row.push((
-                    format!(
-                        "  (set in {}; default {})",
-                        set_in.describe(),
-                        keys(&listed.default)
-                    ),
-                    note_style,
-                ));
+            if listed.set_by_user {
+                row.push((format!("  (default {})", keys(&listed.default)), note_style));
             }
             items.push(Item {
                 id: hash(("bindings", menu.as_ref(), &name)),

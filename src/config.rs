@@ -6,7 +6,7 @@ use std::{
 
 use crate::config_git::{self, FEATURE_KEYS};
 use crate::style::{Color, Modifier, Style};
-use crate::{Bindings, Res, bindings::SetIn, error::Error, key_parser, menu::Menu, ops::Op};
+use crate::{Bindings, Res, error::Error, key_parser, menu::Menu, ops::Op};
 use crossterm::event::{KeyCode, KeyModifiers};
 use etcetera::{BaseStrategy, choose_base_strategy};
 use figment::{
@@ -535,13 +535,7 @@ pub(crate) fn init_config_from(
     let bindings =
         Bindings::try_from(bindings_config.menus)?.set_by_user(&default_bindings.menus, |path| {
             let path = format!("bindings.{path}");
-            if git.contains(&path) {
-                Some(SetIn::GitConfig)
-            } else if file.contains(&path) {
-                Some(SetIn::ConfigFile)
-            } else {
-                None
-            }
+            git.contains(&path) || file.contains(&path)
         });
     let picker_bindings = PickerBindings::try_from(bindings_config.picker)?;
     check_feature_keys(&general.diff_renderer.feature_keys, &bindings)?;

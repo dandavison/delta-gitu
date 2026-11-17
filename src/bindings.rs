@@ -19,24 +19,9 @@ pub(crate) struct Listed {
     pub menu: Menu,
     pub op: Op,
     pub keys: Vec<String>,
-    /// Where the user set the keys, if they did.
-    pub set_in: Option<SetIn>,
+    /// Whether the user set the keys.
+    pub set_by_user: bool,
     pub default: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SetIn {
-    GitConfig,
-    ConfigFile,
-}
-
-impl SetIn {
-    pub(crate) fn describe(self) -> &'static str {
-        match self {
-            SetIn::GitConfig => "git config",
-            SetIn::ConfigFile => "config file",
-        }
-    }
 }
 
 // Used to parse the bindings coming out of `figment`. If there are any issues,
@@ -55,7 +40,7 @@ impl TryFrom<BTreeMap<Menu, BTreeMap<Op, Vec<String>>>> for Bindings {
                         menu,
                         op: op.clone(),
                         keys: binds.clone(),
-                        set_in: None,
+                        set_by_user: false,
                         default: binds.clone(),
                     });
                 }
@@ -89,15 +74,15 @@ impl TryFrom<BTreeMap<Menu, BTreeMap<Op, Vec<String>>>> for Bindings {
 }
 
 impl Bindings {
-    /// Says which bindings the user set, given where each binding's path
-    /// (`root.move_down`) was set and the default bindings.
+    /// Says which bindings the user set, given whether they set each binding's
+    /// path (`root.move_down`), and the default bindings.
     pub(crate) fn set_by_user(
         mut self,
         defaults: &BTreeMap<Menu, BTreeMap<Op, Vec<String>>>,
-        set_in: impl Fn(&str) -> Option<SetIn>,
+        is_set: impl Fn(&str) -> bool,
     ) -> Self {
         for listed in &mut self.table {
-            listed.set_in = set_in(&format!(
+            listed.set_by_user = is_set(&format!(
                 "{}.{}",
                 listed.menu.as_ref(),
                 listed.op.config_name()

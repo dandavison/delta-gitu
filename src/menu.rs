@@ -35,6 +35,7 @@ pub(crate) enum Menu {
     #[strum(serialize = "log_menu")]
     Log,
     #[serde(rename = "merge_menu")]
+    #[strum(serialize = "merge_menu")]
     Merge,
     #[serde(rename = "remote_menu")]
     #[strum(serialize = "remote_menu")]
