@@ -1,0 +1,35 @@
+---
+source: src/tests/bindings.rs
+expression: ctx.redact_buffer()
+---
+▌Root (bindings.root)                                                                                                                                 |
+▌ Y                 show-refs              List branches and tags                                                                                     |
+▌ g+s               status                 Status view, from any view                                                                                 |
+▌ H                 renderer-features      List delta features, shell commands and views, and set their keys                                          |
+▌ T                 renderer-themes        Step through delta's themes                                                                                |
+▌ s                 stage                  Stage the file, hunk or line                                                                               |
+▌ u                 unstage                Unstage the file, hunk or line                                                                             |
+▌ enter             show                   Open the commit, branch, tag, stash or blame line; open a file, hunk or line in your editor                |
+▌ right             show-or-unfold         Open the commit, branch, tag, stash or blame line; unfold a folded file or hunk                            |
+▌ K                 discard                Discard the file, hunk or line                                                                             |
+▌ a                 apply                  Apply the file, hunk or line                                                                               |
+▌ v                 reverse                Reverse the file, hunk or line                                                                             |
+▌ y                 copy-hash              Copy the commit's hash                                                                                     |
+▌ B                 blame                  Blame the file of the diff line under the cursor                                                           |
+▌ tab               toggle-section         Fold or unfold                                                                                             |
+▌ shift+tab         toggle-all-sections    Fold every file; again, unfold everything                                                                  |
+▌ U                 diff-context           Set the diff context                                                                                       |
+▌ +                 wider-diff-context     Wider diff context                                                                                         |
+▌ -                 narrower-diff-context  Narrower diff context                                                                                      |
+▌ :                 edit-git-command       Edit the git command                                                                                       |
+▌ &                 file-patterns          Set which files to show                                                                                    |
+▌ d                 hide-file              Hide the file under the cursor                                                                             |
+▌ k up              move-up-line           Up a line, through a diff's lines too                                                                      |
+▌ j down            move-down-line         Down a line, through a diff's lines too                                                                    |
+▌ ctrl+k ctrl+up    move-up                Up, stopping only at file headers, hunk headers and commits                                                |
+▌ ctrl+j ctrl+down  move-down              Down, stopping only at file headers, hunk headers and commits                                              |
+▌ shift+up          extend-selection-up    Select lines in a hunk, upwards                                                                            |
+▌ shift+down        extend-selection-down  Select lines in a hunk, downwards                                                                          |
+▌ alt+k alt+up      move-prev-section      Previous section at the same level                                                                         |
+▌ alt+j alt+down    move-next-section      Next section at the same level                                                                             |
+styles_hash: e39343c74ddcf565

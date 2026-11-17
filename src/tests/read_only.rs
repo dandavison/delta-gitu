@@ -55,7 +55,7 @@ fn the_help_menu_offers_nothing_that_writes() {
     ] {
         assert!(!buffer.contains(writes), "{writes}\n{buffer}");
     }
-    for reads in ["Help", "Log", "Show Refs", "Show"] {
+    for reads in ["Key bindings", "Log", "Show Refs", "Show"] {
         assert!(buffer.contains(reads), "{reads}\n{buffer}");
     }
 }

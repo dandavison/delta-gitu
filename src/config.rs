@@ -6,7 +6,7 @@ use std::{
 
 use crate::config_git::{self, FEATURE_KEYS};
 use crate::style::{Color, Modifier, Style};
-use crate::{Bindings, Res, error::Error, key_parser, menu::Menu, ops::Op};
+use crate::{Bindings, Res, bindings::SetIn, error::Error, key_parser, menu::Menu, ops::Op};
 use crossterm::event::{KeyCode, KeyModifiers};
 use etcetera::{BaseStrategy, choose_base_strategy};
 use figment::{
@@ -515,6 +515,10 @@ pub(crate) fn init_config_from(
         )?)),
         None => Figment::new(),
     };
+    let default_bindings: BindingsConfig = defaults
+        .extract_inner("bindings")
+        .map_err(Box::new)
+        .map_err(Error::Config)?;
     let FigmentConfig {
         mut general,
         style,
@@ -528,7 +532,17 @@ pub(crate) fn init_config_from(
     if let Some(feature_keys) = users_feature_keys(&git)?.or(users_feature_keys(&file)?) {
         general.diff_renderer.feature_keys = feature_keys;
     }
-    let bindings = Bindings::try_from(bindings_config.menus)?;
+    let bindings =
+        Bindings::try_from(bindings_config.menus)?.set_by_user(&default_bindings.menus, |path| {
+            let path = format!("bindings.{path}");
+            if git.contains(&path) {
+                Some(SetIn::GitConfig)
+            } else if file.contains(&path) {
+                Some(SetIn::ConfigFile)
+            } else {
+                None
+            }
+        });
     let picker_bindings = PickerBindings::try_from(bindings_config.picker)?;
     check_feature_keys(&general.diff_renderer.feature_keys, &bindings)?;
 
@@ -636,7 +650,7 @@ mod tests {
     };
     use temp_dir::TempDir;
 
-    use super::{Config, DEFAULT_CONFIG, FigmentConfig, configured, init_config_from};
+    use super::{DEFAULT_CONFIG, FigmentConfig, configured, init_config_from};
 
     #[test]
     fn config_merges() {

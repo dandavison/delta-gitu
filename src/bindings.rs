@@ -10,6 +10,33 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 pub struct Bindings {
     vec: Vec<Binding>,
+    /// Every operation each menu can bind, bound or not, for the list of them.
+    table: Vec<Listed>,
+}
+
+/// An operation as the list of bindings shows it.
+pub(crate) struct Listed {
+    pub menu: Menu,
+    pub op: Op,
+    pub keys: Vec<String>,
+    /// Where the user set the keys, if they did.
+    pub set_in: Option<SetIn>,
+    pub default: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SetIn {
+    GitConfig,
+    ConfigFile,
+}
+
+impl SetIn {
+    pub(crate) fn describe(self) -> &'static str {
+        match self {
+            SetIn::GitConfig => "git config",
+            SetIn::ConfigFile => "config file",
+        }
+    }
 }
 
 // Used to parse the bindings coming out of `figment`. If there are any issues,
@@ -19,9 +46,19 @@ impl TryFrom<BTreeMap<Menu, BTreeMap<Op, Vec<String>>>> for Bindings {
 
     fn try_from(value: BTreeMap<Menu, BTreeMap<Op, Vec<String>>>) -> Result<Self, Self::Error> {
         let mut bindings = Vec::new();
+        let mut table = Vec::new();
         let mut bad_bindings = Vec::new();
         for (menu, ops) in value {
             for (op, binds) in ops {
+                if !matches!(op, Op::ToggleArg(_) | Op::MoveToScreenLine(_)) {
+                    table.push(Listed {
+                        menu,
+                        op: op.clone(),
+                        keys: binds.clone(),
+                        set_in: None,
+                        default: binds.clone(),
+                    });
+                }
                 for keys in binds {
                     if let Some(binding) = Binding::parse(menu, &keys, op.clone()) {
                         bindings.push(binding);
@@ -29,7 +66,7 @@ impl TryFrom<BTreeMap<Menu, BTreeMap<Op, Vec<String>>>> for Bindings {
                         bad_bindings.push(format!(
                             "- {}.{} = {} (not a key)",
                             menu.as_ref(),
-                            op.as_ref(),
+                            op.config_name(),
                             keys
                         ));
                     }
@@ -44,11 +81,41 @@ impl TryFrom<BTreeMap<Menu, BTreeMap<Op, Vec<String>>>> for Bindings {
             });
         }
 
-        Ok(Self { vec: bindings })
+        Ok(Self {
+            vec: bindings,
+            table,
+        })
     }
 }
 
 impl Bindings {
+    /// Says which bindings the user set, given where each binding's path
+    /// (`root.move_down`) was set and the default bindings.
+    pub(crate) fn set_by_user(
+        mut self,
+        defaults: &BTreeMap<Menu, BTreeMap<Op, Vec<String>>>,
+        set_in: impl Fn(&str) -> Option<SetIn>,
+    ) -> Self {
+        for listed in &mut self.table {
+            listed.set_in = set_in(&format!(
+                "{}.{}",
+                listed.menu.as_ref(),
+                listed.op.config_name()
+            ));
+            listed.default = defaults
+                .get(&listed.menu)
+                .and_then(|ops| ops.get(&listed.op))
+                .cloned()
+                .unwrap_or_default();
+        }
+        self
+    }
+
+    /// Every operation each menu can bind, in order of menu.
+    pub(crate) fn table(&self) -> &[Listed] {
+        &self.table
+    }
+
     pub(crate) fn match_bindings<'a>(
         &'a self,
         pending: &'a Menu,
@@ -68,17 +135,20 @@ impl Bindings {
             .is_some()
     }
 
+    /// The bindings a menu lists. The help lists the top-level keys, and its
+    /// own but for closing it.
     pub(crate) fn list<'a>(&'a self, pending: &Menu) -> impl Iterator<Item = &'a Binding> {
-        let expected = if pending == &Menu::Help {
-            Menu::Root
-        } else {
-            *pending
-        };
-
+        let pending = *pending;
         self.vec
             .iter()
             .filter(|keybind| !matches!(keybind.op, Op::ToggleArg(_)))
-            .filter(move |keybind| keybind.menu == expected)
+            .filter(move |keybind| match pending {
+                Menu::Help => {
+                    (keybind.menu == Menu::Help && keybind.op != Op::Quit)
+                        || (keybind.menu == Menu::Root && keybind.op != Op::OpenMenu(Menu::Help))
+                }
+                menu => keybind.menu == menu,
+            })
     }
 
     pub(crate) fn arg_list<'a>(

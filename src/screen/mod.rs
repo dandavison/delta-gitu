@@ -24,6 +24,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub(crate) mod bindings;
 pub(crate) mod blame;
 pub(crate) mod pager;
 pub(crate) mod rebase_todo;
