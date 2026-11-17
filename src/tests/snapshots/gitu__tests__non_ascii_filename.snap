@@ -6,8 +6,10 @@ expression: ctx.redact_buffer()
  Your branch is ahead of 'origin/main' by 1 commit(s).                          |
                                                                                 |
  Unstaged changes (1)                                                           |
-▌modified   höhöhö                                                              |
+▌h\303\266h\303\266h\303\266                                                    |
 ▌@@ -1 +1 @@                                                                    |
+▌-hehehe                                                                        |
+▌+hahaha                                                                        |
                                                                                 |
  Recent commits                                                                 |
  8efa733 main add höhöhö                                         Author Name __ |
@@ -20,6 +22,4 @@ expression: ctx.redact_buffer()
                                                                                 |
                                                                                 |
                                                                                 |
-                                                                                |
-                                                                                |
-styles_hash: 7bc12757cd4bfb53
+styles_hash: c7cff0a5fe7d9813

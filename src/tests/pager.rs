@@ -2297,3 +2297,18 @@ fn rows_of_a_file_the_diff_does_not_have_are_reported_in_a_log_of_patches() {
     let buffer = ctx.redact_buffer();
     assert!(buffer.contains(ELSEWHERE_MESSAGE), "{buffer}");
 }
+
+/// git writes a non-ASCII file name escaped (`"a/h\303\266h\303\266h\303\266"`),
+/// and delta labels the file's rows with that escaped form. The file's lines are
+/// shown.
+#[test]
+fn a_file_with_a_non_ascii_name_shows_its_lines() {
+    let mut ctx = setup_clone!();
+    commit(&ctx.dir, "höhöhö", "hehehe\n");
+    fs::write(ctx.dir.join("höhöhö"), "hahaha\n").unwrap();
+
+    ctx.init_app_as_pager_of(&["git", "diff"]);
+    let buffer = ctx.redact_buffer();
+    assert!(buffer.contains("hahaha"), "{buffer}");
+    assert!(!buffer.contains("not a file in this diff"), "{buffer}");
+}
