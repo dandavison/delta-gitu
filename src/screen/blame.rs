@@ -147,7 +147,7 @@ pub(crate) fn create(
 }
 
 /// `GIT_CONFIG_PARAMETERS` for delta drawing the blame of `file_path`, after
-/// those `given`: no wrapping, so that each line of the file is one row, and the
+/// those `given` (see [`crate::diff_renderer::config_parameters`]): no wrapping, so that each line of the file is one row, and the
 /// language of the file, which delta would otherwise take from the git blame
 /// command that called it.
 fn delta_config_parameters(file_path: &str, given: Option<&str>) -> String {
@@ -175,8 +175,8 @@ fn rendered_blame(
     let Some(text) = git::blame_text(repo, file_path, commit) else {
         return Ok(None);
     };
-    let given = std::env::var("GIT_CONFIG_PARAMETERS").ok();
-    let parameters = delta_config_parameters(file_path, given.as_deref());
+    let given = crate::diff_renderer::config_parameters();
+    let parameters = delta_config_parameters(file_path, Some(&given));
     let output = crate::diff_renderer::run_with_env(
         &config.general.diff_renderer.command,
         Some(&text),

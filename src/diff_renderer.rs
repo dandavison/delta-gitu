@@ -246,8 +246,21 @@ pub(crate) fn resolve_file(diff: &Diff, meta: &LineMetadata, from: usize) -> Opt
     })
 }
 
+/// `GIT_CONFIG_PARAMETERS` for the renderer: those git was given, then delta's
+/// relative-paths turned off. With relative-paths, from a subdirectory, delta
+/// labels rows with paths relative to the subdirectory, which are not the
+/// diff's paths, so gitu cannot place them.
+pub(crate) fn config_parameters() -> String {
+    let ours = "'delta.relative-paths=false'";
+    match std::env::var("GIT_CONFIG_PARAMETERS") {
+        Ok(given) if !given.is_empty() => format!("{given} {ours}"),
+        _ => ours.to_owned(),
+    }
+}
+
 /// `command` as a process to start in `dir`, with the environment that tells it
-/// the width, the protocol, and the features in force.
+/// the width, the protocol, the features in force, and the settings in
+/// [`config_parameters`].
 pub(crate) fn renderer_command(
     command: &[String],
     params: &crate::items::RenderParams,
@@ -259,6 +272,7 @@ pub(crate) fn renderer_command(
     command
         .args(args)
         .env("OSC1717", OSC1717_ADVERTISED)
+        .env("GIT_CONFIG_PARAMETERS", config_parameters())
         .envs(drawing_env(params));
 
     if let Some(dir) = dir {
