@@ -612,6 +612,19 @@ pub(crate) fn init_test_config() -> Res<Config> {
     })
 }
 
+/// The config read from a gitu config file holding `toml` and git config
+/// holding `gitconfig`.
+#[cfg(test)]
+pub(crate) fn configured(toml: &str, gitconfig: &str) -> Config {
+    let dir = temp_dir::TempDir::new().unwrap();
+    let toml_path = dir.path().join("config.toml");
+    std::fs::write(&toml_path, toml).unwrap();
+    let git_path = dir.path().join("gitconfig");
+    std::fs::write(&git_path, gitconfig).unwrap();
+    let git_config = git2::Config::open(&git_path).unwrap();
+    init_config_from(toml_path, Some(&git_config)).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -623,7 +636,7 @@ mod tests {
     };
     use temp_dir::TempDir;
 
-    use super::{Config, DEFAULT_CONFIG, FigmentConfig, init_config_from};
+    use super::{Config, DEFAULT_CONFIG, FigmentConfig, configured, init_config_from};
 
     #[test]
     fn config_merges() {
@@ -640,18 +653,6 @@ mod tests {
 
         assert_eq!(config.style.hunk_header.bg, Some(Color::LightGreen));
         assert_eq!(config.style.hunk_header.fg, Some(Color::Blue));
-    }
-
-    /// The config read from a gitu config file holding `toml` and git config
-    /// holding `gitconfig`.
-    fn configured(toml: &str, gitconfig: &str) -> Config {
-        let dir = TempDir::new().unwrap();
-        let toml_path = dir.path().join("config.toml");
-        fs::write(&toml_path, toml).unwrap();
-        let git_path = dir.path().join("gitconfig");
-        fs::write(&git_path, gitconfig).unwrap();
-        let git_config = git2::Config::open(&git_path).unwrap();
-        init_config_from(toml_path, Some(&git_config)).unwrap()
     }
 
     fn config_error(gitconfig: &str) -> String {

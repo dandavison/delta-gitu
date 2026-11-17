@@ -15,6 +15,7 @@ use std::fs;
 pub(crate) mod helpers;
 mod arg;
 mod back;
+mod bindings;
 mod blame;
 mod branch;
 mod cherry_pick;
