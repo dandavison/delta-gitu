@@ -354,13 +354,46 @@ pub(crate) fn run_with_env(
     Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
 }
 
-/// What to tell the user when the renderer `program` could not be started.
-pub(crate) fn not_started_message(program: &OsStr, error: &std::io::Error) -> String {
-    let name = Path::new(program)
+/// The renderer `program`'s name, as messages to the user call it.
+fn name_of(program: &OsStr) -> std::borrow::Cow<'_, str> {
+    Path::new(program)
         .file_stem()
         .unwrap_or_default()
-        .to_string_lossy();
+        .to_string_lossy()
+}
+
+/// What to tell the user when the renderer `program` could not be started.
+pub(crate) fn not_started_message(program: &OsStr, error: &std::io::Error) -> String {
+    let name = name_of(program);
     format!("{name} could not be started: {error}")
+}
+
+/// What to tell the user when the renderer `command` drew rows of a file that
+/// `diff` does not have, whose rows gitu cannot place: the first such file.
+pub(crate) fn unplaced_rows_message(
+    command: &[String],
+    diff: &Diff,
+    lines: &[ParsedLine],
+) -> Option<String> {
+    let paths: std::collections::HashSet<std::borrow::Cow<'_, str>> = diff
+        .file_diffs
+        .iter()
+        .flat_map(|file_diff| {
+            [
+                file_diff.header.old_file.fmt(&diff.text),
+                file_diff.header.new_file.fmt(&diff.text),
+            ]
+        })
+        .collect();
+    let file = lines
+        .iter()
+        .flat_map(|line| &line.records)
+        .find(|record| record.kind != LineKind::Commit && !paths.contains(record.file.as_str()))
+        .map(|record| &record.file)?;
+    let name = name_of(OsStr::new(command.first()?));
+    Some(format!(
+        "{name} drew rows for {file}, which is not a file in this diff. These rows are not shown."
+    ))
 }
 
 /// What to tell the user when the renderer `program` exited unsuccessfully
@@ -370,10 +403,7 @@ pub(crate) fn failure_message(
     said: &str,
     status: impl std::fmt::Display,
 ) -> String {
-    let name = Path::new(program)
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let name = name_of(program);
     let reason = said
         .lines()
         .map(str::trim)
