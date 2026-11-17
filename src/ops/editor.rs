@@ -894,6 +894,10 @@ pub(crate) struct MoveNextSection;
 impl OpTrait for MoveNextSection {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
         Some(Rc::new(|app, _term| {
+            if let Some(hint) = app.screen().unmarked_commits_hint() {
+                app.display_error(format!("No commit to move to: {hint}"));
+                return Ok(());
+            }
             let depth = app.screen().get_selected_item().depth;
             app.screen_mut().select_next(NavMode::Siblings { depth });
             Ok(())
@@ -909,6 +913,10 @@ pub(crate) struct MovePrevSection;
 impl OpTrait for MovePrevSection {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
         Some(Rc::new(|app, _term| {
+            if let Some(hint) = app.screen().unmarked_commits_hint() {
+                app.display_error(format!("No commit to move to: {hint}"));
+                return Ok(());
+            }
             let depth = app.screen().get_selected_item().depth;
             app.screen_mut()
                 .select_previous(NavMode::Siblings { depth });
