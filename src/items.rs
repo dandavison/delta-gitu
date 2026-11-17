@@ -154,10 +154,26 @@ pub(crate) fn drawn_diff_items(
         config.general.visit_context_lines,
     );
     if cut_unreached {
+        // Drawn in part, the rows may be ahead of the diff they are cut back to.
         reached_files(items)
     } else {
-        items
+        with_unplaced_rows_reported(config, diff, &parsed.lines, items)
     }
+}
+
+/// `items` under a row saying so if the renderer drew rows of a file the diff
+/// does not have, which leave that file's lines out of `items`.
+fn with_unplaced_rows_reported(
+    config: &Config,
+    diff: &Diff,
+    lines: &[crate::diff_renderer::ParsedLine],
+    items: Vec<Item>,
+) -> Vec<Item> {
+    crate::diff_renderer::unplaced_rows_message(&config.general.diff_renderer.command, diff, lines)
+        .map(|message| error_row(config, message))
+        .into_iter()
+        .chain(items)
+        .collect()
 }
 
 /// Each file headed by its line of a diffstat counted from the patch, folded or
@@ -930,7 +946,7 @@ pub(crate) fn log_of_patches_items(
             headed_as_configured(config, params, diff_items)
         };
         items.extend(if drawn_whole {
-            diff_items
+            with_unplaced_rows_reported(config, &diff, diff_rows, diff_items)
         } else {
             reached_files(diff_items)
         });
