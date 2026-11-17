@@ -167,10 +167,9 @@ impl DiffIndex {
 
         for (file_index, file_diff) in diff.file_diffs.iter().enumerate() {
             for path in [&file_diff.header.new_file, &file_diff.header.old_file] {
-                index
-                    .files
-                    .entry(path.fmt(&diff.text).to_string())
-                    .or_insert(file_index);
+                for label in path.labels(&diff.text) {
+                    index.files.entry(label.into_owned()).or_insert(file_index);
+                }
             }
 
             for (hunk_index, hunk) in file_diff.hunks.iter().enumerate() {
@@ -242,7 +241,10 @@ impl DiffIndex {
 pub(crate) fn resolve_file(diff: &Diff, meta: &LineMetadata, from: usize) -> Option<usize> {
     (from..diff.file_diffs.len()).find(|&file_index| {
         let header = &diff.file_diffs[file_index].header;
-        meta.file == header.new_file.fmt(&diff.text) || meta.file == header.old_file.fmt(&diff.text)
+        [&header.new_file, &header.old_file]
+            .into_iter()
+            .flat_map(|path| path.labels(&diff.text))
+            .any(|label| meta.file == label)
     })
 }
 
@@ -392,12 +394,8 @@ pub(crate) fn unplaced_rows_message(
     let paths: std::collections::HashSet<std::borrow::Cow<'_, str>> = diff
         .file_diffs
         .iter()
-        .flat_map(|file_diff| {
-            [
-                file_diff.header.old_file.fmt(&diff.text),
-                file_diff.header.new_file.fmt(&diff.text),
-            ]
-        })
+        .flat_map(|file_diff| [&file_diff.header.old_file, &file_diff.header.new_file])
+        .flat_map(|path| path.labels(&diff.text))
         .collect();
     let file = lines
         .iter()

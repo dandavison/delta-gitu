@@ -64,6 +64,18 @@ impl FilePath {
             Cow::Borrowed(&input[self.range.clone()])
         }
     }
+
+    /// The forms of the path that a diff renderer may label rows with: the path,
+    /// and for a path git quoted (by default, one with non-ASCII characters), also
+    /// the path as git wrote it between the quotes, escapes and all, which is what
+    /// delta uses.
+    pub fn labels<'a>(&'a self, input: &'a str) -> Vec<Cow<'a, str>> {
+        let mut labels = vec![self.fmt(input)];
+        if self.is_quoted {
+            labels.push(Cow::Borrowed(&input[self.range.clone()]));
+        }
+        labels
+    }
 }
 
 #[derive(Debug, Clone)]
