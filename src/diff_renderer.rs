@@ -824,6 +824,29 @@ mod tests {
             .to_vec()
     }
 
+    /// With delta's relative-paths, from a subdirectory, delta labelled rows
+    /// with paths relative to the subdirectory, which are not the diff's paths,
+    /// and gitu showed each hunk with no lines. The renderer is told to turn it
+    /// off, after any settings git was given.
+    #[test]
+    fn the_renderer_is_told_to_turn_off_relative_paths() {
+        let echo_parameters = ["sh", "-c", "printf '%s' \"$GIT_CONFIG_PARAMETERS\""]
+            .map(String::from)
+            .to_vec();
+        let parameters = |given: Option<&str>| {
+            temp_env::with_var("GIT_CONFIG_PARAMETERS", given, || {
+                run(&echo_parameters, None, &RenderParams::default(), None)
+                    .unwrap()
+                    .unwrap()
+            })
+        };
+        assert_eq!(parameters(None), "'delta.relative-paths=false'");
+        assert_eq!(
+            parameters(Some("'user.name=x'")),
+            "'user.name=x' 'delta.relative-paths=false'"
+        );
+    }
+
     fn params_with(features: &[&str]) -> RenderParams {
         RenderParams {
             features: features.iter().copied().map(String::from).collect(),
