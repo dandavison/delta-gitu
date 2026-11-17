@@ -931,6 +931,7 @@ pub(super) fn annotating_renderer() -> Vec<String> {
         !/^[-+ ]/&&substr($0,1,1)!=bs{hunk=0}
         header&&/^(@@|diff |(commit|▸) [0-9a-f]+)/{file_header()}
         /^(commit|▸) [0-9a-f]+/{printf "%s;C;;;%s%s%s\n",osc,$2,st,raw;next}
+        /^diff --git "/{file=$0;sub(/^diff --git "a\/.*" "b\//,"",file);sub(/"$/,"",file);label=file;suffix="";header=1;next}
         /^diff --git /{file=$0;sub(/^diff --git a\/.* b\//,"",file);label=file;suffix="";header=1;next}
         /^diff --cc /{file=substr($0,11);label=file;suffix="";header=1;next}
         /^new file mode /{label="added: " file}
@@ -2244,4 +2245,55 @@ fn ctrl_j_moves_to_the_next_hunk() {
         app.screen().get_selected_item().data,
         ctx.redact_buffer()
     );
+}
+
+/// [`annotating_renderer`], with every record naming its file under
+/// `elsewhere/`, a path the diff does not have, as delta did under its
+/// `relative-paths` from a subdirectory.
+fn elsewhere_renderer() -> Vec<String> {
+    annotating_renderer()
+        .into_iter()
+        .map(|arg| arg.replace(r#"label=file;"#, r#"file="elsewhere/" file;label=file;"#))
+        .collect()
+}
+
+/// The start of the message, as much of it as the screen shows.
+const ELSEWHERE_MESSAGE: &str = "awk drew rows for elsewhere/firstfile, which is not a file";
+
+/// Rows the renderer says are of a file the diff does not have cannot be
+/// placed, and the view says so, rather than showing the diff without them.
+#[test]
+fn rows_of_a_file_the_diff_does_not_have_are_reported_in_the_pager() {
+    let mut ctx = setup_clone!();
+    commit(&ctx.dir, "firstfile", "testing\ntesttest\n");
+    fs::write(ctx.dir.join("firstfile"), "changed\ntesttest\n").unwrap();
+    ctx.config().general.diff_renderer.command = elsewhere_renderer();
+
+    ctx.init_app_as_pager_of(&["git", "diff"]);
+    let buffer = ctx.redact_buffer();
+    assert!(buffer.contains(ELSEWHERE_MESSAGE), "{buffer}");
+}
+
+#[test]
+fn rows_of_a_file_the_diff_does_not_have_are_reported_in_status() {
+    let mut ctx = setup_clone!();
+    commit(&ctx.dir, "firstfile", "testing\ntesttest\n");
+    fs::write(ctx.dir.join("firstfile"), "changed\ntesttest\n").unwrap();
+    ctx.config().general.diff_renderer.command = elsewhere_renderer();
+
+    ctx.init_app();
+    let buffer = ctx.redact_buffer();
+    assert!(buffer.contains(ELSEWHERE_MESSAGE), "{buffer}");
+}
+
+#[test]
+fn rows_of_a_file_the_diff_does_not_have_are_reported_in_a_log_of_patches() {
+    let mut ctx = setup_clone!();
+    commit(&ctx.dir, "firstfile", "testing\ntesttest\n");
+    commit(&ctx.dir, "firstfile", "changed\ntesttest\n");
+    ctx.config().general.diff_renderer.command = elsewhere_renderer();
+
+    ctx.init_app_as_pager_of(&["git", "log", "-p", "-1"]);
+    let buffer = ctx.redact_buffer();
+    assert!(buffer.contains(ELSEWHERE_MESSAGE), "{buffer}");
 }
