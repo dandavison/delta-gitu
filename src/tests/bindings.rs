@@ -73,9 +73,9 @@ fn an_unbound_operation_is_listed() {
     assert_eq!(rows_of(&app, "search-backward").len(), 1);
 }
 
-/// A binding the user set says where, and what keys it replaced.
+/// A binding the user set gives the keys it replaced.
 #[test]
-fn a_binding_set_in_git_config_says_so() {
+fn a_binding_set_in_git_config_gives_its_default() {
     let mut ctx = setup_clone!();
     ctx.config().bindings = crate::config::configured(
         "",
@@ -86,16 +86,15 @@ fn a_binding_set_in_git_config_says_so() {
     ctx.update(&mut app, keys(BINDINGS));
     let rows = rows_of(&app, "move-down");
     assert!(
-        rows.iter().any(
-            |row| row.ends_with("(set in git config; default ctrl+j ctrl+down)")
-                && row.trim_start().starts_with("ctrl+pagedown ")
-        ),
+        rows.iter()
+            .any(|row| row.ends_with("(default ctrl+j ctrl+down)")
+                && row.trim_start().starts_with("ctrl+pagedown ")),
         "{rows:#?}"
     );
 }
 
 #[test]
-fn a_binding_set_in_the_config_file_says_so() {
+fn a_binding_set_in_the_config_file_gives_its_default() {
     let mut ctx = setup_clone!();
     ctx.config().bindings =
         crate::config::configured("[bindings]\nroot.move_down = [\"ctrl+pagedown\"]\n", "")
@@ -105,19 +104,38 @@ fn a_binding_set_in_the_config_file_says_so() {
     let rows = rows_of(&app, "move-down");
     assert!(
         rows.iter()
-            .any(|row| row.ends_with("(set in config file; default ctrl+j ctrl+down)")),
+            .any(|row| row.ends_with("(default ctrl+j ctrl+down)")),
         "{rows:#?}"
     );
 }
 
-/// A default binding says nothing about where it was set.
+/// As in the root menu, so in the others.
 #[test]
-fn a_default_binding_says_nothing_of_where_it_was_set() {
+fn a_merge_menu_binding_set_in_git_config_gives_its_default() {
+    let mut ctx = setup_clone!();
+    ctx.config().bindings =
+        crate::config::configured("", "[delta-tui \"bindings.merge-menu\"]\n\tmerge = x\n")
+            .bindings;
+    let mut app = ctx.init_app();
+    ctx.update(&mut app, keys(BINDINGS));
+    let rows = rows_of(&app, "merge");
+    assert!(
+        rows.iter().any(|row| row.ends_with("(default m)")),
+        "{rows:#?}"
+    );
+}
+
+/// A default binding gives no default.
+#[test]
+fn a_default_binding_gives_no_default() {
     let mut ctx = setup_clone!();
     let mut app = ctx.init_app();
     ctx.update(&mut app, keys(BINDINGS));
     let rows = app.screen().row_texts();
-    assert!(!rows.iter().any(|row| row.contains("(set in")), "{rows:#?}");
+    assert!(
+        !rows.iter().any(|row| row.contains("(default ")),
+        "{rows:#?}"
+    );
 }
 
 /// The list is searched as any view is.
