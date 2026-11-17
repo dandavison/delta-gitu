@@ -545,3 +545,19 @@ fn opening_a_commit_the_renderer_did_not_mark_says_what_to_set() {
     assert!(buffer.contains(">> "), "{buffer}");
     assert!(buffer.contains("delta.commit-regex"), "{buffer}");
 }
+
+/// In a log whose commits the renderer did not mark, there is no commit to move
+/// to. `alt+down` and `alt+up` say what to set, rather than doing nothing.
+#[test]
+fn moving_by_commit_in_a_log_the_renderer_did_not_mark_says_what_to_set() {
+    for key in ["<alt+j>", "<alt+k>"] {
+        let mut ctx = with_log_args(setup(setup_clone!()), &["--pretty=format:>> %h %s"]);
+        let mut app = ctx.init_app();
+        ctx.update(&mut app, keys("ll"));
+        ctx.update(&mut app, keys(key));
+
+        let buffer = ctx.redact_buffer();
+        assert!(buffer.contains(">> "), "{buffer}");
+        assert!(buffer.contains("delta.commit-regex"), "{key}: {buffer}");
+    }
+}
