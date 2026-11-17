@@ -291,7 +291,8 @@ picker.toggle_list = ["ctrl+l"]
 picker.quit = ["q"]
 
 root.help_menu = ["h", "?"]
-help_menu.quit = ["q", "h", "?", "esc"]
+help_menu.quit = ["q", "h", "esc"]
+help_menu.show_bindings = ["?"]
 
 root.branch_menu = ["b"]
 branch_menu.checkout = ["b"]

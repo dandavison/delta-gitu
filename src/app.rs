@@ -470,18 +470,24 @@ impl App {
 
         let menu = match &self.state.pending_menu {
             None => self.base_menu().unwrap_or(Menu::Root),
-            Some(menu) if menu.menu == Menu::Help => Menu::Root,
             Some(menu) => menu.menu,
         };
 
         self.state.pending_keys.push((key.modifiers, key.code));
 
-        let matching_bindings = self
-            .state
-            .config
-            .bindings
+        let bindings = &self.state.config.bindings;
+        let mut matching_bindings = bindings
             .match_bindings(&menu, &self.state.pending_keys)
             .collect::<Vec<_>>();
+        // The help's own keys come before the top-level keys it lists.
+        let menu = if menu == Menu::Help && matching_bindings.is_empty() {
+            matching_bindings = bindings
+                .match_bindings(&Menu::Root, &self.state.pending_keys)
+                .collect();
+            Menu::Root
+        } else {
+            menu
+        };
 
         match matching_bindings[..] {
             [binding] => {

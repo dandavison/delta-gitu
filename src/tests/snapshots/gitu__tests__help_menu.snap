@@ -4,25 +4,26 @@ expression: ctx.redact_buffer()
 ---
 ▌Branch: main                                                                                                                                         |
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
- Commands                                                           Submenus          Section                                                         |
- &                Files                   q/esc      Quit/Close     A   Cherry-pick   right Unfold                                                    |
- +                Wider context           shift+down Select down    b   Branch        tab   Fold                                                      |
- -                Narrower context        shift+tab  Fold all       c   Commit                                                                        |
- /                Search                  shift+up   Select up      f   Fetch                                                                         |
- :                Edit git command        T          Themes         F   Pull                                                                          |
- alt+h/alt+left   Parent section          U          Diff context   h/? Help                                                                          |
- alt+j/alt+down   Next section            Y          Show Refs      l   Log                                                                           |
- alt+k/alt+up     Prev section                                      m   Merge                                                                         |
- ctrl+d           Scroll half page down                             M   Remote                                                                        |
- ctrl+e           Scroll view down                                  P   Push                                                                          |
- ctrl+j/ctrl+down Down                                              r   Rebase                                                                        |
- ctrl+k/ctrl+up   Up                                                V   Revert                                                                        |
- ctrl+u           Scroll half page up                               X   Reset                                                                         |
- ctrl+y           Scroll view up                                    z   Stash                                                                         |
- ctrl+z           Suspend                                                                                                                             |
- G                Bottom                                            Hotkeys                                                                           |
- g+g              Top                                               L line-numbers                                                                    |
- g+r              Refresh                                           S side-by-side                                                                    |
+ Commands                                                                   Submenus         Section                                                  |
+ &                Files                   pageup/backspace Scroll page up   A Cherry-pick    right Unfold                                             |
+ +                Wider context           q/esc            Quit/Close       b Branch         tab   Fold                                               |
+ -                Narrower context        shift+down       Select down      c Commit                                                                  |
+ /                Search                  shift+tab        Fold all         f Fetch                                                                   |
+ :                Edit git command        shift+up         Select up        F Pull                                                                    |
+ ?                Key bindings            T                Themes           l Log                                                                     |
+ alt+h/alt+left   Parent section          U                Diff context     m Merge                                                                   |
+ alt+j/alt+down   Next section            Y                Show Refs        M Remote                                                                  |
+ alt+k/alt+up     Prev section                                              P Push                                                                    |
+ ctrl+d           Scroll half page down                                     r Rebase                                                                  |
+ ctrl+e           Scroll view down                                          V Revert                                                                  |
+ ctrl+j/ctrl+down Down                                                      X Reset                                                                   |
+ ctrl+k/ctrl+up   Up                                                        z Stash                                                                   |
+ ctrl+u           Scroll half page up                                                                                                                 |
+ ctrl+y           Scroll view up                                            Hotkeys                                                                   |
+ ctrl+z           Suspend                                                   L line-numbers                                                            |
+ G                Bottom                                                    S side-by-side                                                            |
+ g+g              Top                                                                                                                                 |
+ g+r              Refresh                                                                                                                             |
  g+s              Status                                                                                                                              |
  H                Hotkeys                                                                                                                             |
  j/down           Down line                                                                                                                           |
@@ -31,5 +32,4 @@ expression: ctx.redact_buffer()
  n                Next match                                                                                                                          |
  N                Previous match                                                                                                                      |
  pagedown/space   Scroll page down                                                                                                                    |
- pageup/backspace Scroll page up                                                                                                                      |
-styles_hash: f353d6d0e9398a84
+styles_hash: 2427c792e810c2c9

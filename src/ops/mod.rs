@@ -32,6 +32,7 @@ pub(crate) mod reverse;
 pub(crate) mod revert;
 pub(crate) mod search;
 pub(crate) mod show;
+pub(crate) mod show_bindings;
 pub(crate) mod show_refs;
 pub(crate) mod stage;
 pub(crate) mod stash;
@@ -84,6 +85,7 @@ pub(crate) enum Op {
     Rename,
     RenameRemote,
     ShowRefs,
+    ShowBindings,
     Status,
     Stash,
     StashApply,
@@ -178,6 +180,141 @@ pub(crate) enum Op {
 }
 
 impl Op {
+    /// The op's name in config, as in `root.move_down`.
+    pub(crate) fn config_name(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Op::OpenMenu(menu) => menu.as_ref().into(),
+            Op::ToggleArg(arg) => arg.as_str().into(),
+            op => op.as_ref().into(),
+        }
+    }
+
+    /// What the op does, for the list of bindings.
+    pub(crate) fn description(&self) -> std::borrow::Cow<'static, str> {
+        match self {
+            Op::AddRemote => "Add a remote",
+            Op::Checkout => "Check out a branch",
+            Op::CheckoutNewBranch => "Create a branch and check it out",
+            Op::Spinoff => "Move the commits not on the upstream to a new branch",
+            Op::Delete => "Delete a branch",
+            Op::Commit => "Commit",
+            Op::CommitAmend => "Amend the last commit",
+            Op::CommitExtend => "Add what is staged to the last commit, keeping its message",
+            Op::CommitFixup => "Commit what is staged as a fixup of a commit chosen from the log",
+            Op::CommitInstantFixup => {
+                "Fix up a commit chosen from the log with what is staged, and rebase"
+            }
+            Op::FetchAll => "Fetch from all remotes",
+            Op::FetchPushRemote => "Fetch from the push remote",
+            Op::FetchUpstream => "Fetch from the upstream",
+            Op::FetchElsewhere => "Fetch from a remote you choose",
+            Op::LogCurrent => "Log of the current branch",
+            Op::LogOther => "Log of a branch or commit you choose",
+            Op::PullFromPushRemote => "Pull from the push remote",
+            Op::PullFromUpstream => "Pull from the upstream",
+            Op::PullFromElsewhere => "Pull from a branch you choose",
+            Op::PushToPushRemote => "Push to the push remote",
+            Op::PushToUpstream => "Push to the upstream",
+            Op::PushToElsewhere => "Push to a branch you choose",
+            Op::RebaseAbort => "Abort the rebase",
+            Op::RebaseContinue => "Continue the rebase",
+            Op::RebaseElsewhere => "Rebase onto a branch or commit you choose",
+            Op::RebaseAutosquash => "Rebase from the commit under the cursor, squashing in fixup commits",
+            Op::RebaseInteractive => "Rebase interactively from the commit under the cursor",
+            Op::RemoveRemote => "Remove a remote",
+            Op::Rename => "Rename a branch",
+            Op::RenameRemote => "Rename a remote",
+            Op::ShowRefs => "List branches and tags",
+            Op::ShowBindings => "List every key binding",
+            Op::Status => "Status view, from any view",
+            Op::Stash => "Stash the index and worktree",
+            Op::StashApply => "Apply a stash",
+            Op::StashIndex => "Stash the index",
+            Op::StashWorktree => "Stash the worktree",
+            Op::StashKeepIndex => "Stash the index and worktree, keeping the index",
+            Op::StashPop => "Pop a stash",
+            Op::StashDrop => "Drop a stash",
+            Op::RebaseTodoMoveUp => "Move the commit up",
+            Op::RebaseTodoMoveDown => "Move the commit down",
+            Op::RebaseTodoPick => "Pick",
+            Op::RebaseTodoReword => "Reword",
+            Op::RebaseTodoEdit => "Edit",
+            Op::RebaseTodoSquash => "Squash",
+            Op::RebaseTodoFixup => "Fixup",
+            Op::RebaseTodoDrop => "Drop",
+            Op::RebaseTodoStart => "Start the rebase",
+            Op::RendererFeatures => "List delta features, shell commands and views, and set their keys",
+            Op::RendererThemes => "Step through delta's themes",
+            Op::SelectCommit => "Choose the commit under the cursor",
+            Op::ToggleMenu => "Show or hide the keys",
+            Op::ResetSoft => "Reset to a commit, keeping the index and worktree",
+            Op::ResetMixed => "Reset to a commit, keeping the worktree",
+            Op::ResetHard => "Reset to a commit, with the index and worktree",
+            Op::RevertAbort => "Abort the revert",
+            Op::RevertContinue => "Continue the revert",
+            Op::RevertCommit => "Revert the commit under the cursor",
+            Op::CherryPickAbort => "Abort the cherry-pick",
+            Op::CherryPickContinue => "Continue the cherry-pick",
+            Op::CherryPick => "Cherry-pick the commit under the cursor",
+            Op::Merge => "Merge a branch you choose",
+            Op::MergeAbort => "Abort the merge",
+            Op::MergeContinue => "Continue the merge",
+            Op::Stage => "Stage the file, hunk or line",
+            Op::Unstage => "Unstage the file, hunk or line",
+            Op::Show => {
+                "Open the commit, branch, tag, stash or blame line; open a file, hunk or line in your editor"
+            }
+            Op::ShowOrUnfold => {
+                "Open the commit, branch, tag, stash or blame line; unfold a folded file or hunk"
+            }
+            Op::Discard => "Discard the file, hunk or line",
+            Op::Apply => "Apply the file, hunk or line",
+            Op::Reverse => "Reverse the file, hunk or line",
+            Op::CopyHash => "Copy the commit's hash",
+            Op::Blame => "Blame the file of the diff line under the cursor",
+            Op::ToggleSection => "Fold or unfold",
+            Op::ToggleAllSections => "Fold every file; again, unfold everything",
+            Op::DiffContext => "Set the diff context",
+            Op::WiderDiffContext => "Wider diff context",
+            Op::NarrowerDiffContext => "Narrower diff context",
+            Op::EditGitCommand => "Edit the git command",
+            Op::FilePatterns => "Set which files to show",
+            Op::HideFile => "Hide the file under the cursor",
+            Op::MoveUpLine => "Up a line, through a diff's lines too",
+            Op::MoveDownLine => "Down a line, through a diff's lines too",
+            Op::MoveUp => "Up, stopping only at file headers, hunk headers and commits",
+            Op::MoveDown => "Down, stopping only at file headers, hunk headers and commits",
+            Op::ExtendSelectionUp => "Select lines in a hunk, upwards",
+            Op::ExtendSelectionDown => "Select lines in a hunk, downwards",
+            Op::MovePrevSection => "Previous section at the same level",
+            Op::MoveNextSection => "Next section at the same level",
+            Op::MoveParentSection => "The file or commit containing the cursor",
+            Op::MoveTop => "Top",
+            Op::MoveBottom => "Bottom",
+            Op::HalfPageUp => "Half page up",
+            Op::HalfPageDown => "Half page down",
+            Op::FullPageUp => "Page up",
+            Op::FullPageDown => "Page down",
+            Op::ScrollViewUp => "Scroll up without moving the cursor",
+            Op::ScrollViewDown => "Scroll down without moving the cursor",
+            Op::Search => "Search",
+            Op::SearchBackward => "Search backward",
+            Op::SearchNext => "Next match",
+            Op::SearchPrevious => "Previous match",
+            Op::Refresh => "Refresh",
+            Op::Suspend => "Suspend; fg resumes",
+            Op::Quit => "Close the menu; otherwise go back, or on the first screen quit",
+            Op::FoldOrBack => "Fold what you unfolded on this screen, if the cursor is in it; otherwise go back",
+            Op::OpenMenu(Menu::Help) => "Help",
+            Op::OpenMenu(menu) => {
+                return format!("Open the {} menu", menu.to_string().to_lowercase()).into();
+            }
+            Op::ToggleArg(arg) => return format!("Turn {arg} on or off").into(),
+            Op::MoveToScreenLine(_) => "Move to a screen line",
+        }
+        .into()
+    }
+
     /// Whether the op changes the repository: its refs, index, worktree,
     /// remotes or stash. A menu whose ops all do counts as one.
     pub(crate) fn writes(&self) -> bool {
@@ -303,6 +440,7 @@ impl Op {
             Op::RebaseContinue => Box::new(rebase::RebaseContinue),
             Op::RebaseElsewhere => Box::new(rebase::RebaseElsewhere),
             Op::ShowRefs => Box::new(show_refs::ShowRefs),
+            Op::ShowBindings => Box::new(show_bindings::ShowBindings),
             Op::Status => Box::new(status::Status),
             Op::Stash => Box::new(stash::Stash),
             Op::StashApply => Box::new(stash::StashApply),

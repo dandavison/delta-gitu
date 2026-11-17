@@ -205,6 +205,7 @@ pub(crate) fn layout_item<'a>(
                 }
                 SectionHeader::UntrackedFiles(count) => format!("Untracked files ({count})").into(),
                 SectionHeader::Blame(file, commit) => format!("Blame {file} @ {commit}").into(),
+                SectionHeader::Bindings(menu, path) => format!("{menu} ({path})").into(),
             };
 
             layout_span(

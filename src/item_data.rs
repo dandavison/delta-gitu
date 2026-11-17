@@ -219,4 +219,7 @@ pub(crate) enum SectionHeader {
     UnstagedChanges(usize),
     UntrackedFiles(usize),
     Blame(String, String),
+    /// A menu's section of the list of bindings: its name, and its path in
+    /// config.
+    Bindings(String, String),
 }
