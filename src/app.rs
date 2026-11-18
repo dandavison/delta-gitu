@@ -262,6 +262,11 @@ impl App {
         let handle_pending_cmd_result = self.handle_pending_cmd();
         self.handle_result(handle_pending_cmd_result)?;
 
+        // Its spinner turns.
+        if self.state.pending_cmd.is_some() {
+            self.stage_redraw();
+        }
+
         if self.state.needs_redraw {
             self.redraw_now(term)?;
         }

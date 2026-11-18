@@ -1,4 +1,5 @@
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::style::Style;
 
@@ -14,13 +15,7 @@ pub(crate) fn layout_cmd_log<'a>(
     width: usize,
     debug: bool,
 ) {
-    if log.is_empty()
-        || (!debug
-            && log
-                .entries
-                .iter()
-                .all(|entry| matches!(&*entry.read().unwrap(), CmdLogEntry::Cmd { .. })))
-    {
+    if log.is_empty() || log.entries.iter().all(|entry| !shown(entry, debug)) {
         return;
     }
 
@@ -28,12 +23,35 @@ pub(crate) fn layout_cmd_log<'a>(
 
     layout.col(opts(), |layout| {
         for entry in &log.entries {
-            if !debug && matches!(&*entry.read().unwrap(), CmdLogEntry::Cmd { .. }) {
+            if !shown(entry, debug) {
                 continue;
             }
             layout_entry(layout, entry, config);
         }
     });
+}
+
+/// How often the spinner beside a running command turns.
+const SPINNER_STEP: Duration = Duration::from_millis(100);
+
+/// A command is shown while it runs; once it has finished, only with `--debug`.
+fn shown(entry: &Arc<RwLock<CmdLogEntry>>, debug: bool) -> bool {
+    debug
+        || !matches!(
+            &*entry.read().unwrap(),
+            CmdLogEntry::Cmd { out: Some(_), .. }
+        )
+}
+
+/// A spinner frame that turns every [`SPINNER_STEP`].
+fn spinner() -> &'static str {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let steps = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        / SPINNER_STEP.as_millis();
+    FRAMES[steps as usize % FRAMES.len()]
 }
 
 /// The entry is read under a lock, so its spans have to be owned.
@@ -44,7 +62,10 @@ fn layout_entry<'a>(layout: &mut UiTree<'a>, entry: &Arc<RwLock<CmdLogEntry>>, c
                 layout_span(
                     layout,
                     (
-                        if out.is_some() { "$ " } else { "Running: " }.into(),
+                        match out {
+                            Some(_) => "$ ".into(),
+                            None => format!("{} ", spinner()).into(),
+                        },
                         Style::from(&config.style.info_msg),
                     ),
                 );
