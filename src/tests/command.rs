@@ -1,6 +1,7 @@
 //! Shell commands the user defines in config and binds to keys.
 
 use super::*;
+use std::time::{Duration, Instant};
 
 /// `ctx` with `command` defined as `name`, bound to `key`.
 fn with_command(mut ctx: TestContext, name: &str, command: &str, key: char) -> TestContext {
@@ -173,4 +174,46 @@ fn a_command_writing_much_output_finishes() {
     ctx.update(&mut app, keys("o"));
 
     assert!(ctx.dir.join("finished").exists(), "{}", ctx.redact_buffer());
+}
+
+/// While a command runs, the bottom row says so, with a spinner that turns;
+/// once it exits, the row is gone.
+#[test]
+fn a_running_command_is_shown_with_a_spinner_until_it_exits() {
+    let ctx = setup_clone!();
+    let mut ctx = with_command(
+        ctx,
+        "wait",
+        "while [ ! -e go-on ]; do sleep 0.02; done",
+        'o',
+    );
+    ctx.debug = false;
+    let mut app = ctx.init_app_streaming_with_args(Default::default());
+    let shown = |ctx: &TestContext| ctx.redact_buffer().contains("while [ ! -e go-on ]");
+
+    ctx.update(&mut app, keys("o"));
+    assert!(shown(&ctx), "{}", ctx.redact_buffer());
+
+    let before = ctx.redact_buffer();
+    let started = Instant::now();
+    while ctx.redact_buffer() == before {
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the spinner did not turn:\n{before}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        app.update(&mut ctx.term, None).unwrap();
+    }
+
+    fs::write(ctx.dir.join("go-on"), "").unwrap();
+    let started = Instant::now();
+    while shown(&ctx) {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "still shown after the command exited:\n{}",
+            ctx.redact_buffer()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        app.update(&mut ctx.term, None).unwrap();
+    }
 }
