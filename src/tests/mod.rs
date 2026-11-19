@@ -23,6 +23,8 @@ mod command;
 mod commit;
 mod discard;
 mod editor;
+#[cfg(unix)]
+mod editor_failure;
 mod fetch;
 mod keys;
 mod log;
