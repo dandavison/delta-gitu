@@ -157,6 +157,8 @@ pub(crate) fn diff_unstaged(repo: &Repository, context: Option<&str>) -> Res<Dif
     let text = String::from_utf8_lossy(
         &Command::new("git")
             .current_dir(repo.workdir().expect("Bare repos unhandled"))
+            // Stops git rewriting the index, which would trigger the file watcher.
+            .args(["-c", "diff.autoRefreshIndex=false"])
             .args(["diff", "--no-ext-diff"])
             .args(context)
             .output()
@@ -197,6 +199,8 @@ pub(crate) fn status(dir: &Path) -> Res<status::Status> {
     let text = String::from_utf8_lossy(
         &Command::new("git")
             .current_dir(dir)
+            // Stops git rewriting the index, which would trigger the file watcher.
+            .arg("--no-optional-locks")
             .args(["status", "--porcelain", "--branch"])
             .output()
             .unwrap()
