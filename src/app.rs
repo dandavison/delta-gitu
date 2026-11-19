@@ -217,14 +217,12 @@ impl App {
             return Ok(None);
         }
 
-        Ok(
-            FileWatcher::new(self.state.repo.workdir().expect("Bare repos unhandled"))
-                .inspect_err(|err| {
-                    self.display_error(err.to_string());
-                    self.display_info("File watcher disabled");
-                })
-                .ok(),
-        )
+        Ok(FileWatcher::new(&self.state.repo)
+            .inspect_err(|err| {
+                self.display_error(err.to_string());
+                self.display_info("File watcher disabled");
+            })
+            .ok())
     }
 
     pub fn run(&mut self, term: &mut Term, max_tick_delay: Duration) -> Res<()> {

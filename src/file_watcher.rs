@@ -1,4 +1,5 @@
-use crate::{Res, error::Error, open_repo};
+use crate::{Res, error::Error};
+use git2::Repository;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     path::Path,
@@ -13,13 +14,14 @@ pub struct FileWatcher {
 }
 
 impl FileWatcher {
-    pub fn new(repo_dir: &Path) -> Res<Self> {
+    pub fn new(repo: &Repository) -> Res<Self> {
         let pending_updates = Arc::new(AtomicBool::new(false));
         let pending_updates_w = pending_updates.clone();
-        let repo_dir_clone = repo_dir.to_path_buf();
+        let git_dir = repo.path().to_path_buf();
+        let workdir = repo.workdir().expect("Bare repos unhandled").to_path_buf();
 
         std::thread::spawn(move || {
-            if let Err(e) = watch(&repo_dir_clone, pending_updates_w) {
+            if let Err(e) = watch(&git_dir, &workdir, pending_updates_w) {
                 log::error!("File watcher error: {:?}", e)
             }
         });
@@ -32,8 +34,9 @@ impl FileWatcher {
     }
 }
 
-fn watch(repo_dir: &Path, pending_updates_w: Arc<AtomicBool>) -> Res<()> {
-    let repo = open_repo(repo_dir)?;
+fn watch(git_dir: &Path, workdir: &Path, pending_updates_w: Arc<AtomicBool>) -> Res<()> {
+    let repo = Repository::open(git_dir).map_err(Error::OpenRepo)?;
+    repo.set_workdir(workdir, false).map_err(Error::OpenRepo)?;
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
         if let Ok(event) = res {
             if !is_changed(&event) {
@@ -51,9 +54,8 @@ fn watch(repo_dir: &Path, pending_updates_w: Arc<AtomicBool>) -> Res<()> {
     })
     .map_err(Error::FileWatcher)?;
 
-    let path_buf = repo_dir.to_owned();
     watcher
-        .watch(&path_buf, RecursiveMode::Recursive)
+        .watch(workdir, RecursiveMode::Recursive)
         .map_err(Error::FileWatcher)?;
 
     log::info!(

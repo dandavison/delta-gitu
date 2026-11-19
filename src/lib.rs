@@ -227,13 +227,6 @@ fn command_prefix(workdir: Option<&Path>) -> String {
     }
 }
 
-fn open_repo(dir: &Path) -> Res<Repository> {
-    log::debug!("Opening repo");
-    let repo = open_repo_from_env()?;
-    repo.set_workdir(dir, false).map_err(Error::OpenRepo)?;
-    Ok(repo)
-}
-
 fn open_repo_from_env() -> Res<Repository> {
     match Repository::open_from_env() {
         Ok(repo) => Ok(repo),
