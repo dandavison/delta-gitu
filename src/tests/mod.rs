@@ -26,6 +26,7 @@ mod editor;
 #[cfg(unix)]
 mod editor_failure;
 mod fetch;
+mod file_watcher;
 mod keys;
 mod log;
 mod merge;
