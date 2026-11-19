@@ -4,13 +4,14 @@
 //! keys and exits at its end, and emacs refuses to start.
 //!
 //! This needs a process whose terminal is a pseudo-terminal and whose stdin is
-//! a pipe, so the test runs the test binary again as that process.
+//! a pipe, so the test runs alone in such a process.
 
 use super::*;
+use crate::tests::helpers::{run_alone, running_alone};
 use std::io::{self, Read};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::{fs::PermissionsExt, process::CommandExt};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -24,13 +25,7 @@ fn the_editor_reads_the_terminal_when_stdin_is_a_pipe() {
     let (master, slave) = pty(80, 20);
 
     let mut child = unsafe {
-        Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "--ignored",
-                "--nocapture",
-                "tests::terminal_input::open_the_editor_from_the_pager",
-            ])
+        run_alone("tests::terminal_input::open_the_editor_from_the_pager")
             .env(EDITOR_LOG, &log)
             .stdin(Stdio::piped())
             .stdout(slave.try_clone().unwrap())
@@ -73,9 +68,10 @@ fn the_editor_reads_the_terminal_when_stdin_is_a_pipe() {
 #[test]
 #[ignore = "run by the_editor_reads_the_terminal_when_stdin_is_a_pipe"]
 fn open_the_editor_from_the_pager() {
-    let Ok(log) = std::env::var(EDITOR_LOG) else {
+    if !running_alone() {
         return;
-    };
+    }
+    let log = std::env::var(EDITOR_LOG).unwrap();
     let mut ctx = setup_clone!();
     commit(&ctx.dir, "file", "a\n");
     fs::write(ctx.dir.join("file"), "b\n").unwrap();
