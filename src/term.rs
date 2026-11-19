@@ -11,6 +11,7 @@ use crossterm::{
     },
 };
 use std::io::{self, Stdout, Write, stdout};
+use std::process::Stdio;
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -292,6 +293,24 @@ impl TermBackend {
         }
         self.setup_term(config)?;
         self.clear()
+    }
+
+    /// The input for a program gitu runs in the foreground, such as the editor:
+    /// the terminal gitu reads keys from. As git's pager, gitu's stdin is the
+    /// pipe git writes to, which the program must not read. On Windows the
+    /// program gets gitu's stdin whatever it is.
+    pub(crate) fn foreground_input(&self) -> io::Result<Stdio> {
+        match self {
+            #[cfg(unix)]
+            TermBackend::Crossterm(_) if !io::IsTerminal::is_terminal(&io::stdin()) => {
+                let tty = std::fs::File::options()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/tty")?;
+                Ok(tty.into())
+            }
+            _ => Ok(Stdio::inherit()),
+        }
     }
 
     pub(crate) fn reset_term_stay_on_alt_screeen(

@@ -782,6 +782,7 @@ impl App {
 
         eprint!("\r");
 
+        cmd.stdin(term.foreground_input().map_err(Error::Term)?);
         // Redirect stderr so we can capture it via `Child::wait_with_output()`
         cmd.stderr(Stdio::piped());
 
