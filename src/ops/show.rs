@@ -212,9 +212,9 @@ fn editor(file: &Path, maybe_line: Option<u32>) -> Option<Action> {
     Some(Rc::new(move |app, term| {
         let configured_editor = EDITOR_VARS
             .into_iter()
-            .find_map(|var| std::env::var(var).ok());
+            .find_map(|var| std::env::var(var).ok().map(|editor| (var, editor)));
 
-        let Some(editor) = configured_editor else {
+        let Some((var, editor)) = configured_editor else {
             return Err(Error::NoEditorSet);
         };
 
@@ -224,7 +224,14 @@ fn editor(file: &Path, maybe_line: Option<u32>) -> Option<Action> {
             parse_editor_command(&editor, &file, maybe_line)
         };
 
-        app.run_cmd_interactive(term, cmd)?;
+        app.run_cmd_interactive(term, cmd)
+            .map_err(|error| match error {
+                Error::SpawnCmd(_) | Error::CmdBadExit(..) => Error::Editor {
+                    var,
+                    error: Box::new(error),
+                },
+                error => error,
+            })?;
         app.update_screens()
     }))
 }

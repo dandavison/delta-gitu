@@ -1,6 +1,5 @@
 ---
 source: src/tests/cherry_pick.rs
-assertion_line: 46
 expression: ctx.redact_buffer()
 ---
 ▌commit b66a0bf82020d6a386e94d0fceedec1f817d20c7                                |
@@ -16,11 +15,11 @@ expression: ctx.redact_buffer()
                                                                                 |
                                                                                 |
                                                                                 |
-                                                                                |
-                                                                                |
 ────────────────────────────────────────────────────────────────────────────────|
 $ git cherry-pick --no-commit Aother-branch                                     |
 fatal: bad revision 'Aother-branch'                                             |
 ! git cherry-pick --no-commit Aother-branch                                     |
   exit code: 128                                                                |
-styles_hash: 9df37654b499dca5
+  stderr:                                                                       |
+  fatal: bad revision 'Aother-branch'                                           |
+styles_hash: a344d3fb57733f20

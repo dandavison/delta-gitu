@@ -807,23 +807,22 @@ impl App {
         term.setup_term(&self.state.config).map_err(Error::Term)?;
 
         let out_utf8 = String::from_utf8(strip_ansi_escapes::strip(stderr.clone()))
-            .expect("Error turning command output to String")
-            .into();
+            .expect("Error turning command output to String");
 
         self.state.current_cmd_log.clear();
         self.state
             .current_cmd_log
-            .push_cmd_with_output(&cmd, out_utf8);
+            .push_cmd_with_output(&cmd, out_utf8.clone().into());
 
         term.clear().map_err(Error::Term)?;
         self.update_screens()?;
 
         if !status.success() {
-            // Its stderr went to the terminal.
+            // Its stderr went to the terminal too, but the screen is drawn over it.
             return Err(Error::CmdBadExit(
                 crate::cmd_log::command_args(&cmd).into_owned(),
                 status.code(),
-                String::new(),
+                out_utf8,
             ));
         }
 
