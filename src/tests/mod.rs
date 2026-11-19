@@ -45,6 +45,8 @@ mod show;
 mod stage;
 mod stash;
 mod status;
+#[cfg(unix)]
+mod terminal_input;
 mod theme;
 mod unstage;
 mod view;
