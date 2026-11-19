@@ -53,6 +53,12 @@ pub enum Error {
     /// A command that failed: as it would be typed in a shell, its exit code
     /// (none if a signal ended it), and what it wrote to stderr.
     CmdBadExit(String, Option<i32>, String),
+    /// The editor, set by the environment variable `var`, could not be started
+    /// (`SpawnCmd`) or exited with an error (`CmdBadExit`).
+    Editor {
+        var: &'static str,
+        error: Box<Error>,
+    },
     CouldntReadCmdOutput(io::Error),
     ListGitReferences(git2::Error),
     OpenLogFile(io::Error),
@@ -181,6 +187,10 @@ impl Display for Error {
                 }
                 Ok(())
             }
+            Error::Editor { var, error } => match error.as_ref() {
+                Error::SpawnCmd(e) => write!(f, "Couldn't start the editor set by {var}: {e}"),
+                error => write!(f, "The editor set by {var} failed:\n{error}"),
+            },
             Error::CouldntReadCmdOutput(e) => {
                 f.write_fmt(format_args!("Couldn't read command output: {e}"))
             }
