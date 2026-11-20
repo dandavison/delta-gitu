@@ -1,0 +1,8 @@
+impl StateMachine {
+    fn test_submodule_short_line(&self) -> bool {
+        matches!(self.state, State::HunkHeader(_, _, _, _))
+            && self.line.starts_with("-Subproject commit ")
+            || matches!(self.state, State::SubmoduleShort(_))
+                && self.line.starts_with("+Subproject commit ")
+    }
+}

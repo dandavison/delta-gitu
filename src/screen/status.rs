@@ -130,7 +130,18 @@ pub(crate) fn create(
             ]
             .into_iter()
             .filter(|(_, diff)| !diff.file_diffs.is_empty())
-            .map(|(section, diff)| (section, Rc::new(diff)))
+            .map(|(section, diff)| {
+                let diff = if params.difftastic {
+                    crate::difftastic::with_display(
+                        repo.as_ref(),
+                        diff,
+                        &config.general.difftastic.command,
+                    )
+                } else {
+                    diff
+                };
+                (section, Rc::new(diff))
+            })
             .collect::<Vec<_>>();
 
             let tail =
@@ -219,7 +230,12 @@ fn branch_status_items(status: &BranchStatus, config: &Config) -> Res<Vec<Item>>
 fn rendering(config: &Config, params: &RenderParams, diff: &Diff) -> Res<Stream> {
     let renderer =
         crate::diff_renderer::renderer_command(&config.general.diff_renderer.command, params, None);
-    Stream::start(Input::Text(diff.text.clone()), renderer, u64::MAX).map_err(Error::GitDiff)
+    Stream::start(
+        Input::Text(diff.renderer_input().to_owned()),
+        renderer,
+        u64::MAX,
+    )
+    .map_err(Error::GitDiff)
 }
 
 /// The status items, with each section's diff as the renderer has drawn it

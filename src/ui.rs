@@ -107,6 +107,14 @@ fn layout_panels<'a>(layout: &mut UiTree<'a>, state: &'a State, size: (u16, u16)
 
         layout_span(layout, (("    ".to_string() + keys).into(), Style::new()));
     }
+    // A mode line, shown only while changes are shown as difftastic sees them.
+    if state.difftastic() {
+        let style = Style {
+            add_modifier: crate::style::Modifier::REVERSED,
+            ..Style::new()
+        };
+        layout_line(layout, " difftastic ".into(), style);
+    }
 }
 
 /// How many rows the panels take, by laying them out on their own.

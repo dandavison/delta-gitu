@@ -172,6 +172,7 @@ pub(crate) fn diff_unstaged(repo: &Repository, context: Option<&str>) -> Res<Dif
         diff_type: DiffType::WorkdirToIndex,
         text,
         commit: None,
+        display: None,
     })
 }
 
@@ -192,6 +193,7 @@ pub(crate) fn diff_staged(repo: &Repository, context: Option<&str>) -> Res<Diff>
         diff_type: DiffType::IndexToTree,
         text,
         commit: None,
+        display: None,
     })
 }
 
@@ -245,6 +247,7 @@ pub(crate) fn stash_diffs(repo: &Repository, stash_ref: &str) -> Res<StashDiffs>
             diff_type: DiffType::TreeToTree,
             text,
             commit: None,
+            display: None,
         })
     };
 
@@ -264,6 +267,7 @@ pub(crate) fn stash_diffs(repo: &Repository, stash_ref: &str) -> Res<StashDiffs>
             diff_type: DiffType::TreeToTree,
             text,
             commit: None,
+            display: None,
         })
     };
 
@@ -273,6 +277,7 @@ pub(crate) fn stash_diffs(repo: &Repository, stash_ref: &str) -> Res<StashDiffs>
             diff_type: DiffType::TreeToTree,
             file_diffs: vec![],
             commit: None,
+            display: None,
         };
         return Ok(StashDiffs {
             staged: empty,

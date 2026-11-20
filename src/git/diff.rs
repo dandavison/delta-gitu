@@ -1,11 +1,25 @@
 use crate::gitu_diff::FileDiff;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Diff {
     pub text: String,
+    /// What the renderer draws in place of `text`, if anything: difftastic's view of the diff (see
+    /// [`crate::difftastic`]).
+    pub display: Option<Display>,
     pub diff_type: DiffType,
     pub file_diffs: Vec<FileDiff>,
     pub commit: Option<String>,
+}
+
+/// What the renderer draws for a diff in place of its text: not a patch, but each line it draws is a
+/// line of the diff's hunks, or stands for a line they remove and one they add.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Display {
+    pub text: String,
+    /// The lines drawn as unchanged that stand for a line the diff's hunks remove and one they
+    /// add: by file index and new-version line number, the old version's line number.
+    pub stands_for: HashMap<(usize, u32), u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +36,13 @@ pub(crate) enum PatchMode {
 }
 
 impl Diff {
+    /// What the renderer draws the diff from.
+    pub(crate) fn renderer_input(&self) -> &str {
+        self.display
+            .as_ref()
+            .map_or(&self.text, |display| &display.text)
+    }
+
     pub(crate) fn format_file_patch(&self, file_i: usize) -> String {
         let mut patch = String::new();
         patch.push_str(self.file_diff_header(file_i));

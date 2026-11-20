@@ -1,0 +1,25 @@
+---
+source: src/tests/difftastic.rs
+expression: ctx.redact_buffer()
+---
+▌Branch: main                                                                   |
+▌Your branch is ahead of 'origin/main' by 1 commit(s).                          |
+                                                                                |
+ Unstaged changes (1)                                                           |
+ src.rs…                                                                        |
+                                                                                |
+ Recent commits                                                                 |
+ 02c2893 main add src.rs                                         Author Name __ |
+ b66a0bf origin/main add initial-file                            Author Name __ |
+                                                                                |
+                                                                                |
+                                                                                |
+                                                                                |
+                                                                                |
+                                                                                |
+                                                                                |
+                                                                                |
+────────────────────────────────────────────────────────────────────────────────|
+! difftastic could not be started as no-such-difftastic: No such file or        |
+directory (os error 2)                                                          |
+styles_hash: 5c7e1ff04ea2ccfd

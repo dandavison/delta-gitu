@@ -58,6 +58,8 @@ fn folding_everything_is_bound_to_shift_tab() {
         "shift+tab did nothing:\n{}",
         ctx.redact_buffer()
     );
+    // Tall enough for the help to list every binding, however many sort before shift+tab.
+    ctx.resize(&mut app, &[(80, 100)]);
     ctx.update(&mut app, keys("h"));
     assert!(
         ctx.redact_buffer().contains("shift+tab"),
@@ -431,7 +433,11 @@ fn a_letter_in_the_feature_list_sets_the_selected_features_key() {
     assert!(fs::read_to_string(&path).unwrap().starts_with(&mine));
     assert_eq!(
         saved_feature_keys(&path),
-        [("line-numbers".into(), 'L'), ("side-by-side".into(), 'x')]
+        [
+            ("difftastic".into(), '*'),
+            ("line-numbers".into(), 'L'),
+            ("side-by-side".into(), 'x')
+        ]
     );
 }
 
@@ -443,7 +449,10 @@ fn the_same_letter_again_unsets_the_key() {
 
     ctx.update(&mut app, keys("Hxx<esc>x"));
     assert!(app.state.features.is_empty());
-    assert_eq!(saved_feature_keys(&path), [("line-numbers".into(), 'L')]);
+    assert_eq!(
+        saved_feature_keys(&path),
+        [("difftastic".into(), '*'), ("line-numbers".into(), 'L')]
+    );
 }
 
 #[test]
@@ -459,7 +468,11 @@ fn another_letter_replaces_the_key() {
     assert_eq!(&*app.state.features, ["side-by-side".to_string()]);
     assert_eq!(
         saved_feature_keys(&path),
-        [("line-numbers".into(), 'L'), ("side-by-side".into(), 'w')]
+        [
+            ("difftastic".into(), '*'),
+            ("line-numbers".into(), 'L'),
+            ("side-by-side".into(), 'w')
+        ]
     );
 }
 
@@ -471,7 +484,10 @@ fn a_key_set_for_one_feature_is_taken_from_another() {
 
     ctx.update(&mut app, keys("Hx<down>x<esc>x"));
     assert_eq!(&*app.state.features, ["line-numbers".to_string()]);
-    assert_eq!(saved_feature_keys(&path), [("line-numbers".into(), 'x')]);
+    assert_eq!(
+        saved_feature_keys(&path),
+        [("difftastic".into(), '*'), ("line-numbers".into(), 'x')]
+    );
 }
 
 /// side-by-side and line numbers have keys without the user setting any.
@@ -482,7 +498,11 @@ fn the_default_features_have_keys_by_default() {
     fs::write(&path, "").unwrap();
     assert_eq!(
         saved_feature_keys(&path),
-        [("line-numbers".into(), 'L'), ("side-by-side".into(), 'S')]
+        [
+            ("difftastic".into(), '*'),
+            ("line-numbers".into(), 'L'),
+            ("side-by-side".into(), 'S')
+        ]
     );
 }
 
@@ -508,7 +528,10 @@ fn a_default_key_unset_in_the_list_stays_unset() {
     let mut app = ctx.init_app();
 
     ctx.update(&mut app, keys("HS<esc>"));
-    assert_eq!(saved_feature_keys(&path), [("line-numbers".into(), 'L')]);
+    assert_eq!(
+        saved_feature_keys(&path),
+        [("difftastic".into(), '*'), ("line-numbers".into(), 'L')]
+    );
 }
 
 /// A letter that already does something at the top level stays as it is.
@@ -616,7 +639,13 @@ fn the_feature_list_offers_every_feature_by_default_and_h_opens_it() {
     let renderer = &config.general.diff_renderer;
     assert_eq!(
         renderer.features,
-        ["side-by-side", "line-numbers", "plus-minus-markers", "*"]
+        [
+            "side-by-side",
+            "line-numbers",
+            "plus-minus-markers",
+            "difftastic",
+            "*"
+        ]
     );
     assert!(!renderer.feature_keys.values().any(|key| *key == '+'));
 
