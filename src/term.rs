@@ -393,6 +393,7 @@ fn hung_up(fd: std::os::fd::BorrowedFd) -> bool {
 mod tests {
     use super::hung_up;
     use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn a_terminal_has_hung_up_once_its_other_end_is_closed() {
@@ -407,11 +408,24 @@ mod tests {
             )
         };
         assert_eq!(opened, 0);
+        // Other tests spawn processes concurrently. A child inherits the
+        // master until it execs, or for its lifetime without close-on-exec,
+        // and the slave hangs up only once every copy of the master is closed.
+        // A child spawned between openpty and fcntl still keeps the master for
+        // its lifetime; the deadline below covers only short-lived children.
+        unsafe {
+            libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(slave, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
         let (master, slave) =
             unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
 
         assert!(!hung_up(slave.as_fd()));
         drop(master);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !hung_up(slave.as_fd()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(hung_up(slave.as_fd()));
     }
 }
