@@ -78,9 +78,6 @@ pub(crate) struct State {
     pub context: Option<Rc<str>>,
     /// The keys that toggle renderer features, as configured and as set since.
     pub feature_keys: BTreeMap<String, char>,
-    /// Which of [`crate::ops::show::editors`] enter opens files in, as `E`
-    /// has switched it.
-    pub editor: usize,
     pub clipboard: Option<Clipboard>,
     /// Whether ops that write are hidden and refused, and nothing chosen
     /// in-session is saved ([`crate::config::ReadOnly`]).
@@ -182,7 +179,6 @@ impl App {
             state: State {
                 repo,
                 feature_keys: config.general.diff_renderer.feature_keys.clone(),
-                editor: 0,
                 theme: config.general.diff_renderer.theme.clone(),
                 config,
                 pending_keys: vec![],

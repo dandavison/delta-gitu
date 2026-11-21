@@ -53,8 +53,8 @@ pub enum Error {
     /// A command that failed: as it would be typed in a shell, its exit code
     /// (none if a signal ended it), and what it wrote to stderr.
     CmdBadExit(String, Option<i32>, String),
-    /// The editor, set by `var` (an environment variable or `general.editors`),
-    /// could not be started (`SpawnCmd`) or exited with an error (`CmdBadExit`).
+    /// The editor, set by the environment variable `var`, could not be started
+    /// (`SpawnCmd`) or exited with an error (`CmdBadExit`).
     Editor {
         var: &'static str,
         error: Box<Error>,
@@ -165,7 +165,7 @@ impl Display for Error {
             Error::Clipboard(e) => f.write_fmt(format_args!("Clipboard error: {e}")),
             Error::FindGitRev(e) => f.write_fmt(format_args!("Couldn't find git revision: {e}")),
             Error::NoEditorSet => f.write_fmt(format_args!(
-                "No editor environment variable set ({}), and general.editors is empty",
+                "No editor environment variable set ({})",
                 crate::ops::show::EDITOR_VARS.join(", ")
             )),
             Error::GitStatus(e) => f.write_fmt(format_args!("Git status error: {e}")),
