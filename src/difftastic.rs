@@ -185,6 +185,10 @@ pub(crate) fn check(command: &[String]) -> Result<(), String> {
     match Command::new(program).args(args).arg("--version").output() {
         Ok(output) if output.status.success() => Ok(()),
         Ok(output) => Err(format!("{program} --version exited with {}", output.status)),
+        // The OS's own message for a missing program differs between platforms.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
+            "difftastic could not be started as {program}: program not found"
+        )),
         Err(e) => Err(format!("difftastic could not be started as {program}: {e}")),
     }
 }
