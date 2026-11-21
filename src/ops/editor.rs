@@ -1,4 +1,4 @@
-use super::{Action, OpTrait};
+use super::{Action, Op, OpTrait};
 use crate::{
     Res,
     app::{App, PromptParams, State},
@@ -533,6 +533,7 @@ impl OpTrait for RendererFeatures {
                 let picker = PickerState::new("Features", items, false)
                     .assigning_keys()
                     .in_columns(vec!["Features", "Commands", "Views"], columns.clone())
+                    .closed_by(Op::RendererFeatures)
                     .with_cursor(cursor);
                 match app.pick_or_set_key(term, picker)? {
                     None => return Ok(()),
@@ -621,6 +622,7 @@ impl OpTrait for RendererThemes {
                 .collect();
             let picker = PickerState::new("Theme", items, false)
                 .one_row()
+                .closed_by(Op::RendererThemes)
                 .with_cursor(cursor);
 
             let picked = app.pick_previewing(term, picker, &mut |app, data| {

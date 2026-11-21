@@ -279,12 +279,14 @@ root.copy_hash = ["y"]
 root.blame = ["B"]
 # Enable or disable a renderer feature (side-by-side, line numbers, ...) in place.
 # In the list, space enables or disables the selected feature and keeps the list
-# open, enter does so and closes it, and a letter sets its key.
+# open, enter does so and closes it, a letter sets its key, and this key closes
+# the list.
 root.renderer_features = ["H"]
 # Move through delta's themes for the mode it renders in, light or dark,
 # rendering the screen with each. A digit switches to the theme of that number,
 # 0 being none, so that two can be compared; a theme after the ninth has no
-# digit. The list (`picker.toggle_list`) has them all.
+# digit. The list (`picker.toggle_list`) has them all. This key again leaves
+# the one row with the theme it was entered with, as `picker.quit` does.
 root.renderer_themes = ["T"]
 
 picker.next = ["down", "ctrl+n", "tab"]

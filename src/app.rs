@@ -1160,9 +1160,22 @@ impl App {
             return crate::ops::editor::toggle_feature(self, &feature);
         }
 
+        let key_combo = vec![(key.modifiers, key.code)];
+        let closes = self
+            .state
+            .picker
+            .as_ref()
+            .and_then(PickerState::closing_op)
+            .is_some_and(|op| {
+                self.state
+                    .config
+                    .bindings
+                    .list(&Menu::Root)
+                    .any(|binding| &binding.op == op && binding.keys == key_combo)
+            });
+
         if let Some(ref mut picker) = self.state.picker {
             let bindings = &self.state.config.picker_bindings;
-            let key_combo = vec![(key.modifiers, key.code)];
             let typed = match (key.code, key.modifiers) {
                 (
                     event::KeyCode::Char(c),
@@ -1183,20 +1196,21 @@ impl App {
                 picker.toggle_one_row();
             } else if picker.is_one_row() {
                 // Nothing is typed here, so a letter can quit and a digit select.
-                if bindings.quit.iter().any(|b| b == &key_combo) {
+                if closes || bindings.quit.iter().any(|b| b == &key_combo) {
                     picker.cancel();
                 } else if let Some(digit) = typed.and_then(|c| c.to_digit(10)) {
                     picker.select_number(digit as usize);
                 }
             } else if picker.assigns_keys() {
-                // A letter sets a key here, but not the quit letter, which is
-                // bound at the top level and so could not be set anyway. In
-                // columns, left and right move between them.
+                // A letter sets a key here, but not the quit letter or the key
+                // that opened the picker, which are bound at the top level and
+                // so could not be set anyway. In columns, left and right move
+                // between them.
                 if picker.grid().is_some() && key.code == event::KeyCode::Left {
                     picker.move_column(-1);
                 } else if picker.grid().is_some() && key.code == event::KeyCode::Right {
                     picker.move_column(1);
-                } else if bindings.quit.iter().any(|b| b == &key_combo) {
+                } else if closes || bindings.quit.iter().any(|b| b == &key_combo) {
                     picker.cancel();
                 } else if let Some(c) = typed {
                     picker.set_key(c);

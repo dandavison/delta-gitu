@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use crate::item_data::Ref;
 use crate::item_data::Rev;
+use crate::ops::Op;
 use crate::text_input::TextInput;
 
 /// Data that can be selected in a picker
@@ -107,6 +108,9 @@ pub struct PickerState {
     one_row: Option<bool>,
     /// For a picker shown in columns, the columns.
     grid: Option<Grid>,
+    /// The op whose top-level keys close the picker where nothing is typed, as
+    /// `picker.quit` does: the op that opened it.
+    closed_by: Option<Op>,
 }
 
 /// A picker's items laid out in columns side by side, each under a heading.
@@ -150,6 +154,7 @@ impl PickerState {
             assigns_keys: false,
             one_row: None,
             grid: None,
+            closed_by: None,
         };
         state.update_filter();
         state
@@ -167,6 +172,17 @@ impl PickerState {
     pub(crate) fn one_row(mut self) -> Self {
         self.one_row = Some(true);
         self
+    }
+
+    /// Close the picker, where nothing is typed, with the top-level keys of
+    /// `op`, the op that opened it.
+    pub(crate) fn closed_by(mut self, op: Op) -> Self {
+        self.closed_by = Some(op);
+        self
+    }
+
+    pub(crate) fn closing_op(&self) -> Option<&Op> {
+        self.closed_by.as_ref()
     }
 
     /// Show the items in columns side by side, each under its heading in
