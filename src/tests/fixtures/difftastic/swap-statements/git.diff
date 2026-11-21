@@ -1,0 +1,7 @@
+@@ -1,5 +1,5 @@
+ fn f() {
+-    let a = load();
+     let b = parse(a);
++    let a = load();
+     save(b);
+ }

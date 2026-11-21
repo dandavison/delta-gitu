@@ -98,6 +98,15 @@ pub struct App {
     pub(crate) state: State,
 }
 
+impl State {
+    /// Whether changes are shown as difftastic sees them: whether the delta feature named
+    /// difftastic is enabled, in-session or by the user's own configuration.
+    pub(crate) fn difftastic(&self) -> bool {
+        let enabled = crate::ops::editor::enabled_by_config(self);
+        crate::ops::editor::is_enabled(self, crate::ops::editor::DIFFTASTIC, &enabled)
+    }
+}
+
 impl App {
     pub fn create(
         repo: Rc<Repository>,
@@ -111,6 +120,13 @@ impl App {
             size,
             features: overlay(&[], config.general.diff_renderer.theme.as_deref()),
             context: None,
+            difftastic: config
+                .general
+                .diff_renderer
+                .enabled_features
+                .get(repo.workdir().unwrap_or(repo.path()))
+                .iter()
+                .any(|feature| feature == crate::ops::editor::DIFFTASTIC),
             streaming: enable_async_cmds,
         };
         let screens = match args.command {
@@ -371,9 +387,11 @@ impl App {
 
     fn rebuild_screens(&mut self, rebuild: impl Fn(&mut Screen) -> Res<()>) -> Res<()> {
         let features = self.overlay();
+        let difftastic = self.state.difftastic();
         for screen in &mut self.state.screens {
             screen.features = Rc::clone(&features);
             screen.context = self.state.context.clone();
+            screen.difftastic = difftastic;
             rebuild(screen)?;
         }
 
@@ -620,6 +638,7 @@ impl App {
             size,
             features: self.overlay(),
             context: self.state.context.clone(),
+            difftastic: self.state.difftastic(),
             streaming: self.state.enable_async_cmds,
         }
     }

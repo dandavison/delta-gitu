@@ -38,6 +38,9 @@ pub(crate) struct RenderParams {
     /// How much of a file to ask git for around each change (`-U8`, `-W`),
     /// chosen in-session. `None` is git's own default.
     pub context: Option<Rc<str>>,
+    /// Whether to show changes as difftastic sees them ([`crate::difftastic`]) rather than as
+    /// git does.
+    pub difftastic: bool,
     /// Whether rows may be shown before they are all drawn, the rest following
     /// when they are. Off in tests, which want a screen all there at once.
     pub streaming: bool,
@@ -95,7 +98,7 @@ pub(crate) fn create_diff_items(
     .then(|| {
         crate::diff_renderer::run(
             &config.general.diff_renderer.command,
-            Some(&diff.text),
+            Some(diff.renderer_input()),
             params,
             None,
         )
@@ -464,7 +467,7 @@ fn rendered_diff_items(
                 let line_indices = line
                     .records
                     .iter()
-                    .filter_map(|meta| index.line(meta))
+                    .flat_map(|meta| index.lines(meta))
                     .filter(|(f, h, _)| (*f, *h) == (file_i, hunk_i))
                     .map(|(_, _, li)| li)
                     .collect();
@@ -502,7 +505,7 @@ fn rendered_diff_items(
                 rows.push(Item {
                     id: hunk_hash,
                     depth: depth + 2,
-                    unselectable: !visit_context_lines && matches!(first.kind, LineKind::Context),
+                    unselectable: !visit_context_lines && !index.is_change(first),
                     data: ItemData::HunkLine {
                         diff: Rc::clone(diff),
                         file_i,
@@ -930,6 +933,7 @@ pub(crate) fn log_of_patches_items(
             file_diffs: gitu_diff::Parser::new(&patch).parse_diff().ok()?,
             diff_type: diff_type.clone(),
             commit: commit.oid.clone(),
+            display: None,
             text: patch,
         });
         let diff_items = rendered_diff_items(
@@ -1328,6 +1332,7 @@ mod tests {
             diff_type: DiffType::WorkdirToIndex,
             file_diffs: crate::gitu_diff::Parser::new(text).parse_diff().unwrap(),
             commit: None,
+            display: None,
         })
     }
 

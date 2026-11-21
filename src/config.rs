@@ -92,6 +92,9 @@ pub struct GeneralConfig {
     pub status_cursor_on_changes: bool,
     #[serde(default)]
     pub diff_renderer: DiffRendererConfig,
+    /// How gitu runs difftastic, while the delta feature named difftastic is enabled.
+    #[serde(default)]
+    pub difftastic: DifftasticConfig,
     /// Arguments given to the `git log` gitu runs for the log view.
     #[serde(default)]
     pub log_args: Vec<String>,
@@ -178,6 +181,14 @@ pub enum FileHeader {
     Delta,
     /// The file's line of a diffstat, counted by gitu from the patch.
     Stat,
+}
+
+#[derive(Default, Debug, Deserialize)]
+pub struct DifftasticConfig {
+    /// difftastic's command as `[executable, ...args]`. gitu adds `--display=json` and the two
+    /// versions of a file.
+    #[serde(default)]
+    pub command: Vec<String>,
 }
 
 #[derive(Default, Debug, Deserialize)]

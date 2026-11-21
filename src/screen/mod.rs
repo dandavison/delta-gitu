@@ -255,6 +255,9 @@ pub(crate) struct Screen {
     /// How much context to ask git for, pushed down from the app as the
     /// features are.
     pub(crate) context: Option<Rc<str>>,
+    /// Whether to show changes as difftastic sees them, pushed down from the app as the
+    /// context is.
+    pub(crate) difftastic: bool,
     streaming: bool,
     /// The command this screen is showing the output of, where it is one gitu
     /// can put again. Shared with the closure that rebuilds the screen, so that
@@ -320,6 +323,7 @@ impl Screen {
             config,
             features: params.features,
             context: params.context,
+            difftastic: params.difftastic,
             streaming: params.streaming,
             git_command: None,
             refresh_items,
@@ -353,6 +357,7 @@ impl Screen {
             size: self.size,
             features: Rc::clone(&self.features),
             context: self.context.clone(),
+            difftastic: self.difftastic,
             streaming: self.streaming,
         }
     }
@@ -1987,6 +1992,7 @@ mod tests {
                 size,
                 features: Rc::from([]),
                 context: None,
+                difftastic: false,
                 streaming: false,
             },
             Box::new(move |_params| {
@@ -2014,6 +2020,7 @@ mod tests {
                 size,
                 features: Rc::from([]),
                 context: None,
+                difftastic: false,
                 streaming: false,
             },
             Box::new(move |_params| {
@@ -2188,6 +2195,7 @@ mod tests {
             diff_type: DiffType::WorkdirToIndex,
             file_diffs: crate::gitu_diff::Parser::new(DIFF).parse_diff().unwrap(),
             commit: None,
+            display: None,
         });
 
         Screen::new(
@@ -2196,6 +2204,7 @@ mod tests {
                 size: (80, height),
                 features: Rc::from([]),
                 context: None,
+                difftastic: false,
                 streaming: false,
             },
             Box::new(move |params: RenderParams| {

@@ -1,0 +1,9 @@
+@@ -1,4 +1,6 @@
+ fn f() {
+-	let x = 1;
+-	use_it(x);
++	let x = 2;
++	if ready {
++		use_it(x);
++	}
+ }

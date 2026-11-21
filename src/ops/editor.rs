@@ -660,11 +660,11 @@ fn theme_of(data: &PickerData) -> Option<String> {
 
 /// Each feature, marked if it is enabled, beside its key if it has one.
 fn feature_items(app: &App, offered: &[String]) -> Vec<PickerItem> {
-    let enabled = enabled_by_config(app);
+    let enabled = enabled_by_config(&app.state);
     offered
         .iter()
         .map(|feature| {
-            let mark = if is_enabled(app, feature, &enabled) {
+            let mark = if is_enabled(&app.state, feature, &enabled) {
                 '●'
             } else {
                 ' '
@@ -689,8 +689,19 @@ fn named_items(app: &App, names: &[String]) -> Vec<PickerItem> {
         .collect()
 }
 
+/// The delta feature that is also gitu's: while it is enabled, gitu shows changes as difftastic
+/// sees them ([`crate::difftastic`]).
+pub(crate) const DIFFTASTIC: &str = "difftastic";
+
 pub(crate) fn toggle_feature(app: &mut App, feature: &str) -> Res<()> {
-    let enabled = enabled_by_config(app);
+    let enabled = enabled_by_config(&app.state);
+    if feature == DIFFTASTIC
+        && !is_enabled(&app.state, feature, &enabled)
+        && let Err(failure) = crate::difftastic::check(&app.state.config.general.difftastic.command)
+    {
+        app.display_error(failure);
+        return Ok(());
+    }
     app.state.features = toggled(
         &app.state.features,
         feature,
@@ -703,8 +714,8 @@ pub(crate) fn toggle_feature(app: &mut App, feature: &str) -> Res<()> {
 /// configuration (`enabled`) and not disabled in-session. Whether it is then in
 /// effect is delta's to decide, from the rest of the user's configuration, such
 /// as a minimum width.
-fn is_enabled(app: &App, feature: &str, enabled: &[String]) -> bool {
-    let held = |entry: &str| app.state.features.iter().any(|held| held == entry);
+pub(crate) fn is_enabled(state: &State, feature: &str, enabled: &[String]) -> bool {
+    let held = |entry: &str| state.features.iter().any(|held| held == entry);
     held(feature) || (is_enabled_by_config(feature, enabled) && !held(&format!("-{feature}")))
 }
 
@@ -715,14 +726,9 @@ fn is_enabled_by_config(feature: &str, enabled: &[String]) -> bool {
 }
 
 /// The features the user's own configuration enables now, by delta's name.
-fn enabled_by_config(app: &App) -> Vec<String> {
-    let dir = app.state.repo.workdir().unwrap_or(app.state.repo.path());
-    app.state
-        .config
-        .general
-        .diff_renderer
-        .enabled_features
-        .get(dir)
+pub(crate) fn enabled_by_config(state: &State) -> Vec<String> {
+    let dir = state.repo.workdir().unwrap_or(state.repo.path());
+    state.config.general.diff_renderer.enabled_features.get(dir)
 }
 
 /// Make `key` toggle `feature`, or run the command of that name, at the top

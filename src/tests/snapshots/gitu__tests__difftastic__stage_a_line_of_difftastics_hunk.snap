@@ -1,0 +1,25 @@
+---
+source: src/tests/difftastic.rs
+expression: ctx.redact_buffer()
+---
+ Branch: main                                                                   |
+ Your branch is ahead of 'origin/main' by 1 commit(s).                          |
+                                                                                |
+ Unstaged changes (1)                                                           |
+ src.rs                                                                         |
+ @@ -1,9 +1,12 @@                                                               |
+  impl StateMachine {                                                           |
+      fn test_submodule_short_line(&self) -> bool {                             |
+ -        matches!(self.state, State::HunkHeader(_, _, _, _))                   |
+ -            && self.line.starts_with("-Subproject commit ")                   |
+ -            || matches!(self.state, State::SubmoduleShort(_))                 |
+ -                && self.line.starts_with("+Subproject commit ")               |
+ +        match self.state {                                                    |
+▌+            State::HunkHeader(_, _, _, _) => {                                |
+ +                self.line.starts_with("-Subproject commit ")                  |
+                      || self.line.starts_with("+Subproject commit ")           |
+ +            }                                                                 |
+                                                                                |
+────────────────────────────────────────────────────────────────────────────────|
+$ git apply --cached --recount                                                  |
+styles_hash: 228b622e5422198f

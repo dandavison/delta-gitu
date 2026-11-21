@@ -20,9 +20,9 @@ expression: ctx.redact_buffer()
  ctrl+k/ctrl+up   Up                                                          z Stash                                                                 |
  ctrl+u           Scroll half page up                                                                                                                 |
  ctrl+y           Scroll view up                                              Hotkeys                                                                 |
- ctrl+z           Suspend                                                     L line-numbers                                                          |
- E                Next editor                                                 S side-by-side                                                          |
- G                Bottom                                                                                                                              |
+ ctrl+z           Suspend                                                     * difftastic                                                            |
+ E                Next editor                                                 L line-numbers                                                          |
+ G                Bottom                                                      S side-by-side                                                          |
  g+g              Top                                                                                                                                 |
  g+r              Refresh                                                                                                                             |
  g+s              Status                                                                                                                              |
@@ -32,4 +32,4 @@ expression: ctx.redact_buffer()
  left             Back                                                                                                                                |
  n                Next match                                                                                                                          |
  N                Previous match                                                                                                                      |
-styles_hash: 514c13d971c467bb
+styles_hash: f33e4d2606e55a0c

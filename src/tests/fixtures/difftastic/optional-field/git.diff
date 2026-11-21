@@ -1,0 +1,6 @@
+@@ -1,4 +1,4 @@
+ pub struct ConflictFiles {
+-    pub lhs_name: String,
++    pub lhs_name: Option<String>,
+     pub lhs_content: String,
+ }

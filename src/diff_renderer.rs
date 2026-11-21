@@ -155,6 +155,9 @@ pub(crate) struct DiffIndex {
     lines: HashMap<(usize, LineKind, u32), (usize, usize)>,
     /// `hunk_index` by file and the hunk's first new-file line.
     hunks: HashMap<(usize, u32), usize>,
+    /// For a diff the renderer draws as difftastic sees it, the lines drawn as unchanged that
+    /// stand for a line the hunks remove and one they add (see [`Display::stands_for`]).
+    stands_for: HashMap<(usize, u32), u32>,
 }
 
 impl DiffIndex {
@@ -163,6 +166,11 @@ impl DiffIndex {
             files: HashMap::new(),
             lines: HashMap::new(),
             hunks: HashMap::new(),
+            stands_for: diff
+                .display
+                .as_ref()
+                .map(|display| display.stands_for.clone())
+                .unwrap_or_default(),
         };
 
         for (file_index, file_diff) in diff.file_diffs.iter().enumerate() {
@@ -216,7 +224,38 @@ impl DiffIndex {
     /// on the old-file line number (two consecutive deletions share a new-file
     /// number, so only the old-file number distinguishes them — spec §5.3).
     pub(crate) fn line(&self, meta: &LineMetadata) -> Option<(usize, usize, usize)> {
-        let file = *self.files.get(&meta.file)?;
+        self.lines(meta).into_iter().next()
+    }
+
+    /// The content lines a rendered row is, as [`Self::line`]: one, or for a row drawn as
+    /// unchanged that stands for a removed and an added line, those two.
+    pub(crate) fn lines(&self, meta: &LineMetadata) -> Vec<(usize, usize, usize)> {
+        let Some(&file) = self.files.get(&meta.file) else {
+            return vec![];
+        };
+        if meta.kind == LineKind::Context
+            && let Some(&old) = self.stands_for.get(&(file, meta.new_line))
+        {
+            return [(LineKind::Deleted, old), (LineKind::Added, meta.new_line)]
+                .into_iter()
+                .filter_map(|(kind, num)| self.lines.get(&(file, kind, num)))
+                .map(|&(hunk, line)| (file, hunk, line))
+                .collect();
+        }
+        self.line_of(file, meta).into_iter().collect()
+    }
+
+    /// Whether a rendered row is a removed or added line, or stands for them, rather than an
+    /// unchanged one.
+    pub(crate) fn is_change(&self, meta: &LineMetadata) -> bool {
+        meta.kind != LineKind::Context
+            || self
+                .files
+                .get(&meta.file)
+                .is_some_and(|&file| self.stands_for.contains_key(&(file, meta.new_line)))
+    }
+
+    fn line_of(&self, file: usize, meta: &LineMetadata) -> Option<(usize, usize, usize)> {
         let num = match meta.kind {
             LineKind::Deleted => meta.old_line?,
             LineKind::Added | LineKind::Context => meta.new_line,
@@ -260,6 +299,32 @@ pub(crate) fn config_parameters() -> String {
     }
 }
 
+/// [`config_parameters`], and, while changes are shown as difftastic sees them, delta's
+/// `map-styles` for the colors gitu marks them with ([`crate::difftastic::map_styles`]), after
+/// those the user's git config in `dir` gives. A `map-styles` in `GIT_CONFIG_PARAMETERS` as gitu
+/// was given it is replaced.
+fn renderer_config_parameters(params: &crate::items::RenderParams, dir: Option<&Path>) -> String {
+    let given = config_parameters();
+    if !params.difftastic {
+        return given;
+    }
+    let map_styles = user_map_styles(dir)
+        .into_iter()
+        .chain([crate::difftastic::map_styles()])
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{given} 'delta.map-styles={map_styles}'")
+}
+
+/// The `map-styles` the user's git config gives delta, as read in the repository at `dir`.
+fn user_map_styles(dir: Option<&Path>) -> Option<String> {
+    let config = git2::Repository::discover(dir.unwrap_or(Path::new(".")))
+        .and_then(|repo| repo.config())
+        .or_else(|_| git2::Config::open_default())
+        .ok()?;
+    config.get_string("delta.map-styles").ok()
+}
+
 /// `command` as a process to start in `dir`, with the environment that tells it
 /// the width, the protocol, the features in force, and the settings in
 /// [`config_parameters`].
@@ -274,7 +339,10 @@ pub(crate) fn renderer_command(
     command
         .args(args)
         .env("OSC1717", OSC1717_ADVERTISED)
-        .env("GIT_CONFIG_PARAMETERS", config_parameters())
+        .env(
+            "GIT_CONFIG_PARAMETERS",
+            renderer_config_parameters(params, dir),
+        )
         .envs(drawing_env(params));
 
     if let Some(dir) = dir {
@@ -1210,6 +1278,7 @@ mod tests {
             diff_type: crate::git::diff::DiffType::WorkdirToIndex,
             file_diffs: crate::gitu_diff::Parser::new(text).parse_diff().unwrap(),
             commit: None,
+            display: None,
         }
     }
 

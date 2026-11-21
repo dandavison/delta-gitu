@@ -21,6 +21,7 @@ mod branch;
 mod cherry_pick;
 mod command;
 mod commit;
+mod difftastic;
 mod discard;
 mod editor;
 #[cfg(unix)]

@@ -8,6 +8,7 @@ pub mod config;
 mod config_edit;
 mod config_git;
 mod diff_renderer;
+mod difftastic;
 pub mod error;
 mod file_watcher;
 mod git;

@@ -1,0 +1,1 @@
+{"aligned_lines":[[0,0],[1,1],[null,2],[2,3],[null,4],[3,5],[4,6],[5,7]],"chunks":[[{"lhs":{"line_number":2,"changes":[{"start":16,"end":17,"content":"1","highlight":"keyword"}]},"rhs":{"line_number":3,"changes":[{"start":16,"end":17,"content":"2","highlight":"keyword"}]}}]],"language":"Rust","path":"new.rs","status":"changed"}

@@ -14,7 +14,7 @@ use crate::{
     calling_process::{GitCommand, Stat},
     config::{Config, FileHeader},
     error::Error,
-    git::diff::{Diff, DiffType},
+    git::diff::{Diff, DiffType, Display},
     gitu_diff,
     item_data::ItemData,
     items::{self, Item, RenderParams},
@@ -252,13 +252,19 @@ impl Source {
                 };
                 let workdir = repo.workdir().ok_or(Error::NoRepoWorkdir)?;
                 command.current_dir(workdir.join(git.prefix()));
+                let (input, difftastic) = if params.difftastic && stat == Stat::No {
+                    as_difftastic_sees_it(config, repo, &mut command)?
+                } else {
+                    (Input::Command(command), None)
+                };
                 let shape = Shape::Diff {
                     diff_type: git.diff_type(),
                     named_commit: true,
                     stat,
                     truncated: false,
+                    difftastic,
                 };
-                (Input::Command(command), shape)
+                (input, shape)
             }
             Source::Patch { text, truncated } => {
                 let shape = Shape::Diff {
@@ -266,6 +272,7 @@ impl Source {
                     named_commit: false,
                     stat: Stat::No,
                     truncated: *truncated,
+                    difftastic: None,
                 };
                 (Input::Text(text.clone()), shape)
             }
@@ -292,6 +299,41 @@ impl Source {
     }
 }
 
+/// The output of `command`, a git command that prints a patch, for the renderer to draw as
+/// difftastic sees the change ([`crate::difftastic`]), with git's patch, which gitu parses and
+/// stages from, and what the renderer draws in its place. gitu waits for the whole of the output,
+/// rather than showing it as it arrives. Output with more than one patch in it, such as a log of
+/// patches, is drawn as git printed it.
+fn as_difftastic_sees_it(
+    config: &Config,
+    repo: &Repository,
+    command: &mut std::process::Command,
+) -> Res<(Input, Option<Rc<Difftastic>>)> {
+    let output = command.output().map_err(Error::GitDiff)?;
+    let colored_by_git = String::from_utf8_lossy(&output.stdout).into_owned();
+    // gitu asks git for color; the colors are dropped along with git's hunks.
+    let text = crate::diff_renderer::strip_ansi(&colored_by_git);
+    let file_diffs = gitu_diff::Parser::new(&text)
+        .parse_patches()
+        .unwrap_or_default();
+    if file_diffs.is_empty() || items::patches_of(&text, &file_diffs).len() > 1 {
+        return Ok((Input::Text(colored_by_git), None));
+    }
+    let display =
+        crate::difftastic::display(repo, &text, &file_diffs, &config.general.difftastic.command);
+    Ok((
+        Input::Text(display.text.clone()),
+        Some(Rc::new(Difftastic { git: text, display })),
+    ))
+}
+
+/// A patch drawn as difftastic sees it: the patch git printed, which gitu parses and stages from,
+/// and what the renderer draws in its place.
+struct Difftastic {
+    git: String,
+    display: Display,
+}
+
 /// What the output is taken to be, and what is said about it besides.
 enum Shape {
     /// A patch, or what may be one: what the command put again says is
@@ -305,6 +347,8 @@ enum Shape {
         stat: Stat,
         /// Whether the input it came from was already cut short.
         truncated: bool,
+        /// For a patch drawn as difftastic sees it, git's patch and what is drawn in its place.
+        difftastic: Option<Rc<Difftastic>>,
     },
     /// Output with no diff in it, which the renderer draws.
     Rows { truncated: bool },
@@ -336,6 +380,7 @@ fn built(
             named_commit,
             stat,
             truncated,
+            difftastic,
         } => {
             let mut items = Vec::new();
             let headed_by_stat =
@@ -352,7 +397,10 @@ fn built(
             };
             // The output arrives coloured; the parser reads none of it through
             // the escapes.
-            let text = crate::diff_renderer::strip_ansi(input);
+            let text = match difftastic {
+                Some(difftastic) => difftastic.git.clone(),
+                None => crate::diff_renderer::strip_ansi(input),
+            };
             let file_diffs = gitu_diff::Parser::new(&text)
                 .parse_patches()
                 .unwrap_or_default();
@@ -392,6 +440,9 @@ fn built(
                     file_diffs,
                     diff_type: diff_type.clone(),
                     commit: named_commit.then(|| commit_named_by(&text)).flatten(),
+                    display: difftastic
+                        .as_ref()
+                        .map(|difftastic| difftastic.display.clone()),
                     text,
                 });
                 let folded_to_stat_rows = fold && headed_by_stat;
@@ -557,6 +608,7 @@ mod tests {
                 size: (80, 20),
                 features: Rc::from([]),
                 context: None,
+                difftastic: false,
                 streaming: false,
             },
             paged(patch, None),
@@ -948,6 +1000,7 @@ mod tests {
                 size: (80, 20),
                 features: Rc::from([]),
                 context: None,
+                difftastic: false,
                 streaming: false,
             },
             paged(&run(&ctx.dir, &["git", "diff", "--stat"]), Some(argv)),

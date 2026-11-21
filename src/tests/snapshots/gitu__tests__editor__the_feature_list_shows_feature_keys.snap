@@ -15,7 +15,7 @@ expression: ctx.redact_buffer()
 ▌    side-by-side                                                               |
    x line-numbers                                                               |
      plus-minus-markers                                                         |
-                                                                                |
+     difftastic                                                                 |
                                                                                 |
                                                                                 |
                                                                                 |

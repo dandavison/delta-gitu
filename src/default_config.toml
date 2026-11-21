@@ -58,14 +58,18 @@ status_cursor_on_changes = true
 # not delta's built-in features. A feature is free to restructure the diff
 # however it likes: Gitu maps each rendered row back to its patch line from the
 # metadata the renderer emits, not from how the row looks.
-diff_renderer.features = ["side-by-side", "line-numbers", "plus-minus-markers", "*"]
+# The feature named difftastic is also Gitu's: while it is enabled, Gitu shows
+# changes as difftastic sees them, from the syntax of the code (see
+# difftastic.command). delta itself only applies the styles your git config
+# gives the feature, if any, as [delta "difftastic"].
+diff_renderer.features = ["side-by-side", "line-numbers", "plus-minus-markers", "difftastic", "*"]
 
 # Top-level keys that toggle features, run commands or open views (`commands`
 # and `views` below), by name. A key already bound at the top level is refused. Feature keys in your
 # config replace these, rather than adding to them. In the `renderer_features`
 # list, a letter sets the selected feature's or command's key, the same letter
 # again unsets it, and Gitu writes them all here.
-diff_renderer.feature_keys = { side-by-side = "S", line-numbers = "L" }
+diff_renderer.feature_keys = { side-by-side = "S", line-numbers = "L", difftastic = "*" }
 
 # The theme overlaid on your delta configuration, after the features above, as
 # `renderer_themes` sets it. A theme is a feature defined in git config that
@@ -97,6 +101,12 @@ show_args = []
 # are laid out to fit the files drawn so far, so they can shift once the rest of
 # a long diff has arrived.
 file_header = "delta"
+
+# The command Gitu runs difftastic with, to show changes as difftastic sees
+# them while the delta feature named difftastic is enabled: Gitu adds `--display=json` and the two versions
+# of a file. difftastic's JSON output is unstable, and may change in any
+# release of difftastic.
+difftastic.command = ["difft"]
 
 # Run no command that changes the repository (stage, discard, apply, commit,
 # rebase, fetch, ...), and hide them, and save nothing chosen in-session (a
