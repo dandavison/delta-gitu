@@ -356,7 +356,16 @@ pub(crate) fn renderer_command(
 /// environment: what makes a delta draw as gitu's screen is drawn.
 pub(crate) fn drawing_env(params: &crate::items::RenderParams) -> Vec<(&'static str, String)> {
     let mut env = vec![("COLUMNS", params.width().to_string())];
-    if let Some(features) = feature_overlay(&params.features) {
+    // In difftastic's view a line drawn as unchanged can stand for a removed and an added line,
+    // and an added line can have only been rewrapped, so `+` and `-` markers could say the
+    // opposite of the colors: they are turned off, after anything that turns them on.
+    let features: Vec<String> = params
+        .features
+        .iter()
+        .cloned()
+        .chain(params.difftastic.then(|| "-plus-minus-markers".to_owned()))
+        .collect();
+    if let Some(features) = feature_overlay(&features) {
         env.push((FEATURES_VAR, features));
     }
     env

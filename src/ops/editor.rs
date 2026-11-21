@@ -693,6 +693,9 @@ fn named_items(app: &App, names: &[String]) -> Vec<PickerItem> {
 /// sees them ([`crate::difftastic`]).
 pub(crate) const DIFFTASTIC: &str = "difftastic";
 
+/// The feature that draws `+` and `-` markers, which are not drawn in difftastic's view.
+const PLUS_MINUS_MARKERS: &str = "plus-minus-markers";
+
 pub(crate) fn toggle_feature(app: &mut App, feature: &str) -> Res<()> {
     let enabled = enabled_by_config(&app.state);
     if feature == DIFFTASTIC
@@ -700,6 +703,17 @@ pub(crate) fn toggle_feature(app: &mut App, feature: &str) -> Res<()> {
         && let Err(failure) = crate::difftastic::check(&app.state.config.general.difftastic.command)
     {
         app.display_error(failure);
+        return Ok(());
+    }
+    if feature == PLUS_MINUS_MARKERS
+        && app.state.difftastic()
+        && !is_enabled(&app.state, feature, &enabled)
+    {
+        app.display_error(
+            "The + and - markers are not shown in difftastic's view: a line drawn there as \
+             unchanged can stand for a removed and an added line, and an added line can have only \
+             been rewrapped, which a + or - would misstate",
+        );
         return Ok(());
     }
     app.state.features = toggled(
