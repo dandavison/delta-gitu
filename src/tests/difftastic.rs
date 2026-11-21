@@ -150,3 +150,31 @@ fn lines_joined_into_one_are_drawn_once() {
     ctx.config().general.difftastic.command = recorded_difftastic("join");
     snapshot!(ctx, "*jj<tab>");
 }
+
+/// In difftastic's view a line can stand for a removed and an added line, or have only been
+/// rewrapped, which a `+` or `-` marker would misstate, so the markers cannot be turned on there,
+/// and the user is told why.
+#[test]
+fn plus_minus_markers_are_refused_in_difftastics_view() {
+    let mut ctx = setup_clone!();
+    commit(&ctx.dir, "src.rs", OLD);
+    fs::write(ctx.dir.join("src.rs"), NEW).unwrap();
+    ctx.config().general.difftastic.command = recorded_difftastic("match");
+    ctx.config().general.diff_renderer.feature_keys = [
+        ("difftastic".into(), '*'),
+        ("plus-minus-markers".into(), '#'),
+    ]
+    .into();
+    let mut app = ctx.init_app();
+    ctx.update(&mut app, keys("*#"));
+    assert!(
+        !app.state.features.iter().any(|f| f == "plus-minus-markers"),
+        "{:?}",
+        app.state.features
+    );
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("+ and - markers are not shown in difftastic's view"),
+        "{screen}"
+    );
+}

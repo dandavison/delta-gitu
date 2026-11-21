@@ -897,6 +897,23 @@ mod tests {
     use crate::items::RenderParams;
     use crate::style::Color;
 
+    /// delta is told not to draw `+` and `-` markers in difftastic's view, after any features that
+    /// turn them on, since a line there can stand for a removed and an added line, or have only
+    /// been rewrapped.
+    #[test]
+    fn plus_minus_markers_are_not_drawn_in_difftastics_view() {
+        let params = crate::items::RenderParams {
+            difftastic: true,
+            ..params_with(&["plus-minus-markers"])
+        };
+        assert_eq!(
+            run(&echo_features(), None, &params, None),
+            Ok(Some(
+                "+keep-plus-minus-markers -keep-plus-minus-markers".to_string()
+            ))
+        );
+    }
+
     /// A renderer standing in for delta, reporting the features it was handed.
     fn echo_features() -> Vec<String> {
         ["sh", "-c", "printf '%s' \"$DELTA_FEATURES\""]
