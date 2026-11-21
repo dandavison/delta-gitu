@@ -13,6 +13,7 @@ use std::fs;
 
 #[macro_use]
 pub(crate) mod helpers;
+mod alt_editor;
 mod arg;
 mod back;
 mod bindings;

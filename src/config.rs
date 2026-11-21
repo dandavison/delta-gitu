@@ -120,6 +120,8 @@ pub struct GeneralConfig {
     /// `diff_renderer.feature_keys` gives them, filled in as commands are.
     #[serde(default)]
     pub views: BTreeMap<String, String>,
+    #[serde(default)]
+    pub alt_editor: Option<String>,
 }
 
 /// Whether gitu runs commands that change the repository (stage, commit,
