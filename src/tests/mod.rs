@@ -26,8 +26,6 @@ mod discard;
 mod editor;
 #[cfg(unix)]
 mod editor_failure;
-#[cfg(unix)]
-mod editors;
 mod fetch;
 mod file_watcher;
 mod keys;
