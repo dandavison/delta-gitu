@@ -384,9 +384,10 @@ impl Screen {
     fn move_next(&mut self, nav_mode: NavMode) {
         self.cursor = self.find_next(nav_mode);
         // Moving by line scrolls as a pager does, just far enough to keep the
-        // cursor in view; moving by section shows the section whole.
+        // cursor in view, and the rows after it the cursor cannot stop on, such
+        // as a log commit's stat; moving by section shows the section whole.
         match nav_mode {
-            NavMode::IncludeSubLines => self.scroll_to_end_of(self.cursor),
+            NavMode::IncludeSubLines => self.scroll_to_end_of(self.last_before_next_stop(nav_mode)),
             NavMode::Normal | NavMode::Siblings { .. } => self.scroll_fit_end(),
         }
         self.scroll_fit_start();
@@ -444,6 +445,16 @@ impl Screen {
     /// context lines.
     fn rows_above_context(&self) -> usize {
         (self.size.1 as usize).saturating_sub(BOTTOM_CONTEXT_LINES + 1)
+    }
+
+    /// The last visible item before the next one after the cursor that it can
+    /// stop on: the cursor itself when that is the next item.
+    fn last_before_next_stop(&self, nav_mode: NavMode) -> usize {
+        self.visible_from(self.cursor)
+            .skip(1)
+            .take_while(|&item_i| !self.nav_filter(item_i, nav_mode))
+            .last()
+            .unwrap_or(self.cursor)
     }
 
     /// The last item of the selection: the cursor, or the end of the subtree
