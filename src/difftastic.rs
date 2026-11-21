@@ -1426,6 +1426,20 @@ mod tests {
         );
     }
 
+    /// The unmarked parts of a line difftastic finds changed are drawn as unchanged text is, in
+    /// delta's zero-style, whatever delta's styles for the lines it pairs itself are.
+    #[test]
+    fn unmarked_parts_of_changed_lines_are_drawn_as_unchanged_text() {
+        let map_styles = map_styles();
+        for paint in [Paint::MinusNonEmph, Paint::PlusNonEmph] {
+            let (r, g, b) = paint.rgb();
+            assert!(
+                map_styles.contains(&format!("#{r:02x}{g:02x}{b:02x} => zero-style")),
+                "{paint:?}: {map_styles}"
+            );
+        }
+    }
+
     /// Output for other versions, whose changed tokens are not at the lines and columns it says,
     /// is not used, even where the lines it pairs exist.
     #[test]
