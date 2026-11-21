@@ -78,15 +78,18 @@ impl Paint {
         }
     }
 
-    /// The delta style the color is drawn in. A line whose only change is to its layout is drawn
-    /// in italics, which delta's own styles do not use, so that a change to whitespace is seen.
+    /// The delta style the color is drawn in. The unmarked parts of a changed line are drawn as
+    /// unchanged text is, in zero-style: delta's non-emph styles are for the lines it pairs itself,
+    /// where they keep a background so that a removed line with nothing marked still looks
+    /// removed. A line whose only change is to its layout is drawn in italics, which delta's own
+    /// styles do not use, so that a change to whitespace is seen.
     fn delta_style(self) -> &'static str {
         match self {
             Paint::MinusEmph => "minus-emph-style",
-            Paint::MinusNonEmph => "minus-non-emph-style",
+            Paint::MinusNonEmph => "zero-style",
             Paint::Minus => "minus-style",
             Paint::PlusEmph => "plus-emph-style",
-            Paint::PlusNonEmph => "plus-non-emph-style",
+            Paint::PlusNonEmph => "zero-style",
             Paint::Plus => "plus-style",
             Paint::Reformatted => "syntax italic",
         }
