@@ -11,6 +11,7 @@ expression: ctx.redact_buffer()
 ▌ u                 unstage                Unstage the file, hunk or line                                                                             |
 ▌ enter             show                   Open the commit, branch, tag, stash or blame line; open a file, hunk or line in your editor                |
 ▌ right             show-or-unfold         Open the commit, branch, tag, stash or blame line; unfold a folded file or hunk                            |
+▌ alt+enter         show-in-alt-editor     Open the file, hunk or line in general.alt_editor                                                          |
 ▌ K                 discard                Discard the file, hunk or line                                                                             |
 ▌ a                 apply                  Apply the file, hunk or line                                                                               |
 ▌ v                 reverse                Reverse the file, hunk or line                                                                             |
@@ -31,5 +32,4 @@ expression: ctx.redact_buffer()
 ▌ shift+up          extend-selection-up    Select lines in a hunk, upwards                                                                            |
 ▌ shift+down        extend-selection-down  Select lines in a hunk, downwards                                                                          |
 ▌ alt+k alt+up      move-prev-section      Previous section at the same level                                                                         |
-▌ alt+j alt+down    move-next-section      Next section at the same level                                                                             |
 styles_hash: e39343c74ddcf565

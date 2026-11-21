@@ -129,6 +129,7 @@ pub(crate) enum Op {
     Unstage,
     Show,
     ShowOrUnfold,
+    ShowInAltEditor,
     Discard,
     Apply,
     Reverse,
@@ -267,6 +268,7 @@ impl Op {
             Op::ShowOrUnfold => {
                 "Open the commit, branch, tag, stash or blame line; unfold a folded file or hunk"
             }
+            Op::ShowInAltEditor => "Open the file, hunk or line in general.alt_editor",
             Op::Discard => "Discard the file, hunk or line",
             Op::Apply => "Apply the file, hunk or line",
             Op::Reverse => "Reverse the file, hunk or line",
@@ -480,6 +482,7 @@ impl Op {
             Op::CherryPick => Box::new(cherry_pick::CherryPick),
             Op::Show => Box::new(show::Show),
             Op::ShowOrUnfold => Box::new(show::ShowOrUnfold),
+            Op::ShowInAltEditor => Box::new(show::ShowInAltEditor),
             Op::Stage => Box::new(stage::Stage),
             Op::Unstage => Box::new(unstage::Unstage),
             Op::Apply => Box::new(apply::Apply),

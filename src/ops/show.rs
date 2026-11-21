@@ -95,12 +95,18 @@ fn show_screen(target: &ItemData) -> Option<Action> {
 }
 
 fn show_in_editor(target: &ItemData) -> Option<Action> {
+    let (file, line) = editor_target(target)?;
+    editor(Path::new(&file), line)
+}
+
+/// The file an editor opens for `target`, and the line to open it at: the
+/// first change of a hunk, or a line's own.
+fn editor_target(target: &ItemData) -> Option<(String, Option<u32>)> {
     match target {
-        ItemData::Untracked(u) => editor(u.as_path(), None),
+        ItemData::Untracked(u) => Some((u.to_str()?.to_owned(), None)),
         ItemData::Delta { diff, file_i, .. } => {
             let file_path = &diff.file_diffs[*file_i].header.new_file;
-            let path: &str = &file_path.fmt(&diff.text);
-            editor(Path::new(path), None)
+            Some((file_path.fmt(&diff.text).to_string(), None))
         }
         ItemData::Hunk {
             diff,
@@ -108,11 +114,10 @@ fn show_in_editor(target: &ItemData) -> Option<Action> {
             hunk_i,
         } => {
             let file_path = &diff.file_diffs[*file_i].header.new_file;
-            let path: &str = &file_path.fmt(&diff.text);
-            editor(
-                Path::new(path),
+            Some((
+                file_path.fmt(&diff.text).to_string(),
                 Some(diff.file_line_of_first_diff(*file_i, *hunk_i) as u32),
-            )
+            ))
         }
         ItemData::HunkLine {
             diff,
@@ -122,13 +127,42 @@ fn show_in_editor(target: &ItemData) -> Option<Action> {
             ..
         } => {
             let file_path = &diff.file_diffs[*file_i].header.new_file;
-            let path: &str = &file_path.fmt(&diff.text);
-            editor(
-                Path::new(path),
+            Some((
+                file_path.fmt(&diff.text).to_string(),
                 Some(diff.hunk_line_new_file_num(*file_i, *hunk_i, *line_i)),
-            )
+            ))
         }
         _ => None,
+    }
+}
+
+/// Open a file, hunk or line in `general.alt_editor`: an editor that opens it
+/// in a window of its own, such as a GUI editor, so it runs as a command does,
+/// with gitu staying on screen.
+pub(crate) struct ShowInAltEditor;
+impl OpTrait for ShowInAltEditor {
+    fn get_action(&self, target: &ItemData) -> Option<Action> {
+        let (file, line) = editor_target(target)?;
+        Some(Rc::new(move |app, term| {
+            let Some(editor) = app.state.config.general.alt_editor.clone() else {
+                app.display_error("No alt editor set: set general.alt_editor");
+                return Ok(());
+            };
+            let program = editor.split_whitespace().next().unwrap_or_default();
+            let args = line_args(&file, line, program.to_lowercase());
+            let command = std::iter::once(editor.clone())
+                .chain(args.iter().map(|arg| shell_words::quote(arg).into_owned()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            app.run_shell_async(term, &command, vec![])
+        }))
+    }
+    fn is_target_op(&self) -> bool {
+        true
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Show in alt editor".into()
     }
 }
 

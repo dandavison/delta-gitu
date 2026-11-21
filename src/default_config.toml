@@ -146,6 +146,12 @@ commands = {}
 #       word-diff = {command} --word-diff
 views = {}
 
+# An editor that alt+enter opens a file, hunk or line in, besides the one enter
+# opens it in (GITU_SHOW_EDITOR, VISUAL, EDITOR or GIT_EDITOR). It is to open
+# the file in a window of its own, such as a GUI editor: it runs as a command
+# from `commands` does, with gitu staying on screen. e.g.:
+#   alt_editor = "code --goto"
+
 # When to prompt for discard confirmation. Options:
 # "line"  - always prompt even for individual lines (default),
 # "hunk"  - prompt for files and hunks,
@@ -272,6 +278,7 @@ root.show_refs = ["Y"]
 # folded file or hunk instead.
 root.show = ["enter"]
 root.show_or_unfold = ["right"]
+root.show_in_alt_editor = ["alt+enter"]
 root.discard = ["K"]
 root.stage = ["s"]
 root.unstage = ["u"]
