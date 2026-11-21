@@ -561,3 +561,23 @@ fn moving_by_commit_in_a_log_the_renderer_did_not_mark_says_what_to_set() {
         assert!(buffer.contains("delta.commit-regex"), "{key}: {buffer}");
     }
 }
+
+/// Moving down a line onto the last commit of a `git log --stat` shows its
+/// stat, rows the cursor cannot stop on, down to the last.
+#[test]
+fn moving_down_to_the_last_commit_shows_its_stat() {
+    let ctx = setup_clone!();
+    for i in 1..=6 {
+        commit(&ctx.dir, &format!("file-{i}"), "");
+    }
+    let mut ctx = with_log_args(ctx, &["--stat", "--format=\u{25b8} %h %s"]);
+    let mut app = ctx.init_app();
+    ctx.update(&mut app, keys("lljjjjjjj"));
+
+    let screen = ctx.redact_buffer();
+    assert_eq!(selected_summary(&app), "add initial-file", "{screen}");
+    assert!(
+        screen.contains("1 file changed, 1 insertion(+)"),
+        "{screen}"
+    );
+}
