@@ -47,21 +47,18 @@ fn commit_in_main_checkout_triggers_refresh() {
     assert!(watcher_sees(&ctx.dir, &["git", "commit", "-am", "change"]));
 }
 
+/// Adds a linked worktree on a new branch next to `dir`. The path is relative
+/// because on Windows `dir` has the `\\?\` prefix from `fs::canonicalize`,
+/// which git cannot create directories under.
+fn add_worktree(dir: &Path) {
+    run(dir, &["git", "worktree", "add", "../worktree", "-b", "wt"]);
+}
+
 #[test]
 fn commit_in_linked_worktree_triggers_refresh() {
     let ctx = repo_setup_clone!();
     let worktree = ctx.dir.parent().unwrap().join("worktree");
-    run(
-        &ctx.dir,
-        &[
-            "git",
-            "worktree",
-            "add",
-            worktree.to_str().unwrap(),
-            "-b",
-            "wt",
-        ],
-    );
+    add_worktree(&ctx.dir);
     fs::write(worktree.join("initial-file"), "changed").unwrap();
 
     assert!(watcher_sees(&worktree, &["git", "commit", "-am", "change"]));
@@ -71,17 +68,7 @@ fn commit_in_linked_worktree_triggers_refresh() {
 fn checkout_in_linked_worktree_triggers_refresh() {
     let ctx = repo_setup_clone!();
     let worktree = ctx.dir.parent().unwrap().join("worktree");
-    run(
-        &ctx.dir,
-        &[
-            "git",
-            "worktree",
-            "add",
-            worktree.to_str().unwrap(),
-            "-b",
-            "wt",
-        ],
-    );
+    add_worktree(&ctx.dir);
     run(&worktree, &["git", "branch", "other"]);
 
     assert!(watcher_sees(&worktree, &["git", "switch", "other"]));
