@@ -159,6 +159,21 @@ fn q_restores_the_theme() {
     assert_eq!(fs::read_to_string(&path).unwrap(), mine);
 }
 
+/// The key that entered theme mode leaves it, as q does.
+#[test]
+fn the_key_that_entered_theme_mode_restores_the_theme() {
+    let mut ctx = setup_clone!();
+    let path = with_themes(&ctx);
+    ctx.config().general.diff_renderer.theme = Some("theme-b".into());
+    let mine = fs::read_to_string(&path).unwrap();
+    let mut app = ctx.init_app();
+
+    ctx.update(&mut app, keys("T<up>T"));
+    assert_eq!(theme(&app), Some("theme-b"));
+    assert!(app.state.picker.is_none(), "theme mode is not over");
+    assert_eq!(fs::read_to_string(&path).unwrap(), mine);
+}
+
 #[test]
 fn escape_restores_the_theme() {
     let mut ctx = setup_clone!();

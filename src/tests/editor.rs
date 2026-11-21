@@ -539,6 +539,21 @@ fn q_leaves_the_feature_list() {
     assert_eq!(fs::read_to_string(&path).unwrap(), mine);
 }
 
+/// The key that opened the feature list closes it, as q does: it is bound at
+/// the top level, so it could not be set as a key anyway.
+#[test]
+fn the_key_that_opened_the_feature_list_closes_it() {
+    let mut ctx = setup_clone!();
+    let path = repo_git_config(&ctx);
+    let mine = fs::read_to_string(&path).unwrap();
+    let mut app = ctx.init_app();
+
+    ctx.update(&mut app, keys("HH"));
+    assert!(app.state.picker.is_none(), "the feature list is still open");
+    assert!(!ctx.redact_buffer().contains("bound already"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), mine);
+}
+
 /// The features the user defined for themselves are theirs to choose from too,
 /// by a pattern rather than one by one.
 #[test]
