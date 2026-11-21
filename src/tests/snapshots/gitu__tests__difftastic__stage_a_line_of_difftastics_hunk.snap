@@ -19,7 +19,7 @@ expression: ctx.redact_buffer()
  +                self.line.starts_with("-Subproject commit ")                  |
                       || self.line.starts_with("+Subproject commit ")           |
  +            }                                                                 |
+                                                                                |
 ────────────────────────────────────────────────────────────────────────────────|
 $ git apply --cached --recount                                                  |
- difftastic                                                                     |
-styles_hash: 736ed3749b7e7cfa
+styles_hash: 228b622e5422198f
