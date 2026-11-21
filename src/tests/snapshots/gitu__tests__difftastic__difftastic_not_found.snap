@@ -19,7 +19,7 @@ expression: ctx.redact_buffer()
                                                                                 |
                                                                                 |
                                                                                 |
+                                                                                |
 ────────────────────────────────────────────────────────────────────────────────|
-! difftastic could not be started as no-such-difftastic: No such file or        |
-directory (os error 2)                                                          |
-styles_hash: 5c7e1ff04ea2ccfd
+! difftastic could not be started as no-such-difftastic: program not found      |
+styles_hash: ce47c384630bca23
