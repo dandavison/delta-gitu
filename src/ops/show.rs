@@ -2,6 +2,7 @@ use super::OpTrait;
 use crate::{
     Action,
     app::State,
+    config::Config,
     error::Error,
     item_data::{ItemData, Ref},
     items::RenderParams,
@@ -21,6 +22,29 @@ impl OpTrait for Show {
 
     fn display(&self, _state: &State) -> String {
         "Show".into()
+    }
+}
+
+/// Switch the editor enter opens files in to the next of [`editors`], for the
+/// rest of the session.
+pub(crate) struct NextEditor;
+impl OpTrait for NextEditor {
+    fn get_action(&self, _target: &ItemData) -> Option<Action> {
+        Some(Rc::new(|app, _term| {
+            let editors = editors(&app.state.config);
+            if editors.len() < 2 {
+                app.display_error("No other editor: add one to general.editors");
+                return Ok(());
+            }
+            app.state.editor = (app.state.editor + 1) % editors.len();
+            let (_, editor) = &editors[app.state.editor];
+            app.display_info(format!("Enter opens files in {editor}"));
+            Ok(())
+        }))
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Next editor".into()
     }
 }
 
@@ -206,17 +230,33 @@ fn is_null_oid(hash: &str) -> bool {
 }
 
 pub(crate) const EDITOR_VARS: [&str; 4] = ["GITU_SHOW_EDITOR", "VISUAL", "EDITOR", "GIT_EDITOR"];
+
+/// The editors enter can open files in, each with where it is set: the one the
+/// environment sets, then those in `general.editors`.
+pub(crate) fn editors(config: &Config) -> Vec<(&'static str, String)> {
+    EDITOR_VARS
+        .into_iter()
+        .find_map(|var| std::env::var(var).ok().map(|editor| (var, editor)))
+        .into_iter()
+        .chain(
+            config
+                .general
+                .editors
+                .iter()
+                .map(|editor| ("general.editors", editor.clone())),
+        )
+        .collect()
+}
+
 fn editor(file: &Path, maybe_line: Option<u32>) -> Option<Action> {
     let file = file.to_str().unwrap().to_string();
 
     Some(Rc::new(move |app, term| {
-        let configured_editor = EDITOR_VARS
-            .into_iter()
-            .find_map(|var| std::env::var(var).ok().map(|editor| (var, editor)));
-
-        let Some((var, editor)) = configured_editor else {
+        let editors = editors(&app.state.config);
+        if editors.is_empty() {
             return Err(Error::NoEditorSet);
-        };
+        }
+        let (var, editor) = editors[app.state.editor % editors.len()].clone();
 
         let cmd = if cfg!(windows) {
             parse_editor_command_windows(&editor, &file, maybe_line)

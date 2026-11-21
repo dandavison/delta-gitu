@@ -4,23 +4,24 @@ expression: ctx.redact_buffer()
 ---
 ▌Branch: main                                                                                                                                         |
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
- Commands                                                                   Submenus         Section                                                  |
- &                Files                   pageup/backspace Scroll page up   A Cherry-pick    right Unfold                                             |
- +                Wider context           q/esc            Quit/Close       b Branch         tab   Fold                                               |
- -                Narrower context        shift+down       Select down      c Commit                                                                  |
- /                Search                  shift+tab        Fold all         f Fetch                                                                   |
- :                Edit git command        shift+up         Select up        F Pull                                                                    |
- ?                Key bindings            T                Themes           l Log                                                                     |
- alt+h/alt+left   Parent section          U                Diff context     m Merge                                                                   |
- alt+j/alt+down   Next section            Y                Show Refs        M Remote                                                                  |
- alt+k/alt+up     Prev section                                              P Push                                                                    |
- ctrl+d           Scroll half page down                                     r Rebase                                                                  |
- ctrl+e           Scroll view down                                          V Revert                                                                  |
- ctrl+j/ctrl+down Down                                                      X Reset                                                                   |
- ctrl+k/ctrl+up   Up                                                        z Stash                                                                   |
+ Commands                                                                     Submenus         Section                                                |
+ &                Files                   pagedown/space   Scroll page down   A Cherry-pick    right Unfold                                           |
+ +                Wider context           pageup/backspace Scroll page up     b Branch         tab   Fold                                             |
+ -                Narrower context        q/esc            Quit/Close         c Commit                                                                |
+ /                Search                  shift+down       Select down        f Fetch                                                                 |
+ :                Edit git command        shift+tab        Fold all           F Pull                                                                  |
+ ?                Key bindings            shift+up         Select up          l Log                                                                   |
+ alt+h/alt+left   Parent section          T                Themes             m Merge                                                                 |
+ alt+j/alt+down   Next section            U                Diff context       M Remote                                                                |
+ alt+k/alt+up     Prev section            Y                Show Refs          P Push                                                                  |
+ ctrl+d           Scroll half page down                                       r Rebase                                                                |
+ ctrl+e           Scroll view down                                            V Revert                                                                |
+ ctrl+j/ctrl+down Down                                                        X Reset                                                                 |
+ ctrl+k/ctrl+up   Up                                                          z Stash                                                                 |
  ctrl+u           Scroll half page up                                                                                                                 |
- ctrl+y           Scroll view up                                            Hotkeys                                                                   |
- ctrl+z           Suspend                                                   x side-by-side                                                            |
+ ctrl+y           Scroll view up                                              Hotkeys                                                                 |
+ ctrl+z           Suspend                                                     x side-by-side                                                          |
+ E                Next editor                                                                                                                         |
  G                Bottom                                                                                                                              |
  g+g              Top                                                                                                                                 |
  g+r              Refresh                                                                                                                             |
@@ -31,5 +32,4 @@ expression: ctx.redact_buffer()
  left             Back                                                                                                                                |
  n                Next match                                                                                                                          |
  N                Previous match                                                                                                                      |
- pagedown/space   Scroll page down                                                                                                                    |
-styles_hash: cdb3341191ad2904
+styles_hash: 2d11aa8b625862c9

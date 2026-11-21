@@ -136,6 +136,13 @@ commands = {}
 #       word-diff = {command} --word-diff
 views = {}
 
+# Editors that enter can open a file, hunk or line in, besides the one set by
+# GITU_SHOW_EDITOR, VISUAL, EDITOR or GIT_EDITOR. Enter starts with that one,
+# or with the first of these when none is set, and `E` switches to the next for
+# the rest of the session. e.g.:
+#   editors = ["code --goto"]
+editors = []
+
 # When to prompt for discard confirmation. Options:
 # "line"  - always prompt even for individual lines (default),
 # "hunk"  - prompt for files and hunks,
@@ -262,6 +269,7 @@ root.show_refs = ["Y"]
 # folded file or hunk instead.
 root.show = ["enter"]
 root.show_or_unfold = ["right"]
+root.next_editor = ["E"]
 root.discard = ["K"]
 root.stage = ["s"]
 root.unstage = ["u"]
