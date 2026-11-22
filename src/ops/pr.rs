@@ -150,7 +150,10 @@ fn comment_options(
         features.as_deref(),
         &screen::review::OPTION_NAMES,
     );
-    let options = Rc::new(screen::review::CommentOptions::of(&values));
+    let options = Rc::new(screen::review::CommentOptions::of(
+        &values,
+        config.general.diff_renderer.color_mode,
+    ));
     *review.options.borrow_mut() = Some((features, Rc::clone(&options)));
     options
 }

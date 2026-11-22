@@ -1,6 +1,7 @@
 //! A PR's review threads, as rows under the diff lines they are on.
 
 use crate::{
+    config::ColorMode,
     config_git::{DecorationStyle, parse_delta_style},
     github::{self, Review, Side, Thread},
     item_data::ItemData,
@@ -204,8 +205,10 @@ pub(crate) struct CommentOptions {
 }
 
 impl CommentOptions {
-    /// From the values of [`OPTION_NAMES`], in that order, `None` for one not set.
-    pub(crate) fn of(values: &[Option<String>]) -> Self {
+    /// From the values of [`OPTION_NAMES`], in that order, `None` for one not set, with
+    /// `color_mode`, delta's, for the default background of comments: GitHub's, for a light or a
+    /// dark background, or none when gitu is not run by delta.
+    pub(crate) fn of(values: &[Option<String>], color_mode: Option<ColorMode>) -> Self {
         let mut errors = vec![];
         let mut style = |i: usize, default: &str, decoration: bool| {
             let value = values.get(i).cloned().flatten();
@@ -219,7 +222,12 @@ impl CommentOptions {
                 });
             parsed.unwrap_or_else(|| parse_delta_style(default, decoration).unwrap())
         };
-        let text = style(0, "", false).style;
+        let text_default = match color_mode {
+            Some(ColorMode::Light) => "normal #f6f8fa",
+            Some(ColorMode::Dark) => "normal #161b22",
+            None => "",
+        };
+        let text = style(0, text_default, false).style;
         let author = style(1, "bold", false).style;
         let timestamp = style(2, "dim", false).style;
         let count = style(3, "blue", false).style;
@@ -238,7 +246,7 @@ impl CommentOptions {
 
 impl Default for CommentOptions {
     fn default() -> Self {
-        Self::of(&[])
+        Self::of(&[], None)
     }
 }
 
@@ -369,10 +377,8 @@ fn thread_rows(
     let indent = " ".repeat(panel.column);
     let decorated = |content: Row| -> Row {
         let mut row = vec![(format!("{indent}{before}"), decoration.style)];
-        let width: usize = content.iter().map(|(text, _)| text.width()).sum();
         row.extend(content);
         if boxed {
-            row.push((" ".repeat(text_width.saturating_sub(width)), Style::new()));
             row.push((after.clone(), decoration.style));
         }
         row
@@ -390,14 +396,8 @@ fn thread_rows(
 
     let mut rows: Vec<(usize, usize, Row)> = vec![];
     for (comment_i, comment) in thread.comments.iter().enumerate() {
-        let mut right = vec![];
-        if comment_i == 0
-            && let Some(notes) = &notes
-        {
-            right.push((notes.clone(), decoration.style));
-        }
-        right.push((timestamp(comment, options), options.timestamp));
-        for (row_i, row) in comment_rows(comment, &right, text_width, options)
+        let notes = notes.as_deref().filter(|_| comment_i == 0);
+        for (row_i, row) in comment_rows(comment, notes, text_width, options)
             .into_iter()
             .enumerate()
         {
@@ -479,54 +479,41 @@ fn timestamp(comment: &github::Comment, options: &CommentOptions) -> String {
     }
 }
 
-/// The rows of `comment`, wrapped to `width` columns: its author's login, then its body, each
-/// row after the first indented under the login. The first row ends with `right`, aligned to
-/// `width`.
+/// The rows of `comment`, each `width` columns wide: its author's login and when it was made,
+/// with `notes`, then its body wrapped to the width. All of it is drawn over the comment style,
+/// so that its background fills the rows.
 fn comment_rows(
     comment: &github::Comment,
-    right: &Row,
+    notes: Option<&str>,
     width: usize,
     options: &CommentOptions,
 ) -> Vec<Row> {
-    let right_width = right
-        .iter()
-        .map(|(text, _)| text.width() + 1)
-        .sum::<usize>();
-    let first_width = width.saturating_sub(right_width).max(MIN_TEXT_WIDTH);
-    let author = &comment.author;
-    let mut lines = comment.body.lines();
-    let first_line = format!("{author}: {}", lines.next().unwrap_or_default());
-    let mut wrapped = wrap(&first_line, first_width, width - INDENT.len());
-    for line in lines {
-        wrapped.extend(wrap(line, width - INDENT.len(), width - INDENT.len()));
+    let text = options.text;
+    let padded = |mut row: Row| -> Row {
+        let used: usize = row.iter().map(|(span, _)| span.width()).sum();
+        row.push((" ".repeat(width.saturating_sub(used)), text));
+        row
+    };
+    let mut header = vec![
+        (comment.author.clone(), text.patch(options.author)),
+        (" ".to_owned(), text),
+        (
+            format!("[{}]", timestamp(comment, options)),
+            text.patch(options.timestamp),
+        ),
+    ];
+    if let Some(notes) = notes {
+        header.push((" ".to_owned(), text));
+        header.push((notes.to_owned(), text.patch(options.decoration.style)));
     }
-
-    wrapped
-        .into_iter()
-        .enumerate()
-        .map(|(i, row)| {
-            if i > 0 {
-                return vec![(format!("{INDENT}{row}"), options.text)];
-            }
-            let mut spans = match row.strip_prefix(author.as_str()) {
-                Some(rest) => vec![
-                    (author.clone(), options.author),
-                    (rest.to_owned(), options.text),
-                ],
-                None => vec![(row.clone(), options.text)],
-            };
-            let gap = width.saturating_sub(row.width() + right_width);
-            spans.push((" ".repeat(gap), Style::new()));
-            for (text, style) in right {
-                spans.push((" ".to_owned(), Style::new()));
-                spans.push((text.clone(), *style));
-            }
-            spans
-        })
-        .collect()
+    let mut rows = vec![padded(header)];
+    for line in comment.body.lines() {
+        for row in wrap(line, width, width) {
+            rows.push(padded(vec![(row, text)]));
+        }
+    }
+    rows
 }
-
-const INDENT: &str = "  ";
 
 /// `text` split into rows at spaces, the first at most `first` columns wide and
 /// the rest at most `rest`. A word wider than a row is split where the row
