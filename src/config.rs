@@ -229,6 +229,46 @@ pub struct DiffRendererConfig {
     /// repository's own.
     #[serde(skip)]
     pub git_config: RendererGitConfig,
+    /// The values the renderer's config gives options it does not use itself but gitu draws with,
+    /// such as `comment-style`, with the features in force. Set by `delta --gitu`, so that they are
+    /// set where delta's own options are and taken from features as delta's are; without it, gitu
+    /// uses its defaults.
+    #[serde(skip)]
+    pub options: RendererOptions,
+}
+
+/// Asks the renderer what its config sets options to, in the repository at a path, with features
+/// in force as `DELTA_FEATURES` gives them, for each of several option names.
+#[derive(Clone, Default)]
+pub struct RendererOptions(Option<Arc<AskOptions>>);
+
+type AskOptions = dyn Fn(&Path, Option<&str>, &[&str]) -> Vec<Option<String>> + Send + Sync;
+
+impl RendererOptions {
+    pub fn new(
+        ask: impl Fn(&Path, Option<&str>, &[&str]) -> Vec<Option<String>> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Some(Arc::new(ask)))
+    }
+
+    /// The value of each of `names`, `None` for one not set, or for all of them when the
+    /// renderer has not said how to ask.
+    pub fn get(&self, dir: &Path, features: Option<&str>, names: &[&str]) -> Vec<Option<String>> {
+        match &self.0 {
+            Some(ask) => ask(dir, features, names),
+            None => vec![None; names.len()],
+        }
+    }
+}
+
+impl std::fmt::Debug for RendererOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "RendererOptions(..)"
+        } else {
+            "RendererOptions(none)"
+        })
+    }
 }
 
 /// Opens the git config the renderer reads in the repository at a path.

@@ -117,7 +117,29 @@ fn head_branch(ctx: &TestContext) -> String {
         .to_owned()
 }
 
-/// A thread on `lines.txt`, its comments given as `(author, body)`.
+fn two_hours_ago() -> chrono::DateTime<chrono::FixedOffset> {
+    (chrono::Utc::now() - chrono::Duration::hours(2)).fixed_offset()
+}
+
+/// What delta's config sets the options gitu asks it for to, as
+/// `(name, value)`, whatever the features.
+fn with_options(ctx: &mut TestContext, options: &'static [(&'static str, &'static str)]) {
+    ctx.config().general.diff_renderer.options =
+        crate::config::RendererOptions::new(move |_, _, names| {
+            names
+                .iter()
+                .map(|name| {
+                    options
+                        .iter()
+                        .find(|(option, _)| option == name)
+                        .map(|(_, value)| (*value).to_owned())
+                })
+                .collect()
+        });
+}
+
+/// A thread on `lines.txt`, its comments given as `(author, body)`, each made
+/// two hours ago.
 fn thread(
     id: &str,
     line: Option<(Side, u32)>,
@@ -136,6 +158,7 @@ fn thread(
                 author: (*author).to_owned(),
                 body: (*body).to_owned(),
                 url: format!("{PR_URL}#discussion_{id}_{i}"),
+                created_at: two_hours_ago(),
             })
             .collect(),
     }
@@ -670,8 +693,15 @@ fn cell(ctx: &TestContext, text: &str, c: char) -> crate::term::TestCell {
 #[test]
 fn comments_are_drawn_in_the_comment_styles() {
     let mut ctx = setup_clone!();
-    ctx.config().style.comment = toml::from_str(r#"fg = "red""#).unwrap();
-    ctx.config().style.comment_decoration = toml::from_str(r#"fg = "blue""#).unwrap();
+    with_options(
+        &mut ctx,
+        &[
+            ("comment-style", "red"),
+            ("comment-author-style", "green bold"),
+            ("comment-timestamp-style", "yellow"),
+            ("comment-decoration-style", "blue"),
+        ],
+    );
     let github = setup(&ctx);
     *github.threads.borrow_mut() = vec![thread(
         "t1",
@@ -687,14 +717,192 @@ fn comments_are_drawn_in_the_comment_styles() {
     assert_eq!(cell(&ctx, "alice: Why new?", '│').fg, Color::Blue);
     assert_eq!(cell(&ctx, "alice: Why new?", 'W').fg, Color::Red);
     let author = cell(&ctx, "alice: Why new?", 'a');
-    assert_eq!(author.fg, Color::Red);
+    assert_eq!(author.fg, Color::Green);
     assert!(author.modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        cell(&ctx, "alice: Why new?", 'g').fg,
+        Color::Yellow,
+        "timestamp"
+    );
     assert_eq!(
         cell(&ctx, "alice: Why new?", 'u').fg,
         Color::Blue,
         "outdated"
     );
     assert_eq!(cell(&ctx, "bob: Because", 'B').fg, Color::Red);
+}
+
+/// The comment options are delta's, so a delta feature can set them, and they
+/// change as the features in force do.
+#[test]
+fn comment_styles_follow_the_features_in_force() {
+    let mut ctx = setup_clone!();
+    ctx.config().general.diff_renderer.feature_keys = [("my-theme".into(), 'e')].into();
+    ctx.config().general.diff_renderer.options =
+        crate::config::RendererOptions::new(|_, features, names| {
+            let themed = features.is_some_and(|features| features.contains("my-theme"));
+            names
+                .iter()
+                .map(|name| (themed && *name == "comment-style").then(|| "red".to_owned()))
+                .collect()
+        });
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("alice", "Why new?")])];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO"));
+    assert_ne!(
+        cell(&ctx, "alice: Why new?", 'W').fg,
+        crate::style::Color::Red
+    );
+
+    ctx.update(&mut app, keys("e"));
+
+    assert_eq!(
+        cell(&ctx, "alice: Why new?", 'W').fg,
+        crate::style::Color::Red
+    );
+}
+
+#[test]
+fn a_comment_style_that_is_not_a_style_is_reported() {
+    let mut ctx = setup_clone!();
+    with_options(&mut ctx, &[("comment-style", "notacolor")]);
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("alice", "Why new?")])];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("comment-style") && screen.contains("notacolor"),
+        "{screen}"
+    );
+    assert!(screen.contains("alice: Why new?"), "{screen}");
+}
+
+/// Two comments on the added line, drawn with `comment-decoration-style` set
+/// to `decoration`.
+fn with_decoration(mut ctx: TestContext, decoration: &'static str, resolved: bool) -> TestContext {
+    let options: &'static [(&str, &str)] =
+        Box::leak(Box::new([("comment-decoration-style", decoration)]));
+    with_options(&mut ctx, options);
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        resolved,
+        &[("alice", "Why new?"), ("bob", "Because")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO"));
+    ctx
+}
+
+/// The line of the screen before the one that shows `text`.
+fn line_before(ctx: &TestContext, text: &str) -> String {
+    let screen = ctx.redact_buffer();
+    let lines: Vec<&str> = screen.lines().collect();
+    let i = lines.iter().position(|line| line.contains(text)).unwrap();
+    lines[i - 1].to_owned()
+}
+
+#[test]
+fn a_box_decoration_draws_a_box_around_the_thread() {
+    let ctx = with_decoration(setup_clone!(), "blue box", false);
+
+    let screen = ctx.redact_buffer();
+    let top = line_before(&ctx, "alice: Why new?");
+    assert!(top.contains('┌') && top.contains('┐'), "{screen}");
+    let header = line_with(&ctx, "alice: Why new?");
+    assert_eq!(header.matches('│').count(), 2, "{screen}");
+    let bottom = &lines_after(&ctx, "bob: Because", 1)[0];
+    assert!(bottom.contains('└') && bottom.contains('┘'), "{screen}");
+}
+
+#[test]
+fn a_bold_box_decoration_is_drawn_heavy() {
+    let ctx = with_decoration(setup_clone!(), "bold box", false);
+
+    assert!(
+        line_before(&ctx, "alice: Why new?").contains('┏'),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_folded_boxed_thread_shows_its_first_row_alone() {
+    let ctx = with_decoration(setup_clone!(), "box", true);
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        !line_before(&ctx, "alice: Why new?").contains('┌'),
+        "{screen}"
+    );
+    assert!(line_with(&ctx, "alice: Why new?").contains('│'), "{screen}");
+    assert!(!screen.contains('└'), "{screen}");
+}
+
+#[test]
+fn an_underline_decoration_draws_a_line_under_the_thread() {
+    let ctx = with_decoration(setup_clone!(), "ul", false);
+
+    let screen = ctx.redact_buffer();
+    let under = &lines_after(&ctx, "bob: Because", 1)[0];
+    assert!(under.contains("───"), "{screen}");
+    assert!(
+        !line_with(&ctx, "alice: Why new?").contains('│'),
+        "{screen}"
+    );
+}
+
+#[test]
+fn an_overline_decoration_draws_a_line_over_the_thread() {
+    let ctx = with_decoration(setup_clone!(), "ol", false);
+
+    assert!(
+        line_before(&ctx, "alice: Why new?").contains("───"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_comments_time_is_shown_as_how_long_ago() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("alice", "Why new?")])];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert!(
+        line_with(&ctx, "alice: Why new?").contains("2 hours ago"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_comments_time_is_shown_in_the_timestamp_format() {
+    let mut ctx = setup_clone!();
+    with_options(&mut ctx, &[("comment-timestamp-format", "%Y-%m-%d")]);
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("alice", "Why new?")])];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let date = two_hours_ago()
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d")
+        .to_string();
+    assert!(
+        line_with(&ctx, "alice: Why new?").contains(&date),
+        "{}",
+        ctx.redact_buffer()
+    );
 }
 
 /// [`setup`], with the files folded to their lines of a diffstat, as
@@ -733,11 +941,16 @@ fn a_files_line_of_the_diffstat_fits_beside_its_checkbox() {
 }
 
 #[test]
-fn a_file_with_unresolved_threads_shows_how_many() {
+fn a_file_with_unresolved_threads_shows_how_many_comments_they_have() {
     let mut ctx = setup_clone!();
     let github = setup_folded_to_stat(&mut ctx);
     *github.threads.borrow_mut() = vec![
-        thread("t1", Some((Side::New, 2)), false, &[("alice", "Why?")]),
+        thread(
+            "t1",
+            Some((Side::New, 2)),
+            false,
+            &[("alice", "Why?"), ("bob", "So")],
+        ),
         thread("t2", None, false, &[("bob", "Hm")]),
         thread("t3", None, true, &[("carol", "Done")]),
     ];
@@ -745,20 +958,59 @@ fn a_file_with_unresolved_threads_shows_how_many() {
 
     ctx.update(&mut app, keys("OO"));
 
+    let row = line_with(&ctx, "lines.txt");
+    let name = row.find("lines.txt").unwrap();
+    let count = row.find("[3 comments]").unwrap_or_else(|| panic!("{row}"));
+    assert!(name < count, "{row}");
     assert!(
-        line_with(&ctx, "lines.txt").contains("●2"),
-        "{}",
-        ctx.redact_buffer()
-    );
-    assert!(
-        !line_with(&ctx, "added.txt").contains('●'),
+        !line_with(&ctx, "added.txt").contains("comment"),
         "{}",
         ctx.redact_buffer()
     );
 }
 
 #[test]
-fn a_file_whose_threads_are_all_resolved_shows_none() {
+fn one_comment_is_counted_as_one_comment() {
+    let mut ctx = setup_clone!();
+    let github = setup_folded_to_stat(&mut ctx);
+    *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("bob", "Hm")])];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert!(
+        line_with(&ctx, "lines.txt").contains("[1 comment]"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_files_comment_count_fits_on_its_row() {
+    let mut ctx = setup_clone!();
+    let github = setup_folded_to_stat(&mut ctx);
+    *github.threads.borrow_mut() = vec![Thread {
+        path: "big.txt".into(),
+        ..thread("t1", None, false, &[("bob", "Hm")])
+    }];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert!(
+        line_with(&ctx, "big.txt").contains("[1 comment]"),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert!(
+        lines_after(&ctx, "big.txt", 1)[0].contains("lines.txt"),
+        "big.txt's row runs onto the next:\n{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_file_whose_threads_are_all_resolved_shows_no_count() {
     let mut ctx = setup_clone!();
     let github = setup_folded_to_stat(&mut ctx);
     *github.threads.borrow_mut() = vec![thread("t1", None, true, &[("carol", "Done")])];
@@ -767,7 +1019,7 @@ fn a_file_whose_threads_are_all_resolved_shows_none() {
     ctx.update(&mut app, keys("OO"));
 
     assert!(
-        !line_with(&ctx, "lines.txt").contains('●'),
+        !line_with(&ctx, "lines.txt").contains("comment"),
         "{}",
         ctx.redact_buffer()
     );

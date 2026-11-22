@@ -108,6 +108,7 @@ pub(crate) struct Comment {
     pub author: String,
     pub body: String,
     pub url: String,
+    pub created_at: chrono::DateTime<chrono::FixedOffset>,
 }
 
 /// The path GitHub knows a file of `diff` by: its new path, or for a deleted
@@ -178,7 +179,7 @@ const THREADS_QUERY: &str = "query($id: ID!, $endCursor: String) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id isResolved path line diffSide
-          comments(first: 100) { nodes { author { login } body url } }
+          comments(first: 100) { nodes { author { login } body url createdAt } }
         }
       }
     }
@@ -379,10 +380,12 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
         comments: Nodes<CommentNode>,
     }
     #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
     struct CommentNode {
         author: Option<Author>,
         body: String,
         url: String,
+        created_at: chrono::DateTime<chrono::FixedOffset>,
     }
     #[derive(Deserialize)]
     struct Author {
@@ -419,6 +422,7 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
                                     .map_or_else(|| "ghost".to_owned(), |author| author.login),
                                 body: comment.body,
                                 url: comment.url,
+                                created_at: comment.created_at,
                             })
                             .collect(),
                     }
@@ -483,7 +487,7 @@ mod tests {
     fn parse_threads_reads_every_page() {
         let page = |id: &str, line: &str, side: &str| {
             format!(
-                r#"{{"data":{{"node":{{"reviewThreads":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{{"id":"{id}","isResolved":false,"path":"a.txt","line":{line},"diffSide":"{side}","comments":{{"nodes":[{{"author":null,"body":"hm","url":"u"}}]}}}}]}}}}}}}}"#
+                r#"{{"data":{{"node":{{"reviewThreads":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{{"id":"{id}","isResolved":false,"path":"a.txt","line":{line},"diffSide":"{side}","comments":{{"nodes":[{{"author":null,"body":"hm","url":"u","createdAt":"2026-11-20T10:00:00Z"}}]}}}}]}}}}}}}}"#
             )
         };
         let output = format!("{}{}", page("t1", "3", "LEFT"), page("t2", "null", "RIGHT"));

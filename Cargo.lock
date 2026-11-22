@@ -184,8 +184,18 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
+]
+
+[[package]]
+name = "chrono-humanize"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "799627e6b4d27827a814e837b9d8a504832086081806d45b1afa34dc982b023b"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]
@@ -422,6 +432,7 @@ dependencies = [
  "anstyle-parse",
  "arboard",
  "chrono",
+ "chrono-humanize",
  "clap",
  "criterion",
  "crossterm",
