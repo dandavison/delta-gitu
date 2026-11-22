@@ -2,6 +2,7 @@
 //! the user's GitHub login.
 
 use crate::screen::review::CommentOptions;
+use crate::text_area::TextArea;
 use crate::{Res, error::Error, git::diff::Diff, gitu_diff::Status};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -45,6 +46,26 @@ pub(crate) struct Review {
     /// with, as `DELTA_FEATURES` gives them; `None` until they are first asked for, and once the
     /// review is read again, so that a change to delta's config counts.
     pub options: RefCell<Option<(Option<String>, Rc<CommentOptions>)>>,
+    /// The comment being written, if one is.
+    pub draft: RefCell<Option<Draft>>,
+}
+
+/// A comment being written, in a box in the diff.
+pub(crate) struct Draft {
+    pub target: DraftTarget,
+    pub text: TextArea,
+    /// Whether keys go to it.
+    pub focused: bool,
+    /// The columns its text was last wrapped to, which moving up and down goes by.
+    pub width: usize,
+}
+
+/// What a comment being written is: a reply to a review thread, or a new comment on a line of
+/// the diff.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DraftTarget {
+    Reply { thread_id: String },
+    Line { path: String, line: (Side, u32) },
 }
 
 /// How many columns [`Review::checkbox`] takes before a file's row. A PR's diff is rendered

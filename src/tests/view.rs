@@ -23,10 +23,10 @@ fn with_view(mut ctx: TestContext, name: &str, command: &str, key: char) -> Test
 fn a_view_key_opens_the_git_command_on_the_commit_under_the_cursor() {
     let ctx = setup_clone!();
     commit(&ctx.dir, "a", "");
-    let mut ctx = with_view(ctx, "subject", "git show --format=viewed-%s {commit}", 'i');
+    let mut ctx = with_view(ctx, "subject", "git show --format=viewed-%s {commit}", 't');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("lli"));
+    ctx.update(&mut app, keys("llt"));
     assert!(
         ctx.redact_buffer().contains("viewed-add a"),
         "{}",
@@ -43,10 +43,10 @@ fn a_view_key_opens_the_git_command_on_the_commit_under_the_cursor() {
 #[test]
 fn a_view_that_is_not_git_diff_show_or_log_is_refused() {
     let ctx = setup_clone!();
-    let mut ctx = with_view(ctx, "listing", "ls", 'i');
+    let mut ctx = with_view(ctx, "listing", "ls", 't');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("i"));
+    ctx.update(&mut app, keys("t"));
 
     assert_eq!(app.state.screens.len(), 1);
     assert!(
@@ -60,10 +60,10 @@ fn a_view_that_is_not_git_diff_show_or_log_is_refused() {
 #[test]
 fn a_view_needing_a_commit_is_not_opened_off_one() {
     let ctx = setup_clone!();
-    let mut ctx = with_view(ctx, "subject", "git show {commit}", 'i');
+    let mut ctx = with_view(ctx, "subject", "git show {commit}", 't');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("i"));
+    ctx.update(&mut app, keys("t"));
 
     assert_eq!(app.state.screens.len(), 1);
     assert!(
@@ -78,7 +78,7 @@ fn a_view_needing_a_commit_is_not_opened_off_one() {
 #[test]
 fn the_feature_list_has_a_column_each_for_features_commands_and_views() {
     let ctx = setup_clone!();
-    let mut ctx = with_view(ctx, "subject", "git show {commit}", 'i');
+    let mut ctx = with_view(ctx, "subject", "git show {commit}", 't');
     ctx.config()
         .general
         .commands
@@ -96,7 +96,7 @@ fn the_feature_list_has_a_column_each_for_features_commands_and_views() {
         headings.contains("Commands") && headings.contains("Views"),
         "{buffer}"
     );
-    assert!(buffer.contains("i subject"), "{buffer}");
+    assert!(buffer.contains("t subject"), "{buffer}");
     assert!(!buffer.contains("git show {commit}"), "{buffer}");
 }
 
@@ -106,7 +106,7 @@ fn the_feature_list_has_a_column_each_for_features_commands_and_views() {
 fn right_moves_to_the_commands_and_then_the_views() {
     let ctx = setup_clone!();
     commit(&ctx.dir, "a", "");
-    let mut ctx = with_view(ctx, "subject", "git show --format=viewed-%s {commit}", 'i');
+    let mut ctx = with_view(ctx, "subject", "git show --format=viewed-%s {commit}", 't');
     ctx.config()
         .general
         .commands
@@ -135,10 +135,10 @@ fn right_moves_to_the_commands_and_then_the_views() {
 fn a_view_of_the_command_shown_changes_it() {
     let ctx = setup_clone!();
     commit(&ctx.dir, "a", "");
-    let mut ctx = with_view(ctx, "formatted", "{command} --format=viewed-%s", 'i');
+    let mut ctx = with_view(ctx, "formatted", "{command} --format=viewed-%s", 't');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("lli"));
+    ctx.update(&mut app, keys("llt"));
 
     assert!(
         ctx.redact_buffer().contains("viewed-add a"),
@@ -151,10 +151,10 @@ fn a_view_of_the_command_shown_changes_it() {
 #[test]
 fn a_view_with_the_command_inside_a_word_is_refused() {
     let ctx = setup_clone!();
-    let mut ctx = with_view(ctx, "inside", "git log --grep={command}", 'i');
+    let mut ctx = with_view(ctx, "inside", "git log --grep={command}", 't');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("lli"));
+    ctx.update(&mut app, keys("llt"));
 
     assert_eq!(app.state.screens.len(), 2, "{}", ctx.redact_buffer());
     assert!(
@@ -168,10 +168,10 @@ fn a_view_with_the_command_inside_a_word_is_refused() {
 #[test]
 fn a_view_of_the_command_shown_is_not_opened_off_one() {
     let ctx = setup_clone!();
-    let mut ctx = with_view(ctx, "formatted", "{command} --oneline", 'i');
+    let mut ctx = with_view(ctx, "formatted", "{command} --oneline", 't');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("i"));
+    ctx.update(&mut app, keys("t"));
 
     assert_eq!(app.state.screens.len(), 1);
     assert!(

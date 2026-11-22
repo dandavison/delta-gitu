@@ -3,9 +3,9 @@
 use crate::{
     config::ColorMode,
     config_git::{DecorationStyle, parse_delta_style},
-    github::{self, Review, Side, Thread},
+    github::{self, Draft, DraftTarget, Review, Side, Thread},
     item_data::ItemData,
-    items::{Item, hash},
+    items::{Item, ItemId, hash},
     style::{Modifier, Style},
 };
 use git2::Repository;
@@ -33,7 +33,16 @@ pub(crate) fn with_threads(
 ) -> Vec<Item> {
     let items = with_comment_counts(items, review, layout.width, options.count);
     let threads = review.threads.borrow();
-    let paths: HashSet<&str> = threads.iter().map(|thread| thread.path.as_str()).collect();
+    let mut draft = review.draft.borrow_mut();
+    let draft_path = match draft.as_ref().map(|draft| &draft.target) {
+        Some(DraftTarget::Line { path, .. }) => Some(path.clone()),
+        _ => None,
+    };
+    let paths: HashSet<&str> = threads
+        .iter()
+        .map(|thread| thread.path.as_str())
+        .chain(draft_path.as_deref())
+        .collect();
     // Only the files with threads are indexed, as a big PR's rows are built again and again
     // while the renderer draws them.
     let mut lines: HashMap<(String, Side, u32), usize> = HashMap::new();
@@ -86,6 +95,15 @@ pub(crate) fn with_threads(
             under.entry(i).or_default().push(thread);
         }
     }
+    // A new comment goes under its line, after the line's threads, or under its file's header
+    // if the line is not among the rows; a reply goes after its thread.
+    let draft_under = match draft.as_ref().map(|draft| &draft.target) {
+        Some(DraftTarget::Line { path, line }) => lines
+            .get(&(path.clone(), line.0, line.1))
+            .map(|&i| (i, Some(line.0)))
+            .or_else(|| files.get(path).map(|&i| (i, None))),
+        _ => None,
+    };
 
     let mut out = Vec::with_capacity(items.len());
     for error in &options.errors {
@@ -109,13 +127,21 @@ pub(crate) fn with_threads(
         out.push(item);
         for thread in threads {
             let side = thread.line.filter(|_| on_line).map(|(side, _)| side);
-            out.extend(thread_rows(
-                thread,
-                depth,
-                on_line,
-                layout.panel(side),
-                options,
-            ));
+            let panel = layout.panel(side);
+            out.extend(thread_rows(thread, depth, on_line, panel, options));
+            if let Some(draft) = draft.as_mut()
+                && draft.target
+                    == (DraftTarget::Reply {
+                        thread_id: thread.id.clone(),
+                    })
+            {
+                out.extend(draft_rows(draft, depth, panel, options));
+            }
+        }
+        if let (Some((_, side)), Some(draft)) =
+            (draft_under.filter(|(at, _)| *at == i), &mut *draft)
+        {
+            out.extend(draft_rows(draft, depth, layout.panel(side), options));
         }
     }
     out
@@ -215,13 +241,15 @@ fn warning_row() -> Item {
 
 /// The delta options gitu draws comments with. delta's config sets them, as it sets its own,
 /// so that a delta feature can.
-pub(crate) const OPTION_NAMES: [&str; 6] = [
+pub(crate) const OPTION_NAMES: [&str; 8] = [
     "comment-style",
     "comment-author-style",
     "comment-timestamp-style",
     "comment-count-style",
     "comment-decoration-style",
     "comment-timestamp-format",
+    "comment-editor-style",
+    "comment-editor-decoration-style",
 ];
 
 /// How comments are drawn, from the delta options in [`OPTION_NAMES`].
@@ -239,6 +267,10 @@ pub(crate) struct CommentOptions {
     pub decoration: DecorationStyle,
     /// A strftime format for when a comment was made, or `None` for how long ago.
     pub timestamp_format: Option<String>,
+    /// What is written in a comment box, `text` unless set.
+    pub editor_text: Style,
+    /// What is drawn around a comment box, `decoration` unless set.
+    pub editor_decoration: DecorationStyle,
     /// An option whose value is not a style, as what to tell the user. Its default is used.
     pub errors: Vec<String>,
     /// Whether delta draws the diff side by side, which decides the panel a comment goes in.
@@ -273,7 +305,17 @@ impl CommentOptions {
         let timestamp = style(2, "dim", false).style;
         let count = style(3, "blue", false).style;
         let decoration = style(4, "blue", true);
+        let mut set_style = |i: usize, decoration: bool| {
+            let value = values.get(i).cloned().flatten()?;
+            parse_delta_style(&value, decoration)
+                .map_err(|error| errors.push(format!("{}: {error}", OPTION_NAMES[i])))
+                .ok()
+        };
+        let editor_text = set_style(6, false).map_or(text, |parsed| parsed.style);
+        let editor_decoration = set_style(7, true).unwrap_or(decoration);
         CommentOptions {
+            editor_text,
+            editor_decoration,
             text,
             author,
             timestamp,
@@ -396,71 +438,20 @@ fn thread_rows(
     }
     let notes = (!notes.is_empty()).then(|| format!("({})", notes.join(", ")));
 
-    let decoration = &options.decoration;
-    let lines = if decoration.style.add_modifier.contains(Modifier::BOLD) {
-        &HEAVY
-    } else {
-        &LIGHT
-    };
-    let boxed = decoration.boxed;
-    let bar = !boxed && !decoration.underline && !decoration.overline;
-    // What goes before and after a comment's text on each row.
-    let (before, after) = if boxed || bar {
-        (
-            format!("{}{} ", MARGIN, lines.vertical),
-            format!(" {}", lines.vertical),
-        )
-    } else {
-        (format!("{MARGIN}  "), String::new())
-    };
-    let chrome = before.width() + if boxed { after.width() } else { 0 };
-    let text_width = panel.width.saturating_sub(chrome).max(MIN_TEXT_WIDTH);
-    let indent = " ".repeat(panel.column);
-    let decorated = |content: Row| -> Row {
-        let mut row = vec![(format!("{indent}{before}"), decoration.style)];
-        row.extend(content);
-        if boxed {
-            row.push((after.clone(), decoration.style));
-        }
-        row
-    };
-    let border = |left: &str, right: &str| -> Row {
-        let span = text_width + chrome - MARGIN.len() - left.width() - right.width();
-        vec![(
-            format!(
-                "{indent}{MARGIN}{left}{}{right}",
-                lines.horizontal.repeat(span)
-            ),
-            decoration.style,
-        )]
-    };
-
+    let frame = Frame::new(panel, &options.decoration);
     let mut rows: Vec<(usize, usize, Row)> = vec![];
     for (comment_i, comment) in thread.comments.iter().enumerate() {
         let notes = notes.as_deref().filter(|_| comment_i == 0);
-        for (row_i, row) in comment_rows(comment, notes, text_width, options)
+        for (row_i, row) in comment_rows(comment, notes, frame.text_width, options)
             .into_iter()
             .enumerate()
         {
-            rows.push((comment_i, row_i, decorated(row)));
+            rows.push((comment_i, row_i, frame.row(row)));
         }
     }
 
     let mut items = vec![];
-    if boxed || decoration.overline {
-        let top = if boxed {
-            border(lines.down_right, lines.down_left)
-        } else {
-            border("", "")
-        };
-        items.push(Item {
-            id: hash(("review_thread_top", &thread.id)),
-            depth,
-            unselectable: true,
-            rendered: Some(Rc::new(top)),
-            ..Default::default()
-        });
-    }
+    items.extend(frame.top(hash(("review_thread_top", &thread.id)), depth));
     let mut rows = rows.into_iter();
     if let Some((_, _, header)) = rows.next() {
         let header = Rc::new(header);
@@ -470,6 +461,7 @@ fn thread_rows(
             default_collapsed: thread.resolved,
             data: ItemData::ReviewThread {
                 url: first.url.clone(),
+                thread_id: thread.id.clone(),
             },
             rendered: Some(Rc::clone(&header)),
             // Folded, the row stands in for the thread, rather than being followed by the
@@ -484,28 +476,199 @@ fn thread_rows(
             depth: depth + 1,
             data: ItemData::ReviewComment {
                 url: thread.comments[comment_i].url.clone(),
+                thread_id: thread.id.clone(),
             },
             rendered: Some(Rc::new(row)),
             ..Default::default()
         });
     }
-    if boxed || decoration.underline {
-        let bottom = if boxed {
-            border(lines.up_right, lines.up_left)
-        } else {
-            border("", "")
+    // Beside the first row rather than under it, so that it stays while the thread is folded,
+    // as the decoration above it does.
+    items.extend(frame.bottom(hash(("review_thread_bottom", &thread.id)), depth));
+    items
+}
+
+/// The rows of `draft`, a comment being written, in `panel`, in the editor's styles: what it is,
+/// then its text, with the cursor drawn in it while it has focus. Records in `draft` the columns
+/// its text is wrapped to.
+fn draft_rows(
+    draft: &mut Draft,
+    depth: usize,
+    panel: Panel,
+    options: &CommentOptions,
+) -> Vec<Item> {
+    let frame = Frame::new(panel, &options.editor_decoration);
+    let width = frame.text_width;
+    draft.width = width;
+    let text = options.editor_text;
+    let padded = |mut row: Row| -> Row {
+        let used: usize = row.iter().map(|(span, _)| span.width()).sum();
+        row.push((" ".repeat(width.saturating_sub(used)), text));
+        frame.row(row)
+    };
+    let what = match draft.target {
+        DraftTarget::Reply { .. } => "Reply",
+        DraftTarget::Line { .. } => "New comment",
+    };
+    let hint = if draft.focused {
+        "(alt+enter posts, esc leaves)"
+    } else {
+        "(i to go on writing)"
+    };
+    let header = vec![
+        (what.to_owned(), text.patch(options.author)),
+        (" ".to_owned(), text),
+        (hint.to_owned(), text.patch(options.editor_decoration.style)),
+    ];
+
+    let chars: Vec<char> = draft.text.value().chars().collect();
+    let (cursor_row, cursor_column) = draft.text.cursor_at(width);
+    let cursor_style = text.patch(Style {
+        add_modifier: Modifier::REVERSED,
+        ..Style::new()
+    });
+    let mut rows = vec![(DRAFT_HEADER, padded(header))];
+    for (row_i, range) in draft.text.rows(width).into_iter().enumerate() {
+        let row: String = chars[range].iter().collect();
+        if !(draft.focused && row_i == cursor_row) {
+            rows.push((row_i, padded(vec![(row, text)])));
+            continue;
+        }
+        // The cursor is drawn on the char it is at, or on a space after the row's end.
+        let at = row
+            .char_indices()
+            .scan(0, |column, (byte, c)| {
+                let here = *column;
+                *column += c.width().unwrap_or(0);
+                Some((here, byte, c))
+            })
+            .find(|(column, _, _)| *column == cursor_column);
+        let spans = match at {
+            Some((_, byte, c)) => vec![
+                (row[..byte].to_owned(), text),
+                (c.to_string(), cursor_style),
+                (row[byte + c.len_utf8()..].to_owned(), text),
+            ],
+            None => vec![(row, text), (" ".to_owned(), cursor_style)],
         };
-        // Beside the first row rather than under it, so that it stays while the thread is
-        // folded, as the decoration above it does.
+        rows.push((row_i, padded(spans)));
+    }
+
+    let mut items = vec![];
+    items.extend(frame.top(hash("review_draft_top"), depth));
+    for (row, rendered) in rows {
         items.push(Item {
-            id: hash(("review_thread_bottom", &thread.id)),
+            id: hash(("review_draft", row)),
             depth,
-            unselectable: true,
-            rendered: Some(Rc::new(bottom)),
+            data: ItemData::ReviewDraft { row },
+            rendered: Some(Rc::new(rendered)),
             ..Default::default()
         });
     }
+    items.extend(frame.bottom(hash("review_draft_bottom"), depth));
     items
+}
+
+/// The row of a comment box that says what it is, as [`ItemData::ReviewDraft`] gives it.
+pub(crate) const DRAFT_HEADER: usize = usize::MAX;
+
+/// What is drawn around a thread or a comment box in a panel, as a decoration style says: a box,
+/// lines over and under it, or, with none of those, a bar down its left.
+struct Frame<'a> {
+    decoration: &'a DecorationStyle,
+    lines: &'static Lines,
+    indent: String,
+    /// What goes before and after the text on each row.
+    before: String,
+    after: String,
+    /// The columns of the text on each row.
+    text_width: usize,
+}
+
+impl<'a> Frame<'a> {
+    fn new(panel: Panel, decoration: &'a DecorationStyle) -> Self {
+        let lines = if decoration.style.add_modifier.contains(Modifier::BOLD) {
+            &HEAVY
+        } else {
+            &LIGHT
+        };
+        let bar = !decoration.boxed && !decoration.underline && !decoration.overline;
+        let (before, after) = if decoration.boxed || bar {
+            (
+                format!("{}{} ", MARGIN, lines.vertical),
+                format!(" {}", lines.vertical),
+            )
+        } else {
+            (format!("{MARGIN}  "), String::new())
+        };
+        let chrome = before.width() + if decoration.boxed { after.width() } else { 0 };
+        Self {
+            decoration,
+            lines,
+            indent: " ".repeat(panel.column),
+            text_width: panel.width.saturating_sub(chrome).max(MIN_TEXT_WIDTH),
+            before,
+            after,
+        }
+    }
+
+    /// `content`, `text_width` columns of text, in the frame.
+    fn row(&self, content: Row) -> Row {
+        let mut row = vec![(
+            format!("{}{}", self.indent, self.before),
+            self.decoration.style,
+        )];
+        row.extend(content);
+        if self.decoration.boxed {
+            row.push((self.after.clone(), self.decoration.style));
+        }
+        row
+    }
+
+    /// The row above the text: a box's top, or a line over it.
+    fn top(&self, id: ItemId, depth: usize) -> Option<Item> {
+        let lines = self.lines;
+        match (self.decoration.boxed, self.decoration.overline) {
+            (true, _) => Some(self.border_item(id, depth, lines.down_right, lines.down_left)),
+            (false, true) => Some(self.border_item(id, depth, "", "")),
+            (false, false) => None,
+        }
+    }
+
+    /// The row under the text: a box's bottom, or a line under it.
+    fn bottom(&self, id: ItemId, depth: usize) -> Option<Item> {
+        let lines = self.lines;
+        match (self.decoration.boxed, self.decoration.underline) {
+            (true, _) => Some(self.border_item(id, depth, lines.up_right, lines.up_left)),
+            (false, true) => Some(self.border_item(id, depth, "", "")),
+            (false, false) => None,
+        }
+    }
+
+    fn border_item(&self, id: ItemId, depth: usize, left: &str, right: &str) -> Item {
+        let chrome = self.before.width()
+            + if self.decoration.boxed {
+                self.after.width()
+            } else {
+                0
+            };
+        let span = self.text_width + chrome - MARGIN.len() - left.width() - right.width();
+        let row = vec![(
+            format!(
+                "{}{MARGIN}{left}{}{right}",
+                self.indent,
+                self.lines.horizontal.repeat(span)
+            ),
+            self.decoration.style,
+        )];
+        Item {
+            id,
+            depth,
+            unselectable: true,
+            rendered: Some(Rc::new(row)),
+            ..Default::default()
+        }
+    }
 }
 
 /// When `comment` was made: as `options.timestamp_format` formats it in local time, or how long

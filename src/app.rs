@@ -443,11 +443,21 @@ impl App {
                     self.handle_picker_input(key)?;
                 } else if self.state.prompt.state.focused {
                     self.state.prompt.handle_key(key);
+                } else if crate::ops::pr::draft_has_focus(self) {
+                    let result = crate::ops::pr::handle_draft_key(self, term, key);
+                    self.handle_result(result)?;
                 } else {
                     self.handle_key_input(term, key)?;
                 }
 
                 self.stage_redraw();
+                Ok(())
+            }
+            Event::Paste(text) => {
+                if crate::ops::pr::draft_has_focus(self) {
+                    crate::ops::pr::paste_into_draft(self, &text);
+                    self.stage_redraw();
+                }
                 Ok(())
             }
             _ => Ok(()),

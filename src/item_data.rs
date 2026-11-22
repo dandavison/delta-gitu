@@ -78,11 +78,18 @@ pub(crate) enum ItemData {
     /// first comment's page on GitHub.
     ReviewThread {
         url: String,
+        thread_id: String,
     },
     /// A row of a comment in a PR's review thread, and the comment's page on
     /// GitHub.
     ReviewComment {
         url: String,
+        thread_id: String,
+    },
+    /// A row of a PR comment being written: which row of its text, or its first row, which says
+    /// what it is ([`crate::screen::review::DRAFT_HEADER`]).
+    ReviewDraft {
+        row: usize,
     },
 }
 
@@ -108,7 +115,9 @@ impl ItemData {
             ItemData::Header(_) => "Section",
             ItemData::BranchStatus(..) => "Branch",
             ItemData::Error(_) => "Error",
-            ItemData::ReviewThread { .. } | ItemData::ReviewComment { .. } => "Comment",
+            ItemData::ReviewThread { .. }
+            | ItemData::ReviewComment { .. }
+            | ItemData::ReviewDraft { .. } => "Comment",
         }
     }
 

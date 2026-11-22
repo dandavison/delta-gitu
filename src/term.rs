@@ -3,7 +3,9 @@ use crate::{Res, config::Config, error::Error};
 use crossterm::{
     QueueableCommand,
     cursor::{self, MoveTo},
-    event::{DisableMouseCapture, EnableMouseCapture, Event},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    },
     style::{Attribute, Colors, Print, ResetColor, SetAttribute, SetColors},
     terminal::{
         Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
@@ -255,6 +257,8 @@ impl TermBackend {
                 if config.general.mouse_support {
                     crossterm_backend.queue(EnableMouseCapture)?;
                 }
+                // A paste arrives whole rather than as keys, for a comment box to take.
+                crossterm_backend.queue(EnableBracketedPaste)?;
             }
             TermBackend::Test { .. } => {}
         }
@@ -268,6 +272,7 @@ impl TermBackend {
                 if config.general.mouse_support {
                     crossterm_backend.queue(DisableMouseCapture)?;
                 }
+                crossterm_backend.queue(DisableBracketedPaste)?;
                 crossterm_backend.queue(cursor::Show)?;
                 crossterm_backend.queue(LeaveAlternateScreen)?;
                 disable_raw_mode()?;
@@ -322,6 +327,7 @@ impl TermBackend {
                 if config.general.mouse_support {
                     crossterm_backend.queue(DisableMouseCapture)?;
                 }
+                crossterm_backend.queue(DisableBracketedPaste)?;
                 crossterm_backend.queue(cursor::Show)?;
                 disable_raw_mode()?;
             }

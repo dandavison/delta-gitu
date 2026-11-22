@@ -65,20 +65,16 @@ fn create_decorated(
         Arc::clone(&config),
         params,
         Box::new(move |params: RenderParams| {
-            let items = if params.streaming {
+            if params.streaming {
                 source.first_items(&config, &repo, &params)
             } else {
                 source.items(&config, &repo, &params).map(Items::from)
-            }?;
-            Ok(match &decorate {
-                Some(decorate) => {
-                    let decorate = Rc::clone(decorate);
-                    items.map(Rc::new(move |items| decorate(&params, items)))
-                }
-                None => items,
-            })
+            }
         }),
     )?;
+    if let Some(decorate) = decorate {
+        screen.set_decorate(decorate);
+    }
     screen.git_command = git_command;
     // With its files folded there is no hunk to start on; the first file is
     // where the one wanted is chosen from.

@@ -1,6 +1,6 @@
 //! Review a GitHub PR: check it out, see its diff with GitHub's Viewed
-//! checkbox on each file, tick them off, and open a line on GitHub to comment
-//! on it.
+//! checkbox on each file, tick them off, open a line on GitHub, and write
+//! comments in a box in the diff.
 
 use super::{Action, OpTrait};
 use crate::{
@@ -8,12 +8,14 @@ use crate::{
     app::{App, PromptParams, State},
     error::Error,
     git::{self, diff::Diff},
-    github::{self, Review, Side, ViewedState},
+    github::{self, Draft, DraftTarget, Review, Side, ViewedState},
     item_data::ItemData,
     screen,
     style::Style,
     term::Term,
+    text_area::{Outcome, TextArea},
 };
+use crossterm::event::KeyEvent;
 use git2::Oid;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -76,6 +78,7 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
         viewed: RefCell::new(github.viewed(&pr)?),
         threads: RefCell::new(github.threads(&pr)?),
         options: RefCell::new(None),
+        draft: RefCell::new(None),
         pr,
     });
 
@@ -189,7 +192,7 @@ impl OpTrait for ToggleViewed {
 pub(crate) struct ShowOnGithub;
 impl OpTrait for ShowOnGithub {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
-        if let ItemData::ReviewThread { url } | ItemData::ReviewComment { url } = target {
+        if let ItemData::ReviewThread { url, .. } | ItemData::ReviewComment { url, .. } = target {
             let url = url.clone();
             return Some(Rc::new(move |app, _term| app.state.github.open(&url)));
         }
@@ -266,4 +269,137 @@ fn line_of(target: &ItemData) -> Option<(Side, u32)> {
             diff.hunk_line_new_file_num(file_i, hunk_i, line_i),
         )
     })
+}
+
+/// Write a comment in a box in the diff: on a thread, a reply to it; on a diff line, a new comment
+/// on it. On the box, or anywhere while it holds text, go back to it, rather than lose what was
+/// written.
+pub(crate) struct WriteComment;
+impl OpTrait for WriteComment {
+    fn get_action(&self, target: &ItemData) -> Option<Action> {
+        let new_target = match target {
+            ItemData::ReviewThread { thread_id, .. }
+            | ItemData::ReviewComment { thread_id, .. } => Some(DraftTarget::Reply {
+                thread_id: thread_id.clone(),
+            }),
+            ItemData::ReviewDraft { .. } => None,
+            // A file's row has no line to comment on, but from it, as from any row of a diff,
+            // `i` goes back to a box being written.
+            _ => {
+                let (diff, file_i) = file_of(target)?;
+                line_of(target).map(|line| DraftTarget::Line {
+                    path: github::file_path(diff, file_i),
+                    line,
+                })
+            }
+        };
+        Some(Rc::new(move |app, _term| {
+            let Some(review) = app.screen().review.clone() else {
+                app.display_error(NO_REVIEW);
+                return Ok(());
+            };
+            {
+                let mut draft = review.draft.borrow_mut();
+                // A box with nothing written in it, elsewhere, gives way to the new one.
+                let replaced = match (&*draft, &new_target) {
+                    (Some(draft), Some(target)) => {
+                        draft.text.value().is_empty() && draft.target != *target
+                    }
+                    (None, Some(_)) => true,
+                    (_, None) => false,
+                };
+                match (&mut *draft, new_target.clone()) {
+                    (_, Some(target)) if replaced => {
+                        *draft = Some(Draft {
+                            target,
+                            text: TextArea::default(),
+                            focused: true,
+                            width: 0,
+                        });
+                    }
+                    (Some(draft), _) => draft.focused = true,
+                    (None, _) => {
+                        drop(draft);
+                        app.display_error(
+                            "Nothing to comment on here: i comments on a diff line, or replies to a thread",
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+            show_draft(app);
+            Ok(())
+        }))
+    }
+
+    fn is_target_op(&self) -> bool {
+        true
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Write a comment".into()
+    }
+}
+
+/// Whether keys go to a comment box on the screen.
+pub(crate) fn draft_has_focus(app: &App) -> bool {
+    app.screen().review.as_ref().is_some_and(|review| {
+        review
+            .draft
+            .borrow()
+            .as_ref()
+            .is_some_and(|draft| draft.focused)
+    })
+}
+
+/// Edit the comment box that has focus as `key` says, or leave it.
+pub(crate) fn handle_draft_key(app: &mut App, _term: &mut Term, key: KeyEvent) -> Res<()> {
+    let Some(review) = app.screen().review.clone() else {
+        return Ok(());
+    };
+    let outcome = {
+        let mut draft = review.draft.borrow_mut();
+        let Some(draft) = draft.as_mut() else {
+            return Ok(());
+        };
+        let width = draft.width;
+        let outcome = draft.text.handle_key(key, width);
+        if outcome == Outcome::Leave {
+            draft.focused = false;
+        }
+        outcome
+    };
+    match outcome {
+        Outcome::Edited | Outcome::Moved | Outcome::Leave => show_draft(app),
+        Outcome::Submit => app.display_error("Posting comments is not built yet"),
+        Outcome::Ignored => {}
+    }
+    Ok(())
+}
+
+/// Insert a paste into the comment box that has focus.
+pub(crate) fn paste_into_draft(app: &mut App, text: &str) {
+    if let Some(review) = app.screen().review.clone()
+        && let Some(draft) = review.draft.borrow_mut().as_mut()
+    {
+        draft.text.insert_str(text);
+    }
+    show_draft(app);
+}
+
+/// Draw the comment box again, with the screen's cursor on the row its text cursor is in while
+/// it has focus, so that it stays in view as it grows.
+fn show_draft(app: &mut App) {
+    let screen = app.screen_mut();
+    screen.redecorate();
+    let Some(review) = screen.review.clone() else {
+        return;
+    };
+    let row = match review.draft.borrow().as_ref() {
+        Some(draft) if draft.focused => draft.text.cursor_at(draft.width).0,
+        _ => return,
+    };
+    screen.select_matching_in_view(
+        |data| matches!(data, ItemData::ReviewDraft { row: r } if *r == row),
+    );
 }
