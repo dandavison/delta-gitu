@@ -198,6 +198,12 @@ picker.matched = { fg = "yellow", mods = "BOLD" }
 
 search_match = { mods = "REVERSED" }
 
+# A PR review comment's text (its author's login is drawn in it, bold), and
+# the bar before it with what a thread's first row says of it, such as that it
+# is resolved. In git config: [delta-tui "style"] comment, comment-decoration.
+comment = {}
+comment_decoration = { fg = "blue" }
+
 cursor = { symbol = "▌", fg = "blue" }
 selection_bar = { symbol = "▌", fg = "blue", mods = "DIM" }
 selection_line = { mods = "BOLD" }

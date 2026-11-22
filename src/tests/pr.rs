@@ -641,3 +641,54 @@ fn a_long_comment_wraps_under_the_bar() {
     assert_ne!(line_with(&ctx, "alice: w1 "), line_with(&ctx, "w30"));
     assert_eq!(bar_column(&ctx, "w30"), 1 + 2);
 }
+
+/// The cell drawn for the first `c` on the screen's row that shows `text`.
+fn cell(ctx: &TestContext, text: &str, c: char) -> crate::term::TestCell {
+    let crate::term::TermBackend::Test { buffer, .. } = &ctx.term else {
+        unreachable!();
+    };
+    let rows: Vec<_> = buffer.cells.chunks(buffer.width as usize).collect();
+    let row = rows
+        .iter()
+        .find(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+                .contains(text)
+        })
+        .unwrap_or_else(|| panic!("no row with {text}:\n{}", ctx.redact_buffer()));
+    row.iter()
+        .find(|cell| cell.symbol == c.to_string())
+        .unwrap_or_else(|| panic!("no {c} in the row with {text}"))
+        .clone()
+}
+
+#[test]
+fn comments_are_drawn_in_the_comment_styles() {
+    let mut ctx = setup_clone!();
+    ctx.config().style.comment = toml::from_str(r#"fg = "red""#).unwrap();
+    ctx.config().style.comment_decoration = toml::from_str(r#"fg = "blue""#).unwrap();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        None,
+        false,
+        &[("alice", "Why new?"), ("bob", "Because")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    use crate::style::{Color, Modifier};
+    assert_eq!(cell(&ctx, "alice: Why new?", '│').fg, Color::Blue);
+    assert_eq!(cell(&ctx, "alice: Why new?", 'W').fg, Color::Red);
+    let author = cell(&ctx, "alice: Why new?", 'a');
+    assert_eq!(author.fg, Color::Red);
+    assert!(author.modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        cell(&ctx, "alice: Why new?", 'u').fg,
+        Color::Blue,
+        "outdated"
+    );
+    assert_eq!(cell(&ctx, "bob: Because", 'B').fg, Color::Red);
+}
