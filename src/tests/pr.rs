@@ -1131,3 +1131,30 @@ fn comments_have_a_background_by_default() {
         crate::style::Color::Rgb(0xf6, 0xf8, 0xfa)
     );
 }
+
+/// Each comment's time links to the comment on GitHub.
+#[test]
+fn a_comments_time_links_to_it_on_github() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?"), ("bob", "Because")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    // The g of "ago".
+    assert_eq!(
+        cell(&ctx, ALICE, 'g').link,
+        Some(format!("{PR_URL}#discussion_t1_0"))
+    );
+    assert_eq!(
+        cell(&ctx, BOB, 'g').link,
+        Some(format!("{PR_URL}#discussion_t1_1"))
+    );
+    assert_eq!(cell(&ctx, ALICE, 'a').link, None, "the author");
+}
