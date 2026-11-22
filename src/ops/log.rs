@@ -45,7 +45,7 @@ impl OpTrait for LogOther {
             let rev = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Log rev",
+                    prompt: "Log rev".into(),
                     create_default_value: Box::new(|app| {
                         selected_rev(app)
                             .as_ref()

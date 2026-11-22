@@ -15,11 +15,13 @@ pub(crate) struct PromptData {
     pub(crate) bare: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum HistoryKind {
     GitCommand,
     FilePatterns,
     Search,
+    /// What was typed for `{input}` in the command or view of this name.
+    Input(String),
 }
 
 pub(crate) struct Prompt {
@@ -70,7 +72,7 @@ impl Prompt {
         self.active_history = None;
     }
 
-    pub(crate) fn start_history(&mut self, kind: Option<HistoryKind>) -> Res<()> {
+    pub(crate) fn start_history(&mut self, kind: Option<&HistoryKind>) -> Res<()> {
         let (Some(kind), Some(dir)) = (kind, &self.history_dir) else {
             return Ok(());
         };
@@ -87,7 +89,7 @@ impl Prompt {
         Ok(())
     }
 
-    pub(crate) fn remember(&self, kind: HistoryKind, value: &str) -> Res<()> {
+    pub(crate) fn remember(&self, kind: &HistoryKind, value: &str) -> Res<()> {
         let Some(dir) = &self.history_dir else {
             return Ok(());
         };
@@ -95,11 +97,12 @@ impl Prompt {
             return Ok(());
         }
 
-        fs::create_dir_all(dir).map_err(Error::WritePromptHistory)?;
+        let path = history_path(dir, kind);
+        fs::create_dir_all(path.parent().unwrap()).map_err(Error::WritePromptHistory)?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(history_path(dir, kind))
+            .open(path)
             .map_err(Error::WritePromptHistory)?;
         file.write_all(format!("{value}\n").as_bytes())
             .map_err(Error::WritePromptHistory)
@@ -257,7 +260,7 @@ fn save_history_edit(history: &mut ActiveHistory, value: &str) {
     }
 }
 
-fn read_history(dir: &Path, kind: HistoryKind) -> Res<Vec<String>> {
+fn read_history(dir: &Path, kind: &HistoryKind) -> Res<Vec<String>> {
     match fs::read_to_string(history_path(dir, kind)) {
         Ok(contents) => Ok(contents.lines().map(str::to_owned).collect()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -265,12 +268,16 @@ fn read_history(dir: &Path, kind: HistoryKind) -> Res<Vec<String>> {
     }
 }
 
-fn history_path(dir: &Path, kind: HistoryKind) -> PathBuf {
-    dir.join(match kind {
-        HistoryKind::GitCommand => "git-command-history",
-        HistoryKind::FilePatterns => "file-pattern-history",
-        HistoryKind::Search => "search-history",
-    })
+fn history_path(dir: &Path, kind: &HistoryKind) -> PathBuf {
+    match kind {
+        HistoryKind::GitCommand => dir.join("git-command-history"),
+        HistoryKind::FilePatterns => dir.join("file-pattern-history"),
+        HistoryKind::Search => dir.join("search-history"),
+        // A name is any string, so it is escaped to be one file name.
+        HistoryKind::Input(name) => dir
+            .join("input-history")
+            .join(name.replace('%', "%25").replace('/', "%2F")),
+    }
 }
 
 #[cfg(test)]

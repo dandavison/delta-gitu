@@ -29,7 +29,7 @@ impl OpTrait for PushToPushRemote {
                     let push_remote_name = app.prompt(
                         term,
                         &PromptParams {
-                            prompt: "Set pushRemote then push",
+                            prompt: "Set pushRemote then push".into(),
                             ..Default::default()
                         },
                     )?;
@@ -79,7 +79,7 @@ impl OpTrait for PushToUpstream {
                         let upstream_name = app.prompt(
                             term,
                             &PromptParams {
-                                prompt: "Set upstream then push",
+                                prompt: "Set upstream then push".into(),
                                 ..Default::default()
                             },
                         )?;
@@ -122,7 +122,7 @@ impl OpTrait for PushToElsewhere {
             let remote = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Select remote",
+                    prompt: "Select remote".into(),
                     ..Default::default()
                 },
             )?;

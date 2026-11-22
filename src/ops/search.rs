@@ -72,7 +72,7 @@ fn prompt_search(app: &mut App, term: &mut Term, direction: SearchDirection) -> 
     let answer = app.prompt(
         term,
         &PromptParams {
-            prompt,
+            prompt: prompt.into(),
             bare: true,
             history: Some(crate::prompt::HistoryKind::Search),
             on_edit: Some(Box::new(move |app, query| {

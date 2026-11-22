@@ -282,9 +282,9 @@ pub(crate) struct Screen {
     /// does not add to it.
     unfolded: HashSet<ItemId>,
     search: Option<Search>,
-    /// The GitHub PR this screen shows the diff of, whose files are drawn with
-    /// their Viewed checkboxes.
-    pub(crate) review: Option<Rc<crate::github::Review>>,
+    /// The PR this screen shows the diff of, whose files are drawn with their Viewed
+    /// checkboxes.
+    pub(crate) pr: Option<Rc<crate::review::OpenPr>>,
     /// What adds rows of gitu's own to those built, such as a PR's review threads, each time
     /// they are built (see [`crate::screen::pager::Decorate`]).
     decorate: Option<crate::screen::pager::Decorate>,
@@ -345,7 +345,7 @@ impl Screen {
             seen: HashSet::new(),
             unfolded: HashSet::new(),
             search: None,
-            review: None,
+            pr: None,
             decorate: None,
             undecorated: vec![],
         };
@@ -367,9 +367,9 @@ impl Screen {
 
     fn params(&self) -> RenderParams {
         let prefix = self
-            .review
+            .pr
             .as_ref()
-            .map_or(0, |_| crate::github::FILE_PREFIX_WIDTH);
+            .map_or(0, |_| crate::review::FILE_PREFIX_WIDTH);
         RenderParams {
             size: (self.size.0.saturating_sub(prefix), self.size.1),
             features: Rc::clone(&self.features),
@@ -1997,10 +1997,10 @@ fn layout_item<'a>(layout: &mut UiTree<'a>, screen: &'a Screen, hide_cursor: boo
         layout.row(opts(), |layout| layout_span(layout, gutter_char));
 
         let item = &screen.items[line.item_index];
-        if let (Some(review), ItemData::Delta { diff, file_i, .. }) = (&screen.review, &item.data) {
-            let path = crate::github::file_path(diff, *file_i);
+        if let (Some(pr), ItemData::Delta { diff, file_i, .. }) = (&screen.pr, &item.data) {
+            let path = crate::review::file_path(diff, *file_i);
             layout.row(opts(), |layout| {
-                layout_span(layout, (review.checkbox(&path).into(), bg));
+                layout_span(layout, (pr.checkbox(&path).into(), bg));
             });
         }
         if let Some(row) = screen.standing_in_row(item) {

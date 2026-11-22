@@ -98,6 +98,8 @@ pub(crate) enum Op {
     PushToElsewhere,
     PrCurrent,
     PrOther,
+    PrLocal,
+    PrPost,
     ToggleViewed,
     ShowOnGithub,
     WriteComment,
@@ -242,9 +244,11 @@ impl Op {
             Op::PushToElsewhere => "Push to a branch you choose",
             Op::PrCurrent => "Check out the current branch's GitHub PR and review it",
             Op::PrOther => "Check out a GitHub PR you choose by number or URL and review it",
+            Op::PrLocal => "Review the current branch as a local PR",
+            Op::PrPost => "Post your draft review to GitHub",
             Op::ToggleViewed => "Tick or untick the PR file's Viewed checkbox on GitHub",
             Op::ShowOnGithub => "Open the PR file, hunk, line or comment on GitHub, to comment there",
-            Op::WriteComment => "Write a comment on the PR line, or a reply to the thread, in a box in the diff",
+            Op::WriteComment => "Write a comment or a reply, or edit your own comment",
             Op::RebaseAbort => "Abort the rebase",
             Op::RebaseContinue => "Continue the rebase",
             Op::RebaseElsewhere => "Rebase onto a branch or commit you choose",
@@ -375,6 +379,7 @@ impl Op {
             | Op::PushToElsewhere
             | Op::PrCurrent
             | Op::PrOther
+            | Op::PrPost
             | Op::RebaseAbort
             | Op::RebaseContinue
             | Op::RebaseElsewhere
@@ -470,6 +475,8 @@ impl Op {
             Op::PushToElsewhere => Box::new(push::PushToElsewhere),
             Op::PrCurrent => Box::new(pr::PrCurrent),
             Op::PrOther => Box::new(pr::PrOther),
+            Op::PrLocal => Box::new(pr::PrLocal),
+            Op::PrPost => Box::new(pr::PrPost),
             Op::ToggleViewed => Box::new(pr::ToggleViewed),
             Op::ShowOnGithub => Box::new(pr::ShowOnGithub),
             Op::WriteComment => Box::new(pr::WriteComment),

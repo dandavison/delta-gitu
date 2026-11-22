@@ -59,7 +59,7 @@ impl OpTrait for RevertCommit {
             let commit = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Revert commit",
+                    prompt: "Revert commit".into(),
                     create_default_value: Box::new(|app| {
                         selected_rev(app)
                             .as_ref()

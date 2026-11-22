@@ -85,8 +85,8 @@ pub enum Error {
     /// gh failed, or what it printed could not be read: what went wrong.
     Gh(String),
     PrCheckoutDirty,
-    /// No remote is the repository a PR is on, `{owner}/{repo}`.
-    NoRemoteForPr(String),
+    /// A local PR could not be opened, read or written: what went wrong.
+    LocalPr(String),
 }
 
 impl std::error::Error for Error {}
@@ -246,9 +246,7 @@ impl Display for Error {
             Error::PrCheckoutDirty => {
                 f.write_str("Cannot check out PR: working tree has uncommitted changes")
             }
-            Error::NoRemoteForPr(repo) => {
-                write!(f, "Cannot fetch the PR's base: no remote is {repo}")
-            }
+            Error::LocalPr(message) => f.write_str(message),
         }
     }
 }

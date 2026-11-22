@@ -129,7 +129,9 @@ start_folded = false
 # as `renderer_features` lists them. `{commit}`, `{file}` and `{branch}` are
 # filled in, quoted for the shell, from what is under the cursor, and
 # `{command}` with the git command the screen is showing, as `:` shows it; a
-# command using one that is not there is not run. `COLUMNS` and
+# command using one that is not there is not run. `{input}` is what is typed
+# at a prompt that the key opens, labelled with the command's name and with a
+# history of its own; esc, or enter with nothing typed, cancels the command. `COLUMNS` and
 # `DELTA_FEATURES` are set as gitu sets them for the delta it draws with, so
 # that `{command} --color=always | delta` draws as delta draws the screen, but
 # without what gitu adds: folds, counted stat rows, hidden files. It runs in
@@ -139,6 +141,7 @@ start_folded = false
 # In git config:
 #   [delta]
 #       command = open-pr gh pr view --web {commit}
+#       command = tell-agent tmux send-keys -t agent {input} Enter
 commands = {}
 
 # git commands, by name, that a key from `diff_renderer.feature_keys` opens as
@@ -146,10 +149,12 @@ commands = {}
 # back. Filled in as commands are, but not run by a shell: a view is a `git
 # diff`, `git show` or `git log`, run again after each change as `:` runs an
 # edited command. `{command}` is a word of its own, standing for the words of
-# the git command shown, so that a view can change it. In git config:
+# the git command shown, so that a view can change it. `{input}` is one word,
+# however many words are typed. In git config:
 #   [delta]
 #       view = diff-since git diff {commit}...
 #       view = word-diff {command} --word-diff
+#       view = pickaxe git log -S {input}
 views = {}
 
 # An editor that alt+enter opens a file, hunk or line in, besides the one enter
@@ -408,10 +413,13 @@ push_menu.push_to_upstream = ["u"]
 push_menu.push_to_elsewhere = ["e"]
 push_menu.quit = ["q", "esc", "left"]
 
-# Check out a GitHub PR with gh and review its diff.
+# Check out a GitHub PR with gh and review its diff, or review the current
+# branch as a local PR.
 root.pr_menu = ["O"]
 pr_menu.pr_current = ["O"]
 pr_menu.pr_other = ["o"]
+pr_menu.pr_local = ["l"]
+pr_menu.pr_post = ["p"]
 pr_menu.quit = ["q", "esc", "left"]
 
 root.rebase_menu = ["r"]

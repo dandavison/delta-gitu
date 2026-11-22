@@ -19,7 +19,7 @@ impl OpTrait for ResetSoft {
             let rev = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Soft reset to",
+                    prompt: "Soft reset to".into(),
                     create_default_value: Box::new(|app| {
                         selected_rev(app)
                             .as_ref()
@@ -55,7 +55,7 @@ impl OpTrait for ResetMixed {
             let rev = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Mixed reset to",
+                    prompt: "Mixed reset to".into(),
                     create_default_value: Box::new(|app| {
                         selected_rev(app)
                             .as_ref()
@@ -91,7 +91,7 @@ impl OpTrait for ResetHard {
             let rev = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Hard reset to",
+                    prompt: "Hard reset to".into(),
                     create_default_value: Box::new(|app| {
                         selected_rev(app)
                             .as_ref()

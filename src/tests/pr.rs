@@ -7,7 +7,10 @@ use super::*;
 use crate::{
     app::App,
     error::Error,
-    github::{Comment, GitHub, Pr, Side, Thread, ViewedState},
+    review::{
+        Comment, Side, Thread, ViewedState,
+        github::{GitHub, GitHubPr},
+    },
 };
 use std::{cell::RefCell, collections::HashMap, process::Command, rc::Rc};
 
@@ -17,82 +20,201 @@ const ADDED_TXT_HASH: &str = "005338a261920beed70d358c421c16850b4a5fb5e6ff7e9746
 
 /// GitHub as the tests see it: one PR, the branch `feature` into `main`,
 /// recording what gitu asks of it.
-struct FakeGitHub {
-    base_oid: String,
-    head_oid: String,
-    threads: RefCell<Vec<Thread>>,
-    viewed: RefCell<HashMap<String, ViewedState>>,
-    asked_for: RefCell<Vec<Option<String>>>,
-    fetched_base: RefCell<bool>,
-    opened: RefCell<Vec<String>>,
+pub(super) struct FakeGitHub {
+    pub(super) base_oid: String,
+    pub(super) head_oid: String,
+    /// The branch the PR is into.
+    pub(super) base_ref: RefCell<String>,
+    pub(super) threads: RefCell<Vec<Thread>>,
+    pub(super) viewed: RefCell<HashMap<String, ViewedState>>,
+    pub(super) asked_for: RefCell<Vec<Option<String>>>,
+    pub(super) opened: RefCell<Vec<String>>,
     /// The comments posted, as (where, body): a thread's id, or a path and line.
-    posted: RefCell<Vec<(String, String)>>,
+    pub(super) posted: RefCell<Vec<(String, String)>>,
+    /// The id of the user's pending review, if they have one.
+    pub(super) pending: RefCell<Option<String>>,
+    /// How many pending reviews gitu has started.
+    pub(super) reviews_started: RefCell<usize>,
+    /// The comments edited, as (id, body), and deleted, by id.
+    pub(super) edited: RefCell<Vec<(String, String)>>,
+    pub(super) deleted: RefCell<Vec<String>>,
+    /// Whether the branch has a PR on GitHub.
+    pub(super) has_pr: RefCell<bool>,
+    /// The PRs created, as (head, base).
+    pub(super) created: RefCell<Vec<(String, String)>>,
+    /// The default branch of the repository on GitHub.
+    pub(super) default_branch: RefCell<String>,
+    /// Whether gh fails, as without the network.
+    pub(super) fails: RefCell<bool>,
 }
 
 impl GitHub for FakeGitHub {
-    fn pr(&self, selector: Option<&str>) -> Result<Pr, Error> {
+    fn pr(&self, selector: Option<&str>) -> Result<GitHubPr, Error> {
         self.asked_for.borrow_mut().push(selector.map(String::from));
-        Ok(Pr {
+        Ok(GitHubPr {
             id: "PR_id".into(),
             number: 7,
             url: PR_URL.into(),
-            base_ref: "main".into(),
+            base_ref: self.base_ref.borrow().clone(),
             base_oid: self.base_oid.clone(),
             head_oid: self.head_oid.clone(),
         })
     }
 
-    fn checkout(&self, _pr: &Pr) -> Command {
+    fn checkout(&self, _pr: &GitHubPr) -> Command {
         let mut cmd = Command::new("git");
         cmd.args(["checkout", "feature"]);
         cmd
     }
 
-    fn fetch_base(&self, _pr: &Pr) -> Result<Command, Error> {
-        *self.fetched_base.borrow_mut() = true;
-        let mut cmd = Command::new("git");
-        cmd.args(["fetch", "origin", "main"]);
-        Ok(cmd)
-    }
-
-    fn viewed(&self, _pr: &Pr) -> Result<HashMap<String, ViewedState>, Error> {
+    fn viewed(&self, _pr: &GitHubPr) -> Result<HashMap<String, ViewedState>, Error> {
         Ok(self.viewed.borrow().clone())
     }
 
-    fn threads(&self, _pr: &Pr) -> Result<Vec<Thread>, Error> {
+    /// One review for the comments in my pending review, and one for the rest. A test may set
+    /// up a comment in my pending review without saying which review that is: it is R0.
+    fn reviews(&self, _pr: &GitHubPr) -> Result<Vec<crate::review::github::GitHubReview>, Error> {
+        use crate::review::github::{GitHubReview, GitHubReviewState};
+        let comments = |draft: bool| -> Vec<String> {
+            self.threads
+                .borrow()
+                .iter()
+                .flat_map(|t| &t.comments)
+                .filter(|c| c.draft == draft)
+                .map(|c| c.id.clone())
+                .collect()
+        };
+        let mut reviews = vec![GitHubReview {
+            id: "submitted".into(),
+            author: "alice".into(),
+            state: GitHubReviewState::Submitted,
+            comments: comments(false),
+            mine: false,
+        }];
+        let pending = self.pending.borrow().clone();
+        if pending.is_some() || !comments(true).is_empty() {
+            reviews.push(GitHubReview {
+                id: pending.unwrap_or_else(|| "R0".to_owned()),
+                author: "me".into(),
+                state: GitHubReviewState::Pending,
+                comments: comments(true),
+                mine: true,
+            });
+        }
+        Ok(reviews)
+    }
+
+    fn threads(&self, _pr: &GitHubPr) -> Result<Vec<Thread>, Error> {
         Ok(self.threads.borrow().clone())
     }
 
-    fn reply(&self, _pr: &Pr, thread_id: &str, body: &str) -> Result<(), Error> {
+    fn default_branch(&self) -> Result<String, Error> {
+        if *self.fails.borrow() {
+            return Err(Error::Gh("error connecting to api.github.com".to_owned()));
+        }
+        Ok(self.default_branch.borrow().clone())
+    }
+
+    fn pr_for_branch(&self, _head: &str) -> Result<Option<GitHubPr>, Error> {
+        if *self.fails.borrow() {
+            return Err(Error::Gh("error connecting to api.github.com".to_owned()));
+        }
+        if !*self.has_pr.borrow() {
+            return Ok(None);
+        }
+        self.pr(None).map(Some)
+    }
+
+    fn create_pr(&self, head: &str, base: &str) -> Result<GitHubPr, Error> {
+        self.created
+            .borrow_mut()
+            .push((head.to_owned(), base.to_owned()));
+        *self.has_pr.borrow_mut() = true;
+        self.pr(None)
+    }
+
+    fn pending_review(&self, _pr: &GitHubPr) -> Result<Option<String>, Error> {
+        Ok(self.pending.borrow().clone())
+    }
+
+    fn start_review(&self, _pr: &GitHubPr) -> Result<String, Error> {
+        *self.reviews_started.borrow_mut() += 1;
+        let id = format!("R{}", self.reviews_started.borrow());
+        *self.pending.borrow_mut() = Some(id.clone());
+        Ok(id)
+    }
+
+    fn add_thread(
+        &self,
+        review_id: &str,
+        path: &str,
+        line: (Side, u32),
+        body: &str,
+    ) -> Result<String, Error> {
         self.posted
             .borrow_mut()
-            .push((thread_id.to_owned(), body.to_owned()));
+            .push((format!("{review_id} {path}:{line:?}"), body.to_owned()));
+        let id = format!("new{}", self.threads.borrow().len());
+        let mut new = Thread {
+            path: path.to_owned(),
+            ..thread(&id, Some(line), false, &[("me", body)])
+        };
+        new.comments[0].draft = true;
+        new.comments[0].editable = true;
+        new.comments[0].deletable = true;
+        let comment_id = new.comments[0].id.clone();
+        self.threads.borrow_mut().push(new);
+        Ok(comment_id)
+    }
+
+    fn add_reply(&self, review_id: &str, comment_id: &str, body: &str) -> Result<String, Error> {
+        self.posted
+            .borrow_mut()
+            .push((format!("{review_id} {comment_id}"), body.to_owned()));
         let mut threads = self.threads.borrow_mut();
         let thread = threads
             .iter_mut()
-            .find(|thread| thread.id == thread_id)
+            .find(|thread| thread.comments[0].id == comment_id)
             .unwrap();
         thread.comments.push(Comment {
+            id: "reply".into(),
             author: "me".into(),
             body: body.to_owned(),
-            url: format!("{PR_URL}#reply"),
+            url: Some(format!("{PR_URL}#reply")),
             created_at: two_hours_ago(),
+            draft: true,
+            editable: true,
+            deletable: true,
+            agent: None,
         });
-        Ok(())
+        Ok("reply".to_owned())
     }
 
-    fn comment(&self, _pr: &Pr, path: &str, line: (Side, u32), body: &str) -> Result<(), Error> {
-        self.posted
+    fn edit_comment(&self, comment_id: &str, body: &str) -> Result<(), Error> {
+        self.edited
             .borrow_mut()
-            .push((format!("{path}:{line:?}"), body.to_owned()));
-        self.threads.borrow_mut().push(Thread {
-            path: path.to_owned(),
-            ..thread("new", Some(line), false, &[("me", body)])
-        });
+            .push((comment_id.to_owned(), body.to_owned()));
+        for thread in self.threads.borrow_mut().iter_mut() {
+            for comment in &mut thread.comments {
+                if comment.id == comment_id {
+                    comment.body = body.to_owned();
+                }
+            }
+        }
         Ok(())
     }
 
-    fn set_viewed(&self, _pr: &Pr, path: &str, viewed: bool) -> Result<(), Error> {
+    fn delete_comment(&self, comment_id: &str) -> Result<(), Error> {
+        self.deleted.borrow_mut().push(comment_id.to_owned());
+        let mut threads = self.threads.borrow_mut();
+        for thread in threads.iter_mut() {
+            thread.comments.retain(|comment| comment.id != comment_id);
+        }
+        threads.retain(|thread| !thread.comments.is_empty());
+        Ok(())
+    }
+
+    fn set_viewed(&self, _pr: &GitHubPr, path: &str, viewed: bool) -> Result<(), Error> {
         let state = if viewed {
             ViewedState::Viewed
         } else {
@@ -117,23 +239,38 @@ fn setup(ctx: &TestContext) -> Rc<FakeGitHub> {
     commit(&ctx.dir, "added.txt", "added\n");
     run(&ctx.dir, &["git", "checkout", "main"]);
     commit(&ctx.dir, "main-only.txt", "main\n");
-    Rc::new(FakeGitHub {
-        base_oid: run(&ctx.dir, &["git", "rev-parse", "main"])
-            .trim()
-            .to_owned(),
-        head_oid: run(&ctx.dir, &["git", "rev-parse", "feature"])
-            .trim()
-            .to_owned(),
-        threads: RefCell::new(vec![]),
-        viewed: RefCell::new(HashMap::from([
-            ("lines.txt".to_owned(), ViewedState::Viewed),
-            ("added.txt".to_owned(), ViewedState::Unviewed),
-        ])),
-        asked_for: RefCell::new(vec![]),
-        fetched_base: RefCell::new(false),
-        opened: RefCell::new(vec![]),
-        posted: RefCell::new(vec![]),
-    })
+    Rc::new(FakeGitHub::new(
+        run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
+        run(&ctx.dir, &["git", "rev-parse", "feature"]).trim(),
+    ))
+}
+
+impl FakeGitHub {
+    /// GitHub with one PR, whose base and head are at `base_oid` and `head_oid`, with no
+    /// threads, `lines.txt` ticked and `added.txt` not.
+    pub(super) fn new(base_oid: &str, head_oid: &str) -> Self {
+        FakeGitHub {
+            base_oid: base_oid.to_owned(),
+            head_oid: head_oid.to_owned(),
+            base_ref: RefCell::new("main".to_owned()),
+            threads: RefCell::new(vec![]),
+            viewed: RefCell::new(HashMap::from([
+                ("lines.txt".to_owned(), ViewedState::Viewed),
+                ("added.txt".to_owned(), ViewedState::Unviewed),
+            ])),
+            asked_for: RefCell::new(vec![]),
+            opened: RefCell::new(vec![]),
+            posted: RefCell::new(vec![]),
+            pending: RefCell::new(None),
+            reviews_started: RefCell::new(0),
+            edited: RefCell::new(vec![]),
+            deleted: RefCell::new(vec![]),
+            has_pr: RefCell::new(true),
+            created: RefCell::new(vec![]),
+            default_branch: RefCell::new("main".to_owned()),
+            fails: RefCell::new(false),
+        }
+    }
 }
 
 fn init_app(ctx: &mut TestContext, github: &Rc<FakeGitHub>) -> App {
@@ -153,7 +290,7 @@ fn head_branch(ctx: &TestContext) -> String {
 const ALICE: &str = "alice [2 hours ago]";
 const BOB: &str = "bob [2 hours ago]";
 
-fn two_hours_ago() -> chrono::DateTime<chrono::FixedOffset> {
+pub(super) fn two_hours_ago() -> chrono::DateTime<chrono::FixedOffset> {
     (chrono::Utc::now() - chrono::Duration::hours(2)).fixed_offset()
 }
 
@@ -178,7 +315,7 @@ fn with_options(ctx: &mut TestContext, options: &'static [(&'static str, &'stati
 
 /// A thread on `lines.txt`, its comments given as `(author, body)`, each made
 /// two hours ago.
-fn thread(
+pub(super) fn thread(
     id: &str,
     line: Option<(Side, u32)>,
     resolved: bool,
@@ -193,10 +330,15 @@ fn thread(
             .iter()
             .enumerate()
             .map(|(i, (author, body))| Comment {
+                id: format!("{id}_{i}"),
                 author: (*author).to_owned(),
                 body: (*body).to_owned(),
-                url: format!("{PR_URL}#discussion_{id}_{i}"),
+                url: Some(format!("{PR_URL}#discussion_{id}_{i}")),
                 created_at: two_hours_ago(),
+                draft: false,
+                editable: false,
+                deletable: false,
+                agent: None,
             })
             .collect(),
     }
@@ -286,7 +428,7 @@ fn untracked_files_do_not_stop_the_checkout() {
 }
 
 #[test]
-fn a_base_commit_not_in_the_repository_is_fetched() {
+fn a_base_commit_not_in_the_repository_is_an_error() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     run(&ctx.dir, &["git", "push", "origin", "main"]);
@@ -305,10 +447,11 @@ fn a_base_commit_not_in_the_repository_is_fetched() {
 
     ctx.update(&mut app, keys("OO"));
 
-    assert!(*github.fetched_base.borrow());
     let screen = ctx.redact_buffer();
-    assert!(screen.contains("lines.txt"), "{screen}");
-    assert!(!screen.contains("later.txt"), "{screen}");
+    assert!(
+        screen.contains("is not in the repository: fetch main"),
+        "{screen}"
+    );
 }
 
 #[test]
@@ -459,7 +602,7 @@ fn a_thread_on_the_old_side_is_shown_under_its_removed_line() {
 }
 
 #[test]
-fn replies_are_shown_under_the_first_comment() {
+fn replies_are_shown_under_the_first_comment_after_a_blank_row() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     *github.threads.borrow_mut() = vec![thread(
@@ -472,13 +615,16 @@ fn replies_are_shown_under_the_first_comment() {
 
     ctx.update(&mut app, keys("OO"));
 
-    let after = lines_after(&ctx, "+new", 5);
+    let after = lines_after(&ctx, "+new", 6);
     let screen = ctx.redact_buffer();
     assert!(after[0].contains(ALICE), "{screen}");
     assert!(after[1].contains("Why new?"), "{screen}");
-    assert!(after[2].contains(BOB), "{screen}");
-    assert!(after[3].contains("Because"), "{screen}");
-    assert!(after[4].contains("reasons"), "{screen}");
+    // A blank row in the thread's box or bar, between one comment and the next.
+    let blank = after[2].trim_end_matches('|').trim_end();
+    assert!(blank.chars().all(|c| c == ' ' || c == '│'), "{screen}");
+    assert!(after[3].contains(BOB), "{screen}");
+    assert!(after[4].contains("Because"), "{screen}");
+    assert!(after[5].contains("reasons"), "{screen}");
 }
 
 #[test]
@@ -605,7 +751,7 @@ fn side_by_side(ctx: &mut TestContext) {
 /// delta is given, which is the 80 columns but for the two gitu keeps for the
 /// cursor and those it keeps for a file's checkbox. The screen's column 0 is
 /// the cursor's.
-const RIGHT_PANEL: usize = 1 + (80 - 2 - crate::github::FILE_PREFIX_WIDTH as usize) / 2;
+const RIGHT_PANEL: usize = 1 + (80 - 2 - crate::review::FILE_PREFIX_WIDTH as usize) / 2;
 
 /// In side-by-side, delta draws the new file in the right panel.
 #[test]
@@ -1396,7 +1542,7 @@ fn the_box_is_drawn_in_the_editor_styles() {
 }
 
 #[test]
-fn alt_enter_posts_a_reply() {
+fn ctrl_s_adds_a_reply_to_your_draft_review_not_to_github() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     *github.threads.borrow_mut() = vec![thread(
@@ -1408,19 +1554,20 @@ fn alt_enter_posts_a_reply() {
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO/alice<enter>isure<enter>thing"));
 
-    ctx.update(&mut app, keys("<alt+enter>"));
+    ctx.update(&mut app, keys("<ctrl+s>"));
 
-    assert_eq!(
-        *github.posted.borrow(),
-        vec![("t1".to_owned(), "sure\nthing".to_owned())]
-    );
+    assert!(github.posted.borrow().is_empty());
     let screen = ctx.redact_buffer();
     assert!(!screen.contains("Reply"), "the box is gone:\n{screen}");
-    assert!(screen.contains("me [2 hours ago]"), "{screen}");
+    assert!(line_with(&ctx, "CI [").contains("draft"), "{screen}");
+    assert!(
+        screen.contains("Comment added to your draft review"),
+        "{screen}"
+    );
 }
 
 #[test]
-fn ctrl_s_posts_a_new_comment_on_the_line() {
+fn ctrl_s_adds_a_new_comment_on_the_line_to_your_draft_review() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     let mut app = init_app(&mut ctx, &github);
@@ -1428,16 +1575,13 @@ fn ctrl_s_posts_a_new_comment_on_the_line() {
 
     ctx.update(&mut app, keys("<ctrl+s>"));
 
-    assert_eq!(
-        *github.posted.borrow(),
-        vec![("lines.txt:(New, 2)".to_owned(), "hello".to_owned())]
-    );
+    assert!(github.posted.borrow().is_empty());
     let screen = ctx.redact_buffer();
     assert!(
         !screen.contains("New comment"),
         "the box is gone:\n{screen}"
     );
-    assert!(screen.contains("me [2 hours ago]"), "{screen}");
+    assert!(line_with(&ctx, "CI [").contains("draft"), "{screen}");
 }
 
 /// A new comment's line is numbered against the PR's head on GitHub, so it is
@@ -1453,12 +1597,12 @@ fn a_new_comment_is_not_posted_while_head_is_not_the_prs() {
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO/new<enter>ihello"));
 
-    ctx.update(&mut app, keys("<alt+enter>"));
+    ctx.update(&mut app, keys("<ctrl+s>"));
 
     assert!(github.posted.borrow().is_empty());
     let screen = ctx.redact_buffer();
     assert!(screen.contains("hello"), "{screen}");
-    assert!(screen.contains("Cannot post"), "{screen}");
+    assert!(screen.contains("Cannot comment"), "{screen}");
 }
 
 #[test]
@@ -1468,7 +1612,7 @@ fn an_empty_comment_is_not_posted() {
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO/new<enter>i"));
 
-    ctx.update(&mut app, keys("<alt+enter>"));
+    ctx.update(&mut app, keys("<ctrl+s>"));
 
     assert!(github.posted.borrow().is_empty());
     assert!(
@@ -1476,4 +1620,264 @@ fn an_empty_comment_is_not_posted() {
         "{}",
         ctx.redact_buffer()
     );
+}
+
+#[test]
+fn i_on_someone_elses_comment_replies_to_it() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/Why new<enter>"));
+
+    ctx.update(&mut app, keys("i"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Reply"), "{screen}");
+    assert!(!screen.contains("Edit comment"), "{screen}");
+}
+
+#[test]
+fn k_on_a_comment_not_in_a_draft_review_says_it_cannot_be_changed() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/Why new<enter>"));
+
+    ctx.update(&mut app, keys("K"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("Only a comment in a draft review can be changed"),
+        "{screen}"
+    );
+    assert!(screen.contains("Why new?"), "{screen}");
+}
+
+#[test]
+fn op_posts_the_draft_review_into_one_pending_review() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(
+        &mut app,
+        keys("OO/new<enter>ione<ctrl+s>/old<enter>itwo<ctrl+s>"),
+    );
+
+    ctx.update(&mut app, keys("Opy"));
+
+    assert_eq!(*github.reviews_started.borrow(), 1);
+    assert_eq!(
+        *github.posted.borrow(),
+        vec![
+            ("R1 lines.txt:(New, 2)".to_owned(), "one".to_owned()),
+            ("R1 lines.txt:(Old, 2)".to_owned(), "two".to_owned()),
+        ]
+    );
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Posted 2 threads"), "{screen}");
+}
+
+#[test]
+fn op_refuses_while_you_have_a_pending_review_it_did_not_start() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.pending.borrow_mut() = Some("R0".into());
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
+
+    ctx.update(&mut app, keys("Opy"));
+
+    assert!(github.posted.borrow().is_empty());
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("Couldn't post: you have a pending review on GitHub"),
+        "{screen}"
+    );
+}
+
+/// A thread whose one comment, by me, is in my pending review.
+fn pending_thread() -> Thread {
+    let mut pending = thread("t1", Some((Side::New, 2)), false, &[("me", "Why new?")]);
+    pending.comments[0].draft = true;
+    pending.comments[0].editable = true;
+    pending.comments[0].deletable = true;
+    pending
+}
+
+#[test]
+fn i_on_my_comment_on_github_edits_it_there() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![pending_thread()];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/Why new<enter>"));
+
+    ctx.update(&mut app, keys("i<space>really<ctrl+s>"));
+
+    assert_eq!(
+        *github.edited.borrow(),
+        vec![("t1_0".to_owned(), "Why new? really".to_owned())]
+    );
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Why new? really"), "{screen}");
+    assert!(screen.contains("Comment updated"), "{screen}");
+}
+
+#[test]
+fn k_deletes_your_reply_on_github() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut pending = thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?"), ("me", "Because")],
+    );
+    pending.comments[1].draft = true;
+    *github.threads.borrow_mut() = vec![pending];
+    *github.pending.borrow_mut() = Some("R0".into());
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/Because<enter>"));
+
+    ctx.update(&mut app, keys("Ky"));
+
+    assert_eq!(*github.deleted.borrow(), vec!["t1_1".to_owned()]);
+    let screen = ctx.redact_buffer();
+    assert!(!screen.contains("Because"), "{screen}");
+    assert!(screen.contains("Why new?"), "{screen}");
+}
+
+#[test]
+fn k_does_not_delete_a_threads_first_comment_on_github() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![pending_thread()];
+    *github.pending.borrow_mut() = Some("R0".into());
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/Why new<enter>"));
+
+    ctx.update(&mut app, keys("Ky"));
+
+    assert!(github.deleted.borrow().is_empty());
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("starts a thread on GitHub"), "{screen}");
+}
+
+/// The help's rows, from the one with the heading `heading` down to the next blank row, from
+/// the column the heading starts in. A heading has two spaces or more before it, which tells it
+/// from an entry such as `O PR` in Submenus.
+fn help_section(ctx: &TestContext, heading: &str) -> Vec<String> {
+    let screen = ctx.redact_buffer();
+    let lines: Vec<&str> = screen.lines().collect();
+    let pattern = regex::Regex::new(&format!(r"(?:^ ?|  ){heading}  ")).unwrap();
+    let Some((row, column)) = lines.iter().enumerate().find_map(|(i, line)| {
+        let found = pattern.find(line)?;
+        let start = found.end() - heading.len() - 2;
+        Some((i, line[..start].chars().count()))
+    }) else {
+        return vec![];
+    };
+    lines[row + 1..]
+        .iter()
+        .map(|line| line.chars().skip(column).take(40).collect::<String>())
+        .take_while(|cell| !cell.trim().is_empty())
+        .collect()
+}
+
+#[test]
+fn the_help_lists_the_pr_keys_under_pr_on_a_prs_screen() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>"));
+    ctx.resize(&mut app, &[HELP_FITS]);
+
+    ctx.update(&mut app, keys(HELP));
+
+    let pr = help_section(&ctx, "PR").join("\n");
+    for key in ["Toggle viewed", "Show on GitHub", "Write a comment"] {
+        assert!(pr.contains(key), "{key} under PR:\n{}", ctx.redact_buffer());
+    }
+    let line = help_section(&ctx, "Line").join("\n");
+    assert!(!line.contains("Toggle viewed"), "{}", ctx.redact_buffer());
+}
+
+#[test]
+fn the_help_lists_deleting_a_comment_under_pr_on_a_comment() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![pending_thread()];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/Why new<enter>"));
+    ctx.resize(&mut app, &[HELP_FITS]);
+
+    ctx.update(&mut app, keys(HELP));
+
+    let pr = help_section(&ctx, "PR").join("\n");
+    for key in ["Delete comment", "Edit comment"] {
+        assert!(pr.contains(key), "{key} under PR:\n{}", ctx.redact_buffer());
+    }
+    assert!(
+        !ctx.redact_buffer().contains("Discard"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn the_help_lists_no_pr_keys_outside_a_pr() {
+    let mut ctx = setup_clone!();
+    ctx.debug = false;
+    commit(&ctx.dir, "file", "a\n");
+    fs::write(ctx.dir.join("file"), "b\n").unwrap();
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("/b<enter>"));
+    ctx.resize(&mut app, &[HELP_FITS]);
+
+    ctx.update(&mut app, keys(HELP));
+
+    let screen = ctx.redact_buffer();
+    for key in [
+        "Toggle viewed",
+        "Show on GitHub",
+        "Write a comment",
+        "Edit comment",
+        "Reply",
+    ] {
+        assert!(!screen.contains(key), "{key}:\n{screen}");
+    }
+    assert!(help_section(&ctx, "PR").is_empty(), "{screen}");
+}
+
+#[test]
+fn the_help_says_i_replies_on_someone_elses_comment() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/Why new<enter>"));
+    ctx.resize(&mut app, &[HELP_FITS]);
+
+    ctx.update(&mut app, keys(HELP));
+
+    let pr = help_section(&ctx, "PR").join("\n");
+    assert!(pr.contains("Reply"), "{}", ctx.redact_buffer());
+    assert!(!pr.contains("Edit comment"), "{}", ctx.redact_buffer());
 }

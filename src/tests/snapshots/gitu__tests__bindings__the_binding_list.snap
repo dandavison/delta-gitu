@@ -5,7 +5,7 @@ expression: ctx.redact_buffer()
 ▌Root (bindings.root)                                                                                                                                 |
 ▌ x                 toggle-viewed          Tick or untick the PR file's Viewed checkbox on GitHub                                                     |
 ▌ o                 show-on-github         Open the PR file, hunk, line or comment on GitHub, to comment there                                        |
-▌ i                 write-comment          Write a comment on the PR line, or a reply to the thread, in a box in the diff                             |
+▌ i                 write-comment          Write a comment or a reply, or edit your own comment                                                       |
 ▌ Y                 show-refs              List branches and tags                                                                                     |
 ▌ g+s               status                 Status view, from any view                                                                                 |
 ▌ H                 renderer-features      List delta features, shell commands and views, and set their keys                                          |

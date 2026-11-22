@@ -3,9 +3,9 @@
 use crate::{
     config::ColorMode,
     config_git::{DecorationStyle, parse_delta_style},
-    github::{self, Draft, DraftTarget, Review, Side, Thread},
     item_data::ItemData,
     items::{Item, ItemId, hash},
+    review::{self, CommentEditor, EditorTarget, OpenPr, Side, Thread},
     style::{Modifier, Style},
 };
 use git2::Repository;
@@ -15,9 +15,8 @@ use std::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// `items`, a PR's diff, under a warning when HEAD is not the commit GitHub
-/// numbers the PR's lines against, and with each of the review's threads under the line it
-/// is on. A thread whose line is not among the rows, as GitHub has it outdated
+/// `items`, a PR's diff, under a warning when HEAD is not the commit the PR's lines are
+/// numbered against, and with each of the PR's threads under the line it is on. A thread whose line is not among the rows, as GitHub has it outdated
 /// or as its line is outside the diff's hunks, goes under its file's header. A
 /// thread on a file not among the rows is not shown. While the renderer is
 /// still drawing, a thread on a line not yet drawn shows under its file's
@@ -25,23 +24,23 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// of the side their line is on (see [`Layout`]).
 pub(crate) fn with_threads(
     items: Vec<Item>,
-    review: &Review,
+    pr: &OpenPr,
     repo: &Repository,
     layout: Layout,
     options: &CommentOptions,
     error_style: Style,
 ) -> Vec<Item> {
-    let items = with_comment_counts(items, review, layout.width, options.count);
-    let threads = review.threads.borrow();
-    let mut draft = review.draft.borrow_mut();
-    let draft_path = match draft.as_ref().map(|draft| &draft.target) {
-        Some(DraftTarget::Line { path, .. }) => Some(path.clone()),
+    let items = with_comment_counts(items, pr, layout.width, options.count);
+    let threads = pr.threads.borrow();
+    let mut editor = pr.editor.borrow_mut();
+    let editor_path = match editor.as_ref().map(|editor| &editor.target) {
+        Some(EditorTarget::Line { path, .. }) => Some(path.clone()),
         _ => None,
     };
     let paths: HashSet<&str> = threads
         .iter()
         .map(|thread| thread.path.as_str())
-        .chain(draft_path.as_deref())
+        .chain(editor_path.as_deref())
         .collect();
     // Only the files with threads are indexed, as a big PR's rows are built again and again
     // while the renderer draws them.
@@ -58,7 +57,7 @@ pub(crate) fn with_threads(
         let Some(path) = path_of
             .entry(*file_i)
             .or_insert_with(|| {
-                Some(github::file_path(diff, *file_i)).filter(|path| paths.contains(path.as_str()))
+                Some(review::file_path(diff, *file_i)).filter(|path| paths.contains(path.as_str()))
             })
             .clone()
         else {
@@ -97,8 +96,8 @@ pub(crate) fn with_threads(
     }
     // A new comment goes under its line, after the line's threads, or under its file's header
     // if the line is not among the rows; a reply goes after its thread.
-    let draft_under = match draft.as_ref().map(|draft| &draft.target) {
-        Some(DraftTarget::Line { path, line }) => lines
+    let editor_under = match editor.as_ref().map(|editor| &editor.target) {
+        Some(EditorTarget::Line { path, line }) => lines
             .get(&(path.clone(), line.0, line.1))
             .map(|&i| (i, Some(line.0)))
             .or_else(|| files.get(path).map(|&i| (i, None))),
@@ -113,7 +112,7 @@ pub(crate) fn with_threads(
             ..Default::default()
         });
     }
-    if !at_pr_head(repo, &review.pr.head_oid) {
+    if pr.backend.head_mismatch(repo) {
         out.push(warning_row());
     }
     for (i, item) in items.into_iter().enumerate() {
@@ -128,20 +127,32 @@ pub(crate) fn with_threads(
         for thread in threads {
             let side = thread.line.filter(|_| on_line).map(|(side, _)| side);
             let panel = layout.panel(side);
-            out.extend(thread_rows(thread, depth, on_line, panel, options));
-            if let Some(draft) = draft.as_mut()
-                && draft.target
-                    == (DraftTarget::Reply {
-                        thread_id: thread.id.clone(),
-                    })
-            {
-                out.extend(draft_rows(draft, depth, panel, options));
+            // A comment being changed is shown only in the box, which goes after its thread, as
+            // a reply's does.
+            let (in_box, edited) = match editor.as_ref().map(|editor| &editor.target) {
+                Some(EditorTarget::Reply { thread_id }) => (*thread_id == thread.id, None),
+                Some(EditorTarget::Edit {
+                    thread_id,
+                    comment_id,
+                }) if *thread_id == thread.id => (true, Some(comment_id.clone())),
+                _ => (false, None),
+            };
+            match edited {
+                Some(comment_id) => {
+                    let mut thread = thread.clone();
+                    thread.comments.retain(|comment| comment.id != comment_id);
+                    out.extend(thread_rows(&thread, depth, on_line, panel, options));
+                }
+                None => out.extend(thread_rows(thread, depth, on_line, panel, options)),
+            }
+            if let (true, Some(editor)) = (in_box, editor.as_mut()) {
+                out.extend(editor_rows(editor, depth, panel, options));
             }
         }
-        if let (Some((_, side)), Some(draft)) =
-            (draft_under.filter(|(at, _)| *at == i), &mut *draft)
+        if let (Some((_, side)), Some(editor)) =
+            (editor_under.filter(|(at, _)| *at == i), &mut *editor)
         {
-            out.extend(draft_rows(draft, depth, layout.panel(side), options));
+            out.extend(editor_rows(editor, depth, layout.panel(side), options));
         }
     }
     out
@@ -150,19 +161,13 @@ pub(crate) fn with_threads(
 /// `items` with each file's comment count: at the end of the names' column of its line of the
 /// diffstat, against the `|`, or, for a file headed by the renderer's row, at the end of that
 /// row, which ends with the file's name. `width` is the width the diffstat was laid out in.
-fn with_comment_counts(
-    mut items: Vec<Item>,
-    review: &Review,
-    width: usize,
-    style: Style,
-) -> Vec<Item> {
+fn with_comment_counts(mut items: Vec<Item>, pr: &OpenPr, width: usize, style: Style) -> Vec<Item> {
     // Laying out the diffstat again counts every file's lines, which is not done for nothing.
-    if review.threads.borrow().iter().all(|thread| thread.resolved) {
+    if pr.threads.borrow().iter().all(|thread| thread.resolved) {
         return items;
     }
     let count = |diff: &crate::git::diff::Diff, file_i: usize| {
-        review
-            .comment_count(&github::file_path(diff, file_i))
+        pr.comment_count(&review::file_path(diff, file_i))
             .map(|count| (count, style))
     };
     crate::items::label_stat_rows(&mut items, width, count);
@@ -214,14 +219,6 @@ fn numbered_lines(diff: &crate::git::diff::Diff, file_i: usize, hunk_i: usize) -
             }
         })
         .collect()
-}
-
-/// Whether HEAD is the commit the PR's branch is at on GitHub.
-pub(crate) fn at_pr_head(repo: &Repository, head_oid: &str) -> bool {
-    repo.head()
-        .ok()
-        .and_then(|head| head.target())
-        .is_some_and(|oid| oid.to_string() == head_oid)
 }
 
 fn warning_row() -> Item {
@@ -410,10 +407,10 @@ const MARGIN: &str = "  ";
 const MIN_TEXT_WIDTH: usize = 20;
 
 /// The rows of `thread`, in `panel`, decorated as `options` say: with a box, a line under or
-/// over it, or, with none of those, a bar down its left. The first row is the first comment's
-/// first, and folds the rest; a box, or lines over and under, stay around it while it is folded.
+/// over it, or, with none of those, a bar down its left. A blank row comes between one comment
+/// and the next. The first row is the first comment's first, and folds the rest; a box, or lines over and under, stay around it while it is folded.
 /// The thread's first row says whether the thread is resolved or outdated, and when it is not
-/// `on_line` though it has a line, which line.
+/// `on_line` though it has a line, which line. A comment in a draft review says so.
 fn thread_rows(
     thread: &Thread,
     depth: usize,
@@ -436,13 +433,25 @@ fn thread_rows(
     if thread.resolved {
         notes.push("resolved".to_owned());
     }
-    let notes = (!notes.is_empty()).then(|| format!("({})", notes.join(", ")));
 
     let frame = Frame::new(panel, &options.decoration);
     let mut rows: Vec<(usize, usize, Row)> = vec![];
     for (comment_i, comment) in thread.comments.iter().enumerate() {
-        let notes = notes.as_deref().filter(|_| comment_i == 0);
-        for (row_i, row) in comment_rows(comment, notes, frame.text_width, options)
+        let mut notes = if comment_i == 0 {
+            notes.clone()
+        } else {
+            vec![]
+        };
+        if comment.draft {
+            notes.push("draft".to_owned());
+        }
+        let notes = (!notes.is_empty()).then(|| format!("({})", notes.join(", ")));
+        if comment_i > 0 {
+            // A blank row, in the comment style, between one comment and the next.
+            let blank = vec![(" ".repeat(frame.text_width), options.text)];
+            rows.push((comment_i, BLANK_ROW, frame.row(blank)));
+        }
+        for (row_i, row) in comment_rows(comment, notes.as_deref(), frame.text_width, options)
             .into_iter()
             .enumerate()
         {
@@ -462,6 +471,7 @@ fn thread_rows(
             data: ItemData::ReviewThread {
                 url: first.url.clone(),
                 thread_id: thread.id.clone(),
+                comment_id: first.id.clone(),
             },
             rendered: Some(Rc::clone(&header)),
             // Folded, the row stands in for the thread, rather than being followed by the
@@ -477,6 +487,7 @@ fn thread_rows(
             data: ItemData::ReviewComment {
                 url: thread.comments[comment_i].url.clone(),
                 thread_id: thread.id.clone(),
+                comment_id: thread.comments[comment_i].id.clone(),
             },
             rendered: Some(Rc::new(row)),
             ..Default::default()
@@ -488,30 +499,31 @@ fn thread_rows(
     items
 }
 
-/// The rows of `draft`, a comment being written, in `panel`, in the editor's styles: what it is,
-/// then its text, with the cursor drawn in it while it has focus. Records in `draft` the columns
+/// The rows of `editor`, a comment being written, in `panel`, in the editor's styles: what it is,
+/// then its text, with the cursor drawn in it while it has focus. Records in `editor` the columns
 /// its text is wrapped to.
-fn draft_rows(
-    draft: &mut Draft,
+fn editor_rows(
+    editor: &mut CommentEditor,
     depth: usize,
     panel: Panel,
     options: &CommentOptions,
 ) -> Vec<Item> {
     let frame = Frame::new(panel, &options.editor_decoration);
     let width = frame.text_width;
-    draft.width = width;
+    editor.width = width;
     let text = options.editor_text;
     let padded = |mut row: Row| -> Row {
         let used: usize = row.iter().map(|(span, _)| span.width()).sum();
         row.push((" ".repeat(width.saturating_sub(used)), text));
         frame.row(row)
     };
-    let what = match draft.target {
-        DraftTarget::Reply { .. } => "Reply",
-        DraftTarget::Line { .. } => "New comment",
+    let what = match editor.target {
+        EditorTarget::Reply { .. } => "Reply",
+        EditorTarget::Line { .. } => "New comment",
+        EditorTarget::Edit { .. } => "Edit comment",
     };
-    let hint = if draft.focused {
-        "(alt+enter posts, esc leaves)"
+    let hint = if editor.focused {
+        "(ctrl+s saves, esc leaves)"
     } else {
         "(i to go on writing)"
     };
@@ -521,16 +533,16 @@ fn draft_rows(
         (hint.to_owned(), text.patch(options.editor_decoration.style)),
     ];
 
-    let chars: Vec<char> = draft.text.value().chars().collect();
-    let (cursor_row, cursor_column) = draft.text.cursor_at(width);
+    let chars: Vec<char> = editor.text.value().chars().collect();
+    let (cursor_row, cursor_column) = editor.text.cursor_at(width);
     let cursor_style = text.patch(Style {
         add_modifier: Modifier::REVERSED,
         ..Style::new()
     });
-    let mut rows = vec![(DRAFT_HEADER, padded(header))];
-    for (row_i, range) in draft.text.rows(width).into_iter().enumerate() {
+    let mut rows = vec![(EDITOR_HEADER, padded(header))];
+    for (row_i, range) in editor.text.rows(width).into_iter().enumerate() {
         let row: String = chars[range].iter().collect();
-        if !(draft.focused && row_i == cursor_row) {
+        if !(editor.focused && row_i == cursor_row) {
             rows.push((row_i, padded(vec![(row, text)])));
             continue;
         }
@@ -560,7 +572,7 @@ fn draft_rows(
         items.push(Item {
             id: hash(("review_draft", row)),
             depth,
-            data: ItemData::ReviewDraft { row },
+            data: ItemData::CommentEditor { row },
             rendered: Some(Rc::new(rendered)),
             ..Default::default()
         });
@@ -569,8 +581,11 @@ fn draft_rows(
     items
 }
 
-/// The row of a comment box that says what it is, as [`ItemData::ReviewDraft`] gives it.
-pub(crate) const DRAFT_HEADER: usize = usize::MAX;
+/// The row before each comment of a thread after its first, which is blank.
+const BLANK_ROW: usize = usize::MAX;
+
+/// The row of a comment box that says what it is, as [`ItemData::CommentEditor`] gives it.
+pub(crate) const EDITOR_HEADER: usize = usize::MAX;
 
 /// What is drawn around a thread or a comment box in a panel, as a decoration style says: a box,
 /// lines over and under it, or, with none of those, a bar down its left.
@@ -673,7 +688,7 @@ impl<'a> Frame<'a> {
 
 /// When `comment` was made: as `options.timestamp_format` formats it in local time, or how long
 /// ago.
-fn timestamp(comment: &github::Comment, options: &CommentOptions) -> String {
+fn timestamp(comment: &review::Comment, options: &CommentOptions) -> String {
     match &options.timestamp_format {
         Some(format) => comment
             .created_at
@@ -685,10 +700,10 @@ fn timestamp(comment: &github::Comment, options: &CommentOptions) -> String {
 }
 
 /// The rows of `comment`, each `width` columns wide: its author's login and when it was made,
-/// which links to the comment on GitHub, with `notes`, then its body wrapped to the width. All of it is drawn over the comment style,
-/// so that its background fills the rows.
+/// which links to the comment's page if it has one, with `notes`, then its body wrapped to the
+/// width. All of it is drawn over the comment style, so that its background fills the rows.
 fn comment_rows(
-    comment: &github::Comment,
+    comment: &review::Comment,
     notes: Option<&str>,
     width: usize,
     options: &CommentOptions,
@@ -702,12 +717,22 @@ fn comment_rows(
         row.push((" ".repeat(width.saturating_sub(used)), text));
         row
     };
+    let when = timestamp(comment, options);
     let mut header = vec![
-        (comment.author.clone(), text.patch(options.author)),
+        (
+            comment
+                .agent
+                .clone()
+                .unwrap_or_else(|| comment.author.clone()),
+            text.patch(options.author),
+        ),
         (" ".to_owned(), text),
         ("[".to_owned(), text.patch(options.timestamp)),
         (
-            crate::ui::osc8_hyperlink(&timestamp(comment, options), &comment.url),
+            match &comment.url {
+                Some(url) => crate::ui::osc8_hyperlink(&when, url),
+                None => when,
+            },
             text.patch(options.timestamp),
         ),
         ("]".to_owned(), text.patch(options.timestamp)),

@@ -234,7 +234,7 @@ pub(crate) fn layout_item<'a>(
         // Drawn from their `rendered` rows, which they always have.
         ItemData::ReviewThread { .. }
         | ItemData::ReviewComment { .. }
-        | ItemData::ReviewDraft { .. } => {}
+        | ItemData::CommentEditor { .. } => {}
         ItemData::BlameHeader {
             short_hash,
             summary,

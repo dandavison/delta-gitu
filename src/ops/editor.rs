@@ -113,7 +113,7 @@ pub(crate) struct Refresh;
 impl OpTrait for Refresh {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
         Some(Rc::new(|app, _term| {
-            super::pr::reread_review(app)?;
+            super::pr::reread_pr(app)?;
             app.update_screens()
         }))
     }
@@ -166,7 +166,7 @@ impl OpTrait for ToggleArg {
                 let arg = app.prompt(
                     term,
                     &PromptParams {
-                        prompt: display,
+                        prompt: display.into(),
                         create_default_value: Box::new(move |_| default.clone()),
                         hide_menu: false,
                         prefill: false,
@@ -226,7 +226,7 @@ impl OpTrait for DiffContext {
             let answer = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "",
+                    prompt: "".into(),
                     create_default_value: Box::new(move |_| {
                         current.as_deref().map(|flag| match flag {
                             "-W" => "W".to_owned(),
@@ -316,7 +316,7 @@ impl OpTrait for EditGitCommand {
             let answer = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "",
+                    prompt: "".into(),
                     create_default_value: Box::new(move |_| Some(line.clone())),
                     prefill: true,
                     history: Some(crate::prompt::HistoryKind::GitCommand),
@@ -360,7 +360,7 @@ impl OpTrait for FilePatterns {
             let answer = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "File filters",
+                    prompt: "File filters".into(),
                     create_default_value: Box::new(move |_| Some(patterns.clone())),
                     prefill: true,
                     history: Some(crate::prompt::HistoryKind::FilePatterns),
@@ -426,7 +426,7 @@ fn ask_for(
 ) -> Res<()> {
     let asking_for = git.borrow().asking_for(patterns);
     app.state.prompt.remember(
-        crate::prompt::HistoryKind::GitCommand,
+        &crate::prompt::HistoryKind::GitCommand,
         &asking_for.line(app.state.context.as_deref()),
     )?;
     *git.borrow_mut() = asking_for;

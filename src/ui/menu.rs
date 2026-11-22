@@ -20,6 +20,31 @@ enum MenuValue<'a> {
     Arg(&'a Arg),
 }
 
+/// Whether `op`, on a row with `data`, acts on the PR the screen shows: those are listed in the
+/// help under PR, and only on a PR's screen. Discard on a comment deletes it.
+fn is_pr_op(op: &Op, data: &crate::item_data::ItemData) -> bool {
+    use crate::item_data::ItemData;
+    match op {
+        Op::ToggleViewed | Op::ShowOnGithub | Op::WriteComment => true,
+        Op::Discard => matches!(
+            data,
+            ItemData::ReviewThread { .. } | ItemData::ReviewComment { .. }
+        ),
+        _ => false,
+    }
+}
+
+/// For a row of a comment on a PR's screen, whether the user can change the comment (it is
+/// theirs), and so `i` edits it rather than replying; `None` for any other row.
+fn on_comment(state: &State, data: &crate::item_data::ItemData) -> Option<bool> {
+    let (thread_id, comment_id) = crate::ops::pr::comment_of(data)?;
+    let pr = state.screens.last()?.pr.as_ref()?;
+    Some(
+        pr.comment(&thread_id, &comment_id)
+            .is_some_and(|comment| comment.editable),
+    )
+}
+
 pub(crate) fn layout_menu<'a>(layout: &mut UiTree<'a>, state: &'a State, size: (u16, u16)) {
     let (width, height) = (size.0 as usize, size.1);
     let Some(ref pending) = state.pending_menu else {
@@ -44,7 +69,11 @@ pub(crate) fn layout_menu<'a>(layout: &mut UiTree<'a>, state: &'a State, size: (
         .list(&pending.menu)
         .filter(|keybind| !(state.read_only && keybind.op.writes()))
         .partition(|keybind| keybind.op.clone().implementation().is_target_op());
-    let target_binds: Vec<_> = target_binds
+    let on_pr = state
+        .screens
+        .last()
+        .is_some_and(|screen| screen.pr.is_some());
+    let (pr_binds, target_binds): (Vec<_>, Vec<_>) = target_binds
         .into_iter()
         .filter(|keybind| {
             keybind
@@ -54,7 +83,8 @@ pub(crate) fn layout_menu<'a>(layout: &mut UiTree<'a>, state: &'a State, size: (
                 .get_action(&item.data)
                 .is_some()
         })
-        .collect();
+        .filter(|keybind| on_pr || !is_pr_op(&keybind.op, &item.data))
+        .partition(|keybind| is_pr_op(&keybind.op, &item.data));
     let (menu_binds, non_menu_binds): (Vec<_>, Vec<_>) = non_target_binds
         .into_iter()
         .chunk_by(|bind| &bind.op)
@@ -163,6 +193,29 @@ pub(crate) fn layout_menu<'a>(layout: &mut UiTree<'a>, state: &'a State, size: (
                         bind.raw.as_str().into(),
                         MenuValue::Text(bind.op.clone().implementation().display(state).into()),
                     )
+                })
+                .collect(),
+        ));
+    }
+    if !pr_binds.is_empty() {
+        if !column.is_empty() {
+            column.push(Line::Blank);
+        }
+        column.push(heading("PR".into()));
+        column.extend(binds(
+            pr_binds
+                .into_iter()
+                .map(|bind| {
+                    let display = match bind.op {
+                        Op::Discard => "Delete comment".to_owned(),
+                        Op::WriteComment => match on_comment(state, &item.data) {
+                            Some(true) => "Edit comment".to_owned(),
+                            Some(false) => "Reply".to_owned(),
+                            None => "Write a comment".to_owned(),
+                        },
+                        _ => bind.op.clone().implementation().display(state),
+                    };
+                    (bind.raw.as_str().into(), MenuValue::Text(display.into()))
                 })
                 .collect(),
         ));

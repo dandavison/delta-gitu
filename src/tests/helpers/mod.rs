@@ -1,3 +1,4 @@
+pub mod github;
 pub mod repo;
 #[macro_use]
 pub mod ui;

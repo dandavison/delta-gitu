@@ -13,7 +13,6 @@ mod difftastic;
 pub mod error;
 mod file_watcher;
 mod git;
-mod github;
 mod gitu_diff;
 mod item_data;
 mod items;
@@ -23,6 +22,7 @@ mod ops;
 mod picker;
 mod prompt;
 mod rebase_todo;
+mod review;
 mod screen;
 mod search;
 mod stream;
@@ -101,6 +101,26 @@ pub fn run(config: Arc<Config>, args: &cli::Args, term: &mut Term) -> Res<i32> {
     // Before anything that reads the TUI's settings, which refuses an old [delta-tui] section.
     if args.migrate_old_config {
         config_migrate::print()?;
+        return Ok(0);
+    }
+    if args.agent_instructions {
+        print!("{}", review::AGENT_INSTRUCTIONS);
+        return Ok(0);
+    }
+    if let Some(cli::DiagramFormat::D2) = args.pr_state_machine_diagram {
+        print!("{}", review::diagram::d2());
+        return Ok(0);
+    }
+    if let Some(cli::Commands::Review { command }) = &args.command {
+        review::cli::run(
+            command,
+            open_repo_from_env()?,
+            Rc::new(review::github::Gh {
+                workdir: std::env::current_dir().map_err(Error::Term)?,
+            }),
+            &mut io::stdin(),
+            &mut io::stdout(),
+        )?;
         return Ok(0);
     }
     needs_terminal(io::stdout().is_terminal())?;

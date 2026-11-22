@@ -13,6 +13,7 @@ use std::fs;
 
 #[macro_use]
 pub(crate) mod helpers;
+mod agent_instructions;
 mod alt_editor;
 mod arg;
 mod back;
@@ -32,6 +33,8 @@ mod fetch;
 mod file_names;
 mod file_watcher;
 mod keys;
+mod lifecycle;
+mod local_pr;
 mod log;
 mod merge;
 mod pager;

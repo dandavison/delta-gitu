@@ -26,7 +26,7 @@ impl OpTrait for PullFromPushRemote {
                     let push_remote_name = app.prompt(
                         term,
                         &PromptParams {
-                            prompt: "Set pushRemote then pull",
+                            prompt: "Set pushRemote then pull".into(),
                             ..Default::default()
                         },
                     )?;
@@ -72,7 +72,7 @@ impl OpTrait for PullFromUpstream {
                     let upstream_name = app.prompt(
                         term,
                         &PromptParams {
-                            prompt: "Set upstream then pull",
+                            prompt: "Set upstream then pull".into(),
                             ..Default::default()
                         },
                     )?;
@@ -117,7 +117,7 @@ impl OpTrait for PullFromElsewhere {
             let remote = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Select remote",
+                    prompt: "Select remote".into(),
                     ..Default::default()
                 },
             )?;

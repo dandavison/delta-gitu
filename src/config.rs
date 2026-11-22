@@ -115,8 +115,8 @@ pub struct GeneralConfig {
     pub read_only: ReadOnly,
     /// Shell commands, by name, run by the keys `diff_renderer.feature_keys`
     /// gives them, with `{commit}`, `{file}` and `{branch}` filled in from what
-    /// is under the cursor, and `{command}` from the git command the screen is
-    /// showing.
+    /// is under the cursor, `{command}` from the git command the screen is
+    /// showing, and `{input}` from a prompt.
     #[serde(default)]
     pub commands: BTreeMap<String, String>,
     /// git commands, by name, opened as a screen by the keys

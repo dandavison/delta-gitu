@@ -1,0 +1,1144 @@
+//! Reviewing a local PR: `O l` opens the current branch's diff against `main`, as a PR that
+//! exists only in the repository. Its Viewed checkboxes and review threads are stored in the
+//! repository's git directory, shared by all its worktrees.
+
+use super::pr::FakeGitHub;
+use super::*;
+use crate::review::github::GitHub;
+use std::rc::Rc;
+
+/// A repository with `feature` checked out, which changes `lines.txt` and adds `added.txt`, and
+/// `main`, which has moved on since with `main-only.txt`.
+fn setup(ctx: &mut TestContext) {
+    ctx.debug = false;
+    commit(&ctx.dir, "lines.txt", "keep\nold\nkeep\n");
+    run(&ctx.dir, &["git", "checkout", "-b", "feature"]);
+    commit(&ctx.dir, "lines.txt", "keep\nnew\nkeep\n");
+    commit(&ctx.dir, "added.txt", "added\n");
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    commit(&ctx.dir, "main-only.txt", "main\n");
+    run(&ctx.dir, &["git", "checkout", "feature"]);
+}
+
+/// The app in the repository, with a GitHub on which `feature` has no PR, and whose default
+/// branch is `main`.
+fn init_app(ctx: &mut TestContext) -> crate::app::App {
+    let dir = ctx.dir.clone();
+    init_app_at(ctx, dir)
+}
+
+fn init_app_at(ctx: &mut TestContext, dir: std::path::PathBuf) -> crate::app::App {
+    let mut app = ctx.init_app_at_path(dir);
+    let github = FakeGitHub::new("", "");
+    *github.has_pr.borrow_mut() = false;
+    app.state.github = Rc::new(github);
+    app
+}
+
+/// The line of the screen that shows `text`.
+fn line_with(ctx: &TestContext, text: &str) -> String {
+    let screen = ctx.redact_buffer();
+    screen
+        .lines()
+        .find(|line| line.contains(text))
+        .unwrap_or_else(|| panic!("no line with {text}:\n{screen}"))
+        .to_owned()
+}
+
+#[test]
+fn ol_opens_the_branch_against_main() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("lines.txt"), "{screen}");
+    assert!(screen.contains("added.txt"), "{screen}");
+    assert!(!screen.contains("main-only.txt"), "{screen}");
+    assert!(line_with(&ctx, "added.txt").contains("[ ]"), "{screen}");
+    assert!(!screen.contains("not the PR's head"), "{screen}");
+}
+
+#[test]
+fn ol_on_main_says_there_is_nothing_to_review() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("No PR to review: main is the base branch"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_ticked_file_stays_ticked_when_the_pr_is_opened_again() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/added.txt<enter>x"));
+    assert!(line_with(&ctx, "added.txt").contains("[x]"));
+
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol"));
+
+    assert!(line_with(&ctx, "added.txt").contains("[x]"));
+    assert!(line_with(&ctx, "lines.txt").contains("[ ]"));
+}
+
+#[test]
+fn x_unticks_a_ticked_file() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/added.txt<enter>x"));
+
+    ctx.update(&mut app, keys("x"));
+
+    assert!(line_with(&ctx, "added.txt").contains("[ ]"));
+}
+
+#[test]
+fn a_ticked_file_changed_since_shows_as_changed() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/added.txt<enter>x"));
+
+    commit(&ctx.dir, "added.txt", "added\nmore\n");
+    ctx.update(&mut app, keys("gr"));
+
+    assert!(line_with(&ctx, "added.txt").contains("[~]"));
+}
+
+#[test]
+fn ticks_are_shared_by_the_repositorys_worktrees() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/added.txt<enter>x"));
+    // `feature` can be checked out in only one worktree at a time.
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    let worktree = ctx.dir.parent().unwrap().join("feature-worktree");
+    run(
+        &ctx.dir,
+        &[
+            "git",
+            "worktree",
+            "add",
+            worktree.to_str().unwrap(),
+            "feature",
+        ],
+    );
+
+    let mut app = init_app_at(&mut ctx, worktree);
+    ctx.update(&mut app, keys("Ol"));
+
+    assert!(line_with(&ctx, "added.txt").contains("[x]"));
+}
+
+/// Where the PR `feature` into `main` is recorded.
+fn review_file_path(ctx: &TestContext) -> std::path::PathBuf {
+    ctx.dir.join(".git/gitu/review/feature...main.json")
+}
+
+/// The JSON file the PR `feature` into `main` is recorded in.
+fn review_file(ctx: &TestContext) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(review_file_path(ctx)).unwrap()).unwrap()
+}
+
+#[test]
+fn ctrl_s_adds_a_comment_on_the_line_to_a_draft_review() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello"));
+
+    ctx.update(&mut app, keys("<ctrl+s>"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("Comment added to your draft review"),
+        "{screen}"
+    );
+    let header = line_with(&ctx, "CI [");
+    assert!(header.contains("draft"), "{screen}");
+    assert!(screen.contains("hello"), "{screen}");
+    assert!(
+        !screen.contains("New comment"),
+        "the box is gone:\n{screen}"
+    );
+}
+
+#[test]
+fn a_comment_is_there_when_the_pr_is_opened_again() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    let lines: Vec<&str> = screen.lines().collect();
+    let new = lines.iter().position(|line| line.contains("+new")).unwrap();
+    assert!(lines[new + 1].contains("CI ["), "{screen}");
+    assert!(lines[new + 2].contains("hello"), "{screen}");
+}
+
+#[test]
+fn i_on_my_agents_comment_replies_to_it_in_the_same_draft_review() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    review_cli_with_input(
+        &ctx.dir,
+        &[
+            "comment",
+            "--path",
+            "lines.txt",
+            "--line",
+            "2",
+            "--agent",
+            "agent",
+        ],
+        "hello",
+    )
+    .unwrap();
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol"));
+
+    ctx.update(&mut app, keys("/agent \\[<enter>iand more<ctrl+s>"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("hello"), "{screen}");
+    assert!(screen.contains("and more"), "{screen}");
+    let file = review_file(&ctx);
+    assert_eq!(file["reviews"].as_array().unwrap().len(), 1, "{file}");
+    let comments = file["threads"][0]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 2, "{file}");
+    assert_eq!(comments[0]["agent"], "agent", "{file}");
+    assert_eq!(comments[1]["agent"], serde_json::Value::Null, "{file}");
+    assert_eq!(comments[0]["review"], comments[1]["review"], "{file}");
+}
+
+#[test]
+fn the_review_file_records_the_comment_and_the_lines_it_is_on() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let head = run(&ctx.dir, &["git", "rev-parse", "feature"])
+        .trim()
+        .to_owned();
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+
+    let file = review_file(&ctx);
+    let review = &file["reviews"][0];
+    assert_eq!(review["author"], "CI", "{file}");
+    assert_eq!(review["state"], "draft", "{file}");
+    let thread = &file["threads"][0];
+    assert_eq!(thread["resolved"], false, "{file}");
+    let anchor = &thread["anchor"];
+    assert_eq!(anchor["path"], "lines.txt", "{file}");
+    assert_eq!(anchor["side"], "new", "{file}");
+    assert_eq!(anchor["line"], 2, "{file}");
+    assert_eq!(anchor["commit"], head.as_str(), "{file}");
+    assert_eq!(anchor["text"], serde_json::json!(["new"]), "{file}");
+    assert_eq!(anchor["before"], serde_json::json!(["keep"]), "{file}");
+    assert_eq!(anchor["after"], serde_json::json!(["keep"]), "{file}");
+    let comment = &thread["comments"][0];
+    assert_eq!(comment["author"], "CI", "{file}");
+    assert_eq!(comment["body"], "hello", "{file}");
+    assert_eq!(comment["review"], review["id"], "{file}");
+}
+
+#[test]
+fn a_comment_on_a_removed_line_is_shown_under_it() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/old<enter>igone<ctrl+s>"));
+
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    let lines: Vec<&str> = screen.lines().collect();
+    let old = lines.iter().position(|line| line.contains("-old")).unwrap();
+    assert!(lines[old + 1].contains("CI ["), "{screen}");
+    assert!(lines[old + 2].contains("gone"), "{screen}");
+    assert_eq!(review_file(&ctx)["threads"][0]["anchor"]["side"], "old");
+}
+
+#[test]
+fn comments_are_shared_by_the_repositorys_worktrees() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    let worktree = ctx.dir.parent().unwrap().join("feature-worktree");
+    run(
+        &ctx.dir,
+        &[
+            "git",
+            "worktree",
+            "add",
+            worktree.to_str().unwrap(),
+            "feature",
+        ],
+    );
+
+    let mut app = init_app_at(&mut ctx, worktree);
+    ctx.update(&mut app, keys("Ol"));
+
+    assert!(
+        ctx.redact_buffer().contains("hello"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn i_on_my_draft_comment_edits_it_in_the_box() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>/hello<enter>"));
+
+    ctx.update(&mut app, keys("i"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Edit comment"), "{screen}");
+    assert!(line_with(&ctx, "hello").contains("hello"), "{screen}");
+
+    ctx.update(&mut app, keys("<space>world<ctrl+s>"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Comment updated"), "{screen}");
+    assert!(screen.contains("hello world"), "{screen}");
+    assert!(
+        !screen.contains("Edit comment"),
+        "the box is gone:\n{screen}"
+    );
+    let file = review_file(&ctx);
+    let comments = file["threads"][0]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1, "{file}");
+    assert_eq!(comments[0]["body"], "hello world", "{file}");
+}
+
+#[test]
+fn k_deletes_a_draft_comment() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>/hello<enter>"));
+
+    ctx.update(&mut app, keys("Ky"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Comment deleted"), "{screen}");
+    assert!(!screen.contains("CI ["), "{screen}");
+    assert_eq!(review_file(&ctx)["threads"], serde_json::json!([]));
+}
+
+#[test]
+fn deleting_a_reply_keeps_the_rest_of_the_thread() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    review_cli_with_input(
+        &ctx.dir,
+        &[
+            "comment",
+            "--path",
+            "lines.txt",
+            "--line",
+            "2",
+            "--agent",
+            "agent",
+        ],
+        "hello",
+    )
+    .unwrap();
+    let mut app = init_app(&mut ctx);
+    ctx.update(
+        &mut app,
+        keys("Ol/agent \\[<enter>iand more<ctrl+s>/and more<enter>"),
+    );
+
+    ctx.update(&mut app, keys("Ky"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("hello"), "{screen}");
+    assert!(!screen.contains("and more"), "{screen}");
+    let file = review_file(&ctx);
+    let comments = file["threads"][0]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1, "{file}");
+    assert_eq!(comments[0]["body"], "hello", "{file}");
+}
+
+/// The line of the screen after the `n`th, counting from 0, that shows `text`.
+fn line_after(ctx: &TestContext, text: &str, n: usize) -> String {
+    let screen = ctx.redact_buffer();
+    let lines: Vec<&str> = screen.lines().collect();
+    let i = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains(text))
+        .nth(n)
+        .unwrap_or_else(|| panic!("no line {n} with {text}:\n{screen}"))
+        .0;
+    lines[i + 1].to_owned()
+}
+
+#[test]
+fn a_thread_follows_its_line_when_lines_are_added_above_it() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+
+    commit(&ctx.dir, "lines.txt", "top\nkeep\nnew\nkeep\n");
+    ctx.update(&mut app, keys("gr"));
+
+    assert!(
+        line_after(&ctx, "+new", 0).contains("CI ["),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert!(
+        !ctx.redact_buffer().contains("outdated"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_thread_whose_line_has_gone_is_outdated() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+
+    commit(&ctx.dir, "lines.txt", "keep\nnewer\nkeep\n");
+    ctx.update(&mut app, keys("gr"));
+
+    let header = line_after(&ctx, "lines.txt", 0);
+    assert!(header.contains("CI ["), "{}", ctx.redact_buffer());
+    assert!(header.contains("outdated"), "{}", ctx.redact_buffer());
+}
+
+#[test]
+fn a_thread_on_a_repeated_line_follows_the_one_with_its_surrounding_lines() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    commit(&ctx.dir, "lines.txt", "keep\nnew\nkeep\nother\nnew\nend\n");
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>nihello<ctrl+s>"));
+    assert!(
+        line_after(&ctx, "+new", 1).contains("CI ["),
+        "{}",
+        ctx.redact_buffer()
+    );
+
+    commit(
+        &ctx.dir,
+        "lines.txt",
+        "top\nkeep\nnew\nkeep\nother\nnew\nend\n",
+    );
+    ctx.update(&mut app, keys("gr"));
+
+    assert!(
+        line_after(&ctx, "+new", 1).contains("CI ["),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert!(
+        !line_after(&ctx, "+new", 0).contains("CI ["),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+/// What `gitu review <args>` prints, run in `dir`.
+fn review_cli(dir: &std::path::Path, args: &[&str]) -> String {
+    review_cli_with_input(dir, args, "").unwrap()
+}
+
+/// What `gitu review <args>` prints, run in `dir` with `input` on stdin.
+fn review_cli_with_input(
+    dir: &std::path::Path,
+    args: &[&str],
+    input: &str,
+) -> Result<String, crate::error::Error> {
+    review_cli_with_github(dir, args, input, Rc::new(FakeGitHub::new("", "")))
+}
+
+/// What `gitu review <args>` prints, run in `dir` with `input` on stdin and `github` as GitHub.
+fn review_cli_with_github(
+    dir: &std::path::Path,
+    args: &[&str],
+    input: &str,
+    github: Rc<FakeGitHub>,
+) -> Result<String, crate::error::Error> {
+    use clap::Parser;
+    let args = crate::cli::Args::try_parse_from(["gitu", "review"].iter().chain(args))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let Some(crate::cli::Commands::Review { command }) = args.command else {
+        unreachable!()
+    };
+    let mut out = vec![];
+    crate::review::cli::run(
+        &command,
+        git2::Repository::open(dir).unwrap(),
+        github,
+        &mut input.as_bytes(),
+        &mut out,
+    )?;
+    Ok(String::from_utf8(out).unwrap())
+}
+
+#[test]
+fn review_show_prints_each_thread_with_its_lines_and_comments() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    review_cli_with_input(
+        &ctx.dir,
+        &[
+            "comment",
+            "--path",
+            "lines.txt",
+            "--line",
+            "2",
+            "--agent",
+            "agent",
+        ],
+        "hello",
+    )
+    .unwrap();
+    let mut app = init_app(&mut ctx);
+    ctx.update(
+        &mut app,
+        keys("Ol/agent \\[<enter>iand more<ctrl+s>/old<enter>igone<ctrl+s>"),
+    );
+
+    let markdown = review_cli(&ctx.dir, &["show"]);
+
+    assert!(
+        markdown.starts_with("# Review of feature into main\n"),
+        "{markdown}"
+    );
+    let new = markdown.find("## lines.txt:2\n").expect(&markdown);
+    let old = markdown
+        .find("## lines.txt:2 (old side)\n")
+        .expect(&markdown);
+    let (new_section, old_section) = if new < old {
+        (&markdown[new..old], &markdown[old..])
+    } else {
+        (&markdown[new..], &markdown[old..new])
+    };
+    assert!(
+        new_section.contains("````\n  keep\n> new\n  keep\n````\n"),
+        "{markdown}"
+    );
+    assert!(new_section.contains("**CI** (draft, "), "{markdown}");
+    assert!(new_section.contains("hello\n"), "{markdown}");
+    assert!(
+        new_section.find("hello").unwrap() < new_section.find("and more").unwrap(),
+        "{markdown}"
+    );
+    assert!(
+        old_section.contains("````\n  keep\n> old\n  keep\n````\n"),
+        "{markdown}"
+    );
+    assert!(old_section.contains("gone\n"), "{markdown}");
+}
+
+#[test]
+fn review_show_says_where_an_outdated_thread_was() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    commit(&ctx.dir, "lines.txt", "keep\nnewer\nkeep\n");
+
+    let markdown = review_cli(&ctx.dir, &["show"]);
+
+    assert!(
+        markdown.contains("## lines.txt (outdated: was line 2)\n"),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn review_show_reads_the_pr_given_by_head_and_base() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    run(&ctx.dir, &["git", "checkout", "main"]);
+
+    let markdown = review_cli(&ctx.dir, &["show", "--head", "feature", "--base", "main"]);
+
+    assert!(markdown.contains("hello"), "{markdown}");
+}
+
+#[test]
+fn review_reply_with_an_agent_adds_the_reply_to_my_draft_review_with_its_name() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    review_cli_with_input(
+        &ctx.dir,
+        &["reply", &thread, "--agent", "claude"],
+        "Agreed.\n",
+    )
+    .unwrap();
+
+    let file = review_file(&ctx);
+    let comments = file["threads"][0]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 2, "{file}");
+    assert_eq!(comments[1]["author"], "CI", "{file}");
+    assert_eq!(comments[1]["agent"], "claude", "{file}");
+    assert_eq!(comments[1]["body"], "Agreed.", "{file}");
+    let reviews = file["reviews"].as_array().unwrap();
+    assert_eq!(reviews.len(), 1, "{file}");
+    assert_eq!(reviews[0]["author"], "CI", "{file}");
+    assert_eq!(reviews[0]["state"], "draft", "{file}");
+    assert_eq!(comments[1]["review"], reviews[0]["id"], "{file}");
+    let markdown = review_cli(&ctx.dir, &["show"]);
+    assert!(markdown.contains("**claude** (draft, "), "{markdown}");
+    assert!(markdown.contains("Agreed.\n"), "{markdown}");
+}
+
+#[test]
+fn review_reply_by_default_is_by_gits_user() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    review_cli_with_input(&ctx.dir, &["reply", &thread], "more").unwrap();
+
+    let file = review_file(&ctx);
+    assert_eq!(file["reviews"].as_array().unwrap().len(), 1, "{file}");
+    assert_eq!(file["threads"][0]["comments"][1]["author"], "CI", "{file}");
+}
+
+#[test]
+fn review_reply_to_a_thread_that_is_not_there_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+
+    let result = review_cli_with_input(&ctx.dir, &["reply", "nope"], "hi");
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("no thread nope"), "{error}");
+    let file = review_file(&ctx);
+    assert_eq!(
+        file["reviews"],
+        serde_json::json!([]),
+        "no review is started: {file}"
+    );
+}
+
+#[test]
+fn review_reply_that_is_empty_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let result = review_cli_with_input(&ctx.dir, &["reply", &thread], " \n");
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("Nothing to reply"), "{error}");
+    assert_eq!(
+        review_file(&ctx)["threads"][0]["comments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn review_comment_with_an_agent_starts_a_thread_in_my_draft_review() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+
+    review_cli_with_input(
+        &ctx.dir,
+        &[
+            "comment",
+            "--path",
+            "lines.txt",
+            "--line",
+            "2",
+            "--agent",
+            "claude",
+        ],
+        "Why new?\n",
+    )
+    .unwrap();
+
+    let file = review_file(&ctx);
+    let thread = &file["threads"][0];
+    assert_eq!(thread["anchor"]["path"], "lines.txt", "{file}");
+    assert_eq!(thread["anchor"]["side"], "new", "{file}");
+    assert_eq!(thread["anchor"]["line"], 2, "{file}");
+    assert_eq!(
+        thread["anchor"]["text"],
+        serde_json::json!(["new"]),
+        "{file}"
+    );
+    assert_eq!(thread["comments"][0]["author"], "CI", "{file}");
+    assert_eq!(thread["comments"][0]["agent"], "claude", "{file}");
+    assert_eq!(thread["comments"][0]["body"], "Why new?", "{file}");
+    assert_eq!(file["reviews"][0]["author"], "CI", "{file}");
+    assert_eq!(file["reviews"][0]["state"], "draft", "{file}");
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol"));
+    assert!(
+        line_after(&ctx, "+new", 0).contains("claude ["),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn review_comment_on_the_old_side_is_on_the_removed_line() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+
+    review_cli_with_input(
+        &ctx.dir,
+        &[
+            "comment",
+            "--path",
+            "lines.txt",
+            "--line",
+            "2",
+            "--side",
+            "old",
+        ],
+        "Why not old?",
+    )
+    .unwrap();
+
+    let file = review_file(&ctx);
+    assert_eq!(file["threads"][0]["anchor"]["side"], "old", "{file}");
+    assert_eq!(
+        file["threads"][0]["anchor"]["text"],
+        serde_json::json!(["old"]),
+        "{file}"
+    );
+    assert_eq!(file["threads"][0]["comments"][0]["author"], "CI", "{file}");
+}
+
+#[test]
+fn review_comment_on_a_line_not_in_the_diff_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    // long.txt is where the PR branched from, so only its first lines are in the diff.
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    commit(&ctx.dir, "long.txt", &"line\n".repeat(20));
+    run(&ctx.dir, &["git", "checkout", "feature"]);
+    run(&ctx.dir, &["git", "merge", "--no-edit", "main"]);
+    commit(
+        &ctx.dir,
+        "long.txt",
+        &format!("changed\n{}", "line\n".repeat(19)),
+    );
+
+    for (path, line) in [
+        ("long.txt", "15"),
+        ("main-only.txt", "1"),
+        ("lines.txt", "9"),
+    ] {
+        let result =
+            review_cli_with_input(&ctx.dir, &["comment", "--path", path, "--line", line], "hi");
+
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains(&format!("{path}:{line} is not in the PR's diff")),
+            "{error}"
+        );
+    }
+    let path = ctx.dir.join(".git/gitu/review/feature...main.json");
+    assert!(!path.exists(), "nothing is recorded");
+}
+
+#[test]
+fn review_comment_that_is_empty_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+
+    let result = review_cli_with_input(
+        &ctx.dir,
+        &["comment", "--path", "lines.txt", "--line", "2"],
+        "\n",
+    );
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("Nothing to comment"), "{error}");
+}
+
+/// GitHub with a PR of `feature` into `main` whose head is where `feature` is now.
+fn github_at_head(ctx: &TestContext) -> Rc<FakeGitHub> {
+    Rc::new(FakeGitHub::new(
+        run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
+        run(&ctx.dir, &["git", "rev-parse", "feature"]).trim(),
+    ))
+}
+
+#[test]
+fn review_post_pushes_the_branch_and_creates_a_draft_pr_when_there_is_none() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    let github = github_at_head(&ctx);
+    *github.has_pr.borrow_mut() = false;
+
+    review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github)).unwrap();
+
+    assert_eq!(
+        *github.created.borrow(),
+        vec![("feature".to_owned(), "main".to_owned())]
+    );
+    let pushed = run(&ctx.remote_dir, &["git", "rev-parse", "feature"]);
+    let local = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    assert_eq!(pushed, local);
+    assert_eq!(github.posted.borrow().len(), 1);
+}
+
+#[test]
+fn review_post_pushes_new_commits_to_an_existing_pr() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
+    commit(&ctx.dir, "added.txt", "added\nmore\n");
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    let github = github_at_head(&ctx);
+
+    review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github)).unwrap();
+
+    let pushed = run(&ctx.remote_dir, &["git", "rev-parse", "feature"]);
+    let local = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    assert_eq!(pushed, local);
+    assert!(github.created.borrow().is_empty());
+}
+
+#[test]
+fn review_post_refuses_when_githubs_head_is_not_the_branchs() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    let github = Rc::new(FakeGitHub::new("", &"0".repeat(40)));
+
+    let result = review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github));
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("is not at feature's commit"), "{error}");
+    assert!(github.posted.borrow().is_empty());
+    assert_eq!(review_file(&ctx)["reviews"][0]["state"], "draft");
+}
+
+#[test]
+fn op_posts_the_review_once_confirmed() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+
+    ctx.update(&mut app, keys("Opy"));
+
+    assert_eq!(github.posted.borrow().len(), 1);
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Posted 1 thread"), "{screen}");
+    // Fetched back from GitHub, where it is in my pending review, by my GitHub login.
+    assert!(!screen.contains("CI ["), "{screen}");
+    assert!(!line_with(&ctx, "me [").contains("draft"), "{screen}");
+}
+
+#[test]
+fn review_post_refuses_when_the_github_prs_base_is_not_the_local_prs() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    let github = github_at_head(&ctx);
+    *github.base_ref.borrow_mut() = "release".to_owned();
+
+    let result = review_cli_with_github(
+        &ctx.dir,
+        &["post", "--base", "main"],
+        "",
+        Rc::clone(&github),
+    );
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("is into release, not main"), "{error}");
+    assert!(github.posted.borrow().is_empty());
+}
+
+#[test]
+fn the_base_is_the_github_prs_base() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "branch", "release", "main"]);
+    let github = Rc::new(FakeGitHub::new("", ""));
+    *github.base_ref.borrow_mut() = "release".to_owned();
+
+    let markdown = review_cli_with_github(&ctx.dir, &["show"], "", github).unwrap();
+
+    assert!(
+        markdown.starts_with("# Review of feature into release\n"),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn without_a_github_pr_the_base_is_githubs_default_branch() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "branch", "trunk", "main"]);
+    let github = Rc::new(FakeGitHub::new("", ""));
+    *github.has_pr.borrow_mut() = false;
+    *github.default_branch.borrow_mut() = "trunk".to_owned();
+
+    let markdown = review_cli_with_github(&ctx.dir, &["show"], "", github).unwrap();
+
+    assert!(
+        markdown.starts_with("# Review of feature into trunk\n"),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn when_gh_fails_the_base_must_be_given() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = Rc::new(FakeGitHub::new("", ""));
+    *github.fails.borrow_mut() = true;
+
+    let error = review_cli_with_github(&ctx.dir, &["show"], "", Rc::clone(&github))
+        .unwrap_err()
+        .to_string();
+    let given = review_cli_with_github(&ctx.dir, &["show", "--base", "main"], "", github);
+
+    assert!(error.contains("--base"), "{error}");
+    assert!(
+        error.contains("error connecting to api.github.com"),
+        "{error}"
+    );
+    assert!(
+        given
+            .unwrap()
+            .starts_with("# Review of feature into main\n")
+    );
+}
+
+#[test]
+fn fetching_a_thread_whose_commit_is_not_in_the_repository_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let main = run(&ctx.dir, &["git", "rev-parse", "main"]);
+    let github = Rc::new(FakeGitHub::new(main.trim(), &"0".repeat(40)));
+    *github.threads.borrow_mut() = vec![super::pr::thread(
+        "t1",
+        Some((crate::review::Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+
+    let result = review_cli_with_github(&ctx.dir, &["fetch"], "", github);
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("is not in the repository"), "{error}");
+}
+
+#[test]
+fn ol_without_gits_user_name_says_to_set_it() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "config", "--unset", "user.name"]);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("user.name"), "{screen}");
+}
+
+#[test]
+fn k_deletes_an_agents_draft_comment() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    review_cli_with_input(
+        &ctx.dir,
+        &[
+            "comment",
+            "--path",
+            "lines.txt",
+            "--line",
+            "2",
+            "--agent",
+            "agent",
+        ],
+        "hello",
+    )
+    .unwrap();
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/agent \\[<enter>"));
+
+    ctx.update(&mut app, keys("Ky"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Comment deleted"), "{screen}");
+    assert!(!screen.contains("hello"), "{screen}");
+}
+
+#[test]
+fn posting_posts_an_agents_draft_comments_too() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    review_cli_with_input(
+        &ctx.dir,
+        &[
+            "comment",
+            "--path",
+            "lines.txt",
+            "--line",
+            "2",
+            "--agent",
+            "agent",
+        ],
+        "hello",
+    )
+    .unwrap();
+    review_cli_with_input(
+        &ctx.dir,
+        &[
+            "comment",
+            "--path",
+            "lines.txt",
+            "--line",
+            "2",
+            "--side",
+            "old",
+        ],
+        "mine",
+    )
+    .unwrap();
+
+    let github = github_at_head(&ctx);
+
+    review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github)).unwrap();
+
+    let mut bodies: Vec<String> = github
+        .posted
+        .borrow()
+        .iter()
+        .map(|(_, body)| body.clone())
+        .collect();
+    bodies.sort();
+    assert_eq!(bodies, ["hello", "mine"]);
+}
+
+/// A store written by a gitu that kept a draft review for each author has one draft review once
+/// read: the other authors' comments are in it, labelled with their names.
+#[test]
+fn a_draft_review_by_another_author_in_an_old_store_becomes_part_of_mine() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    review_cli_with_input(&ctx.dir, &["reply", &thread], "Agreed.\n").unwrap();
+    // As the gitu before labels wrote it: the reply in claude's own draft review.
+    let mut old = review_file(&ctx);
+    old["version"] = 1.into();
+    let mut claudes = old["reviews"][0].clone();
+    claudes["id"] = "claudes".into();
+    claudes["author"] = "claude".into();
+    old["reviews"].as_array_mut().unwrap().push(claudes);
+    let reply = &mut old["threads"][0]["comments"][1];
+    reply["review"] = "claudes".into();
+    reply["author"] = "claude".into();
+    let path = review_file_path(&ctx);
+    fs::write(&path, serde_json::to_string_pretty(&old).unwrap()).unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_str(&review_cli(&ctx.dir, &["show", "--format", "json"])).unwrap();
+
+    let reviews = json["reviews"].as_array().unwrap();
+    assert_eq!(reviews.len(), 1, "{json}");
+    assert_eq!(reviews[0]["author"], "CI", "{json}");
+    let comments = json["threads"][0]["comments"].as_array().unwrap();
+    assert_eq!(comments[1]["review"], reviews[0]["id"], "{json}");
+    assert_eq!(comments[1]["author"], "CI", "{json}");
+    assert_eq!(comments[1]["agent"], "claude", "{json}");
+}
+
+/// With `refresh_on_file_change`, an agent's reply written while the PR is open
+/// shows without `g r`.
+#[test]
+fn an_agents_reply_shows_without_refreshing() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    ctx.config().general.refresh_on_file_change.enabled = true;
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The watcher starts on a thread of its own.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    review_cli_with_input(
+        &ctx.dir,
+        &["reply", &thread, "--agent", "claude"],
+        "Agreed.\n",
+    )
+    .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ctx.redact_buffer().contains("Agreed.") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{}",
+            ctx.redact_buffer()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        app.update(&mut ctx.term, None).unwrap();
+    }
+}

@@ -91,7 +91,7 @@ pub(crate) struct State {
     pub(crate) terminal_width: Option<(u16, Instant)>,
     file_watcher: Option<FileWatcher>,
     inhibit_close_menu: bool,
-    pub github: Rc<dyn crate::github::GitHub>,
+    pub github: Rc<dyn crate::review::github::GitHub>,
 }
 
 pub struct App {
@@ -166,6 +166,9 @@ impl App {
                 let todo = RebaseTodo::read(&repo, file)?;
                 vec![rebase_todo_screen(&config, &repo, params.clone(), todo)?]
             }
+            Some(cli::Commands::Review { .. }) => {
+                unreachable!("gitu::run runs the review command without the TUI")
+            }
             None => vec![screen::status::create(
                 Arc::clone(&config),
                 Rc::clone(&repo),
@@ -179,7 +182,7 @@ impl App {
         let read_only = config.general.read_only.is_on(&repo);
         let prompt = prompt::Prompt::with_history(repo.path().join("gitu"), read_only);
 
-        let github = Rc::new(crate::github::Gh {
+        let github = Rc::new(crate::review::github::Gh {
             workdir: repo.workdir().unwrap_or(repo.path()).to_path_buf(),
         });
 
@@ -277,6 +280,7 @@ impl App {
         if let Some(file_watcher) = &mut self.state.file_watcher
             && file_watcher.pending_updates()
         {
+            self.reread_review_threads()?;
             self.update_screens()?;
         }
 
@@ -361,6 +365,24 @@ impl App {
             screen.resize(width, height)?;
         }
         self.rerender_screens()
+    }
+
+    /// Read each PR screen's review threads from the local store again, as an
+    /// agent may have written to it. This reads no more than the store: unlike
+    /// `g r`, it neither fetches from GitHub nor reads Viewed.
+    fn reread_review_threads(&mut self) -> Res<()> {
+        for screen in &self.state.screens {
+            if let Some(pr) = &screen.pr {
+                let Some(local) = pr.backend.as_local() else {
+                    return Err(Error::LocalPr(
+                        "Couldn't read review threads: the PR on screen is not a local PR"
+                            .to_owned(),
+                    ));
+                };
+                *pr.threads.borrow_mut() = crate::review::Backend::threads(local)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn update_screens(&mut self) -> Res<()> {
@@ -476,8 +498,8 @@ impl App {
                     self.handle_picker_input(key)?;
                 } else if self.state.prompt.state.focused {
                     self.state.prompt.handle_key(key);
-                } else if crate::ops::pr::draft_has_focus(self) {
-                    let result = crate::ops::pr::handle_draft_key(self, term, key);
+                } else if crate::ops::pr::editor_has_focus(self) {
+                    let result = crate::ops::pr::handle_editor_key(self, term, key);
                     self.handle_result(result)?;
                 } else {
                     self.handle_key_input(term, key)?;
@@ -487,8 +509,8 @@ impl App {
                 Ok(())
             }
             Event::Paste(text) => {
-                if crate::ops::pr::draft_has_focus(self) {
-                    crate::ops::pr::paste_into_draft(self, &text);
+                if crate::ops::pr::editor_has_focus(self) {
+                    crate::ops::pr::paste_into_editor(self, &text);
                     self.stage_redraw();
                 }
                 Ok(())
@@ -938,9 +960,9 @@ impl App {
         // already said what is being answered. Prefilled, the default is the
         // answer being edited rather than the one an empty answer falls back
         // to — it is on the line, so naming it again says nothing either.
-        let prompt_text = match (params.prompt, &default) {
+        let prompt_text = match (params.prompt.as_ref(), &default) {
             ("", _) => Cow::Borrowed(""),
-            (prompt, _) if params.bare => Cow::Borrowed(prompt),
+            (_, _) if params.bare => params.prompt.clone(),
             (prompt, Some(default)) if !params.prefill => format!("{prompt} ({default}):").into(),
             (prompt, _) => format!("{prompt}:").into(),
         };
@@ -960,7 +982,7 @@ impl App {
             self.state.prompt.state.value = default;
             self.state.prompt.state.move_to(usize::MAX);
         }
-        self.state.prompt.start_history(params.history)?;
+        self.state.prompt.start_history(params.history.as_ref())?;
 
         let result = self.handle_prompt(term, params);
 
@@ -980,7 +1002,7 @@ impl App {
 
             if self.state.prompt.state.status == text_input::Status::Done {
                 let value = get_prompt_result(params, self)?;
-                if let Some(kind) = params.history {
+                if let Some(kind) = &params.history {
                     self.state.prompt.remember(kind, &value)?;
                 }
                 return Ok(value);
@@ -1448,7 +1470,7 @@ type DefaultFn = Box<dyn Fn(&App) -> Option<String>>;
 type EditFn = Box<dyn Fn(&mut App, &str)>;
 
 pub(crate) struct PromptParams {
-    pub prompt: &'static str,
+    pub prompt: Cow<'static, str>,
     pub create_default_value: DefaultFn,
     pub hide_menu: bool,
     /// Put the default value in the prompt for the user to edit, rather than
@@ -1465,7 +1487,7 @@ pub(crate) struct PromptParams {
 impl Default for PromptParams {
     fn default() -> Self {
         Self {
-            prompt: "",
+            prompt: "".into(),
             create_default_value: Box::new(|_| None),
             hide_menu: true,
             prefill: false,
