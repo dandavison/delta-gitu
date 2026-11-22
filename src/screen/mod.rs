@@ -372,8 +372,13 @@ impl Screen {
     }
 
     fn params(&self) -> RenderParams {
+        let prefix = if self.review.is_some() {
+            crate::github::FILE_PREFIX_WIDTH
+        } else {
+            0
+        };
         RenderParams {
-            size: self.size,
+            size: (self.size.0.saturating_sub(prefix), self.size.1),
             features: Rc::clone(&self.features),
             context: self.context.clone(),
             difftastic: self.difftastic,
@@ -1950,8 +1955,15 @@ fn layout_item<'a>(layout: &mut UiTree<'a>, screen: &'a Screen, hide_cursor: boo
 
         let item = &screen.items[line.item_index];
         if let (Some(review), ItemData::Delta { diff, file_i, .. }) = (&screen.review, &item.data) {
-            let checkbox = review.checkbox(&crate::github::file_path(diff, *file_i));
-            layout.row(opts(), |layout| layout_span(layout, (checkbox.into(), bg)));
+            let path = crate::github::file_path(diff, *file_i);
+            let unresolved = (
+                review.unresolved(&path).into(),
+                bg.patch(Style::from(&style.comment_decoration)),
+            );
+            layout.row(opts(), |layout| {
+                layout_span(layout, (review.checkbox(&path).into(), bg));
+                layout_span(layout, unresolved);
+            });
         }
         if let Some(row) = screen.standing_in_row(item) {
             ui::item::layout_rendered(layout, row, bg);

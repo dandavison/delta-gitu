@@ -553,9 +553,13 @@ fn side_by_side(ctx: &mut TestContext) {
         crate::config::EnabledFeatures::new(|_| vec!["side-by-side".into()]);
 }
 
-/// In side-by-side, delta draws the new file in the right panel, which starts
-/// halfway across the width delta is given: 78 columns of the 80, after the
-/// one column gitu draws the cursor in.
+/// Where delta's right panel starts in side-by-side: halfway across the width
+/// delta is given, which is the 80 columns but for the two gitu keeps for the
+/// cursor and those it keeps for a file's checkbox and thread count. The
+/// screen's column 0 is the cursor's.
+const RIGHT_PANEL: usize = 1 + (80 - 2 - crate::github::FILE_PREFIX_WIDTH as usize) / 2;
+
+/// In side-by-side, delta draws the new file in the right panel.
 #[test]
 fn side_by_side_draws_a_new_side_thread_in_the_right_panel() {
     let mut ctx = setup_clone!();
@@ -571,7 +575,7 @@ fn side_by_side_draws_a_new_side_thread_in_the_right_panel() {
 
     ctx.update(&mut app, keys("OO"));
 
-    assert_eq!(bar_column(&ctx, "alice: Why new?"), 1 + 39 + 2);
+    assert_eq!(bar_column(&ctx, "alice: Why new?"), RIGHT_PANEL + 2);
 }
 
 #[test]
@@ -615,7 +619,7 @@ fn a_long_comment_wraps_within_its_panel() {
     let first = line_with(&ctx, "alice: one");
     let last = line_with(&ctx, "twelve");
     assert_ne!(first, last, "{}", ctx.redact_buffer());
-    assert_eq!(bar_column(&ctx, "twelve"), 1 + 39 + 2);
+    assert_eq!(bar_column(&ctx, "twelve"), RIGHT_PANEL + 2);
     let width = last.trim_end_matches(['|', ' ']).chars().count();
     assert!(width <= 80, "{last}");
 }

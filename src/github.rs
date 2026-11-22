@@ -42,6 +42,11 @@ pub(crate) struct Review {
     pub threads: RefCell<Vec<Thread>>,
 }
 
+/// How many columns [`Review::checkbox`] and [`Review::unresolved`] take
+/// before a file's row. A PR's diff is rendered that much narrower, so that a
+/// row taking the whole width still fits beside them.
+pub(crate) const FILE_PREFIX_WIDTH: u16 = 8;
+
 impl Review {
     /// The checkbox drawn before the file at `path`: blank for a file GitHub
     /// does not have in the PR, such as one changed by a commit not pushed.
@@ -52,6 +57,24 @@ impl Review {
             Some(ViewedState::Dismissed) => "[~] ",
             None => "    ",
         }
+    }
+
+    /// What is drawn after the checkbox of the file at `path`: `●` and the
+    /// number of its unresolved review threads, or blank when it has none.
+    /// More than 99 does not fit, and pushes the row right.
+    pub fn unresolved(&self, path: &str) -> String {
+        let count = self
+            .threads
+            .borrow()
+            .iter()
+            .filter(|thread| thread.path == path && !thread.resolved)
+            .count();
+        let marker = if count == 0 {
+            String::new()
+        } else {
+            format!("●{count}")
+        };
+        format!("{marker:<4}")
     }
 }
 
