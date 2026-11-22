@@ -1029,7 +1029,28 @@ mod tests {
         colored.split_inclusive('\n').map(legible_line).collect()
     }
 
+    /// The old and new line numbers that a record at the start of `line` gives it, if it has one,
+    /// and the rest of it.
+    fn split_line_record(line: &str) -> (Option<[usize; 2]>, &str) {
+        let Some(rest) = line.strip_prefix("\x1b]1717;1;") else {
+            return (None, line);
+        };
+        let (record, rest) = rest.split_once("\x1b\\").unwrap();
+        let fields: Vec<&str> = record.split(';').collect();
+        let numbers = [fields[2], fields[1]].map(|field| field.parse().unwrap());
+        (Some(numbers), rest)
+    }
+
+    /// `line` as [`legible`] writes it, with `[-OLD +NEW]` before it if a record gives it line
+    /// numbers.
     fn legible_line(line: &str) -> String {
+        match split_line_record(line) {
+            (None, line) => legible_painted_line(line),
+            (Some([old, new]), line) => format!("[-{old} +{new}]{}", legible_painted_line(line)),
+        }
+    }
+
+    fn legible_painted_line(line: &str) -> String {
         let paint_of = |code: &str| {
             PAINTS
                 .into_iter()
@@ -1174,6 +1195,10 @@ mod tests {
             let mut drawn_removed: Vec<usize> = vec![];
             let mut next = [0, 0];
             for colored in shown.text.split_terminator('\n') {
+                let (numbers, colored) = split_line_record(colored);
+                if let Some(numbers) = numbers {
+                    next = numbers;
+                }
                 let line = uncolored(colored);
                 let line = line.trim_end_matches('\n');
                 if let Some(header) = line.strip_prefix("@@ -") {
@@ -1422,16 +1447,16 @@ mod tests {
  fn f() {
 -.    let ⟦x⟧ = add(
 +.    let ⟦y⟧ = add(a, b);
-@@ -6 +3 @@
- }
+[-6 +3] }
 "
         );
     }
 
-    /// A hunk header after a line that is not drawn counts the lines of each version under it, as
-    /// delta, drawing a hunk side by side only if it removes and adds lines, reads that many.
+    /// After old lines that are not drawn, the next line's line numbers are given by a record on
+    /// it, not by a new hunk: git's hunk stays one hunk, which delta draws side by side if it
+    /// removes and adds lines.
     #[test]
-    fn a_hunk_after_a_line_not_drawn_counts_its_lines() {
+    fn old_lines_not_drawn_leave_gits_hunk_whole() {
         let shown = shown(&MORE_FIXTURES[11].1);
         assert_eq!(
             legible(&shown.text),
@@ -1439,8 +1464,7 @@ mod tests {
  fn f() {
 -.    let ⟦x⟧ = add(
 +.    let ⟦y⟧ = add(a, b);
-@@ -6,2 +3,2 @@
--.    g(⟦x⟧);
+[-6 +3]-.    g(⟦x⟧);
 +.    g(⟦y⟧);
  }
 "
