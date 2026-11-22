@@ -527,13 +527,10 @@ fn shown(drawn: &[Drawn], versions: &[Version; 2], git_hunks: &[GitHunk]) -> Opt
         shown.text.push_str(&git_hunk.header);
         shown.text.push('\n');
         let mut next = git_hunk.lines.clone().map(|range| range.start);
-        // Whether an old line has not been drawn since the last header: the next line that counts
-        // an old line then needs one, or the renderer numbers it as the line not drawn.
+        // Whether an old line has not been drawn since the last line that counts one: the next line
+        // that counts one then gives its line numbers, or the renderer numbers it as the first line
+        // not drawn.
         let mut hidden = false;
-        // The header the view's current hunk needs, if it starts after a line not drawn: where in
-        // the text it goes, the lines of each version it starts at, and how many of each are
-        // drawn under it.
-        let mut header: Option<(usize, [usize; 2], [usize; 2])> = None;
         while let Some(row) = rows.next_if(|row| inside(row)) {
             let lines = row.lines();
             if lines
@@ -550,17 +547,16 @@ fn shown(drawn: &[Drawn], versions: &[Version; 2], git_hunks: &[GitHunk]) -> Opt
             let counts_old_line =
                 !matches!(row, Drawn::Hidden { .. } | Drawn::Changed { old: None, .. });
             if hidden && counts_old_line {
-                insert_header(&mut shown.text, header.take());
-                header = Some((shown.text.len(), next, [0, 0]));
+                let kind = if matches!(row, Drawn::Unchanged { .. }) {
+                    'c'
+                } else {
+                    'd'
+                };
+                shown.text.push_str(&line_record(kind, next));
                 hidden = false;
             }
             for version in [OLD, NEW] {
                 next[version] += usize::from(lines[version].is_some());
-                if let Some((_, _, counts)) = &mut header
-                    && !matches!(row, Drawn::Hidden { .. })
-                {
-                    counts[version] += usize::from(lines[version].is_some());
-                }
             }
             match row {
                 Drawn::Hidden { .. } => hidden = true,
@@ -587,7 +583,6 @@ fn shown(drawn: &[Drawn], versions: &[Version; 2], git_hunks: &[GitHunk]) -> Opt
                 }
             }
         }
-        insert_header(&mut shown.text, header);
     }
     if rows.any(|row| !matches!(row, Drawn::Unchanged { paint: None, .. })) {
         return None;
@@ -595,19 +590,14 @@ fn shown(drawn: &[Drawn], versions: &[Version; 2], git_hunks: &[GitHunk]) -> Opt
     Some(shown)
 }
 
-/// Insert into `text` the hunk header `header` says: at its position, for the lines starting at
-/// its 0-based line numbers, as many of each version as it counts, written as git writes them.
-fn insert_header(text: &mut String, header: Option<(usize, [usize; 2], [usize; 2])>) {
-    let Some((at, first, counts)) = header else {
-        return;
-    };
-    let [old, new] = [OLD, NEW].map(|version| match counts[version] {
-        // git numbers an empty range by the line before it.
-        0 => format!("{},0", first[version]),
-        1 => format!("{}", first[version] + 1),
-        count => format!("{},{count}", first[version] + 1),
-    });
-    text.insert_str(at, &format!("@@ -{old} +{new} @@\n"));
+/// The OSC 1717 per-line record that gives the line it starts, of `kind`, the line numbers after
+/// the 0-based `next` of each version: delta numbers the line as it says. After old lines that are
+/// not drawn, the line numbers do not follow on from the previous line's, which in a unified diff
+/// can otherwise be expressed only by starting a new hunk, and delta's `side-by-side = hunk` lays
+/// out each hunk on its own.
+fn line_record(kind: char, next: [usize; 2]) -> String {
+    let [old, new] = next.map(|line| line + 1);
+    format!("\x1b]1717;1;{kind};{new};{old};\x1b\\")
 }
 
 fn no_newline_marker(text: &mut String, lacks_newline: bool) {
@@ -1295,6 +1285,10 @@ mod tests {
             let text = uncolored(&shown.text);
             let mut next = [0, 0];
             for line in text.split_terminator('\n') {
+                let (numbers, line) = split_line_record(line);
+                if let Some(numbers) = numbers {
+                    next = numbers;
+                }
                 if let Some(header) = line.strip_prefix("@@ -") {
                     let (old, new) = header
                         .split_once(" @@")

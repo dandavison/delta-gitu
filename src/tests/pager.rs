@@ -928,6 +928,7 @@ pub(super) fn annotating_renderer() -> Vec<String> {
         r#"
         BEGIN{bs=sprintf("%c",92);osc="\033]1717;1";st="\033" bs;handshake=osc st}
         {raw=$0;gsub(/\033\[[0-9;]*m/,"");printf "%s",handshake;handshake=""}
+        index($0,osc ";")==1{rest=substr($0,length(osc)+2);k=index(rest,st);split(substr(rest,1,k-1),f,";");new=f[2];if(f[3]!="")old=f[3];$0=substr(rest,k+2);raw=substr(raw,index(raw,st)+2)}
         !/^[-+ ]/&&substr($0,1,1)!=bs{hunk=0}
         header&&/^(@@|diff |(commit|▸) [0-9a-f]+)/{file_header()}
         /^(commit|▸) [0-9a-f]+/{printf "%s;C;;;%s%s%s\n",osc,$2,st,raw;next}
