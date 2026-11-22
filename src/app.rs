@@ -699,7 +699,7 @@ impl App {
     /// Will block awaiting its completion.
     pub fn run_cmd(&mut self, term: &mut Term, input: &[u8], cmd: Command) -> Res<()> {
         self.run_cmd_async(term, input, cmd)?;
-        self.await_pending_cmd()?;
+        self.await_pending_cmd_drawing(term)?;
         self.handle_pending_cmd()?;
         Ok(())
     }
@@ -769,6 +769,25 @@ impl App {
             self.await_pending_cmd()?;
         }
 
+        Ok(())
+    }
+
+    /// Wait for the pending command to exit, drawing the screen every [`ui::cmd_log::SPINNER_STEP`] meanwhile,
+    /// so that its spinner turns. Whether it has exited is checked more often than that, so that
+    /// waiting adds little to the time the command takes.
+    fn await_pending_cmd_drawing(&mut self, term: &mut Term) -> Res<()> {
+        const CHECK_STEP: Duration = Duration::from_millis(10);
+        let mut drawn = Instant::now();
+        while let Some(PendingCmd { child, .. }) = &mut self.state.pending_cmd {
+            if child.try_wait().map_err(Error::CouldntAwaitCmd)?.is_some() {
+                break;
+            }
+            if drawn.elapsed() >= ui::cmd_log::SPINNER_STEP {
+                ui::ui(term, &mut self.state)?;
+                drawn = Instant::now();
+            }
+            std::thread::sleep(CHECK_STEP);
+        }
         Ok(())
     }
 

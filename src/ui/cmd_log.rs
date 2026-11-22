@@ -32,7 +32,7 @@ pub(crate) fn layout_cmd_log<'a>(
 }
 
 /// How often the spinner beside a running command turns.
-const SPINNER_STEP: Duration = Duration::from_millis(100);
+pub(crate) const SPINNER_STEP: Duration = Duration::from_millis(100);
 
 /// A command is shown while it runs; once it has finished, only with `--debug`.
 fn shown(entry: &Arc<RwLock<CmdLogEntry>>, debug: bool) -> bool {

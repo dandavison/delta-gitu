@@ -15,7 +15,7 @@ use layout::opts;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-mod cmd_log;
+pub(crate) mod cmd_log;
 pub(crate) mod item;
 pub(crate) mod layout;
 mod menu;
