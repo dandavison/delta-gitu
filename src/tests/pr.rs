@@ -1158,3 +1158,26 @@ fn a_comments_time_links_to_it_on_github() {
     );
     assert_eq!(cell(&ctx, ALICE, 'a').link, None, "the author");
 }
+
+/// On a file's line of the diffstat the count is right-aligned in the names'
+/// column, so the counts end in a column against the `|`.
+#[test]
+fn comment_counts_are_aligned_against_the_diffstats_bar() {
+    let mut ctx = setup_clone!();
+    let github = setup_folded_to_stat(&mut ctx);
+    *github.threads.borrow_mut() = vec![
+        thread("t1", None, false, &[("alice", "Why?"), ("bob", "So")]),
+        Thread {
+            path: "big.txt".into(),
+            ..thread("t2", None, false, &[("bob", "Hm")])
+        },
+    ];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert!(line_with(&ctx, "lines.txt").contains("lines.txt [2 comments] |"));
+    let big = line_with(&ctx, "big.txt");
+    assert!(big.contains("[1 comment] |"), "{}", ctx.redact_buffer());
+    assert!(big.contains("big.txt    ["), "{}", ctx.redact_buffer());
+}
