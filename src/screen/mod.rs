@@ -217,20 +217,6 @@ fn shown_rows(items: &[Item]) -> usize {
         .count()
 }
 
-impl Items {
-    /// These items and those to come later, each passed through `f`.
-    pub(crate) fn map(self, f: Rc<dyn Fn(Vec<Item>) -> Vec<Item>>) -> Self {
-        let Items { now, later } = self;
-        Items {
-            now: f(now),
-            later: later.map(|mut later| {
-                Box::new(move || later().map(|(items, done)| (items.map(|items| f(items)), done)))
-                    as Later
-            }),
-        }
-    }
-}
-
 impl From<Vec<Item>> for Items {
     fn from(now: Vec<Item>) -> Self {
         Self { now, later: None }
@@ -299,6 +285,12 @@ pub(crate) struct Screen {
     /// The GitHub PR this screen shows the diff of, whose files are drawn with
     /// their Viewed checkboxes.
     pub(crate) review: Option<Rc<crate::github::Review>>,
+    /// What adds rows of gitu's own to those built, such as a PR's review threads, each time
+    /// they are built (see [`crate::screen::pager::Decorate`]).
+    decorate: Option<crate::screen::pager::Decorate>,
+    /// The rows as built, before `decorate`, so that it can be applied again without building
+    /// them again, as typing in a comment box needs.
+    undecorated: Vec<Item>,
 }
 
 impl Screen {
@@ -354,6 +346,8 @@ impl Screen {
             unfolded: HashSet::new(),
             search: None,
             review: None,
+            decorate: None,
+            undecorated: vec![],
         };
 
         let Items { now, later } = (screen.refresh_items)(screen.params())?;
@@ -1009,10 +1003,41 @@ impl Screen {
         }
     }
 
+    /// Add rows of gitu's own to those built with `decorate`, now and each time they are built.
+    pub(crate) fn set_decorate(&mut self, decorate: crate::screen::pager::Decorate) {
+        self.undecorated = std::mem::take(&mut self.items);
+        self.decorate = Some(decorate);
+        self.redecorate();
+    }
+
+    /// Apply the screen's decoration again to the rows as they were built, without building
+    /// them again: what it adds has changed, as a comment box's text does with each key.
+    pub(crate) fn redecorate(&mut self) {
+        let Some(decorate) = &self.decorate else {
+            return;
+        };
+        let items = decorate(&self.params(), self.undecorated.clone());
+        self.install_items(items);
+        self.invalidate();
+        self.update_cursor();
+    }
+
+    /// Make `items`, as built, the screen's, with its decoration added.
+    fn take_items(&mut self, items: Vec<Item>) {
+        let items = match &self.decorate {
+            Some(decorate) => {
+                self.undecorated = items.clone();
+                decorate(&self.params(), items)
+            }
+            None => items,
+        };
+        self.install_items(items);
+    }
+
     /// Make `items` the screen's, each folded as the user left it or, one the
     /// screen has not had before, as it says it starts. This is decided before
     /// anything is drawn, so nothing is shown folded otherwise than it stays.
-    fn take_items(&mut self, items: Vec<Item>) {
+    fn install_items(&mut self, items: Vec<Item>) {
         let folded: Vec<ItemId> = items
             .iter()
             .filter(|item| !self.seen.contains(&item.id))
@@ -1554,6 +1579,24 @@ impl Screen {
 
     pub(crate) fn get_selected_item(&self) -> &Item {
         &self.items[self.cursor]
+    }
+
+    /// Put the cursor on the first selectable item `predicate` holds for, scrolling only as far as
+    /// keeps it in view, as a cursor moved by line does, rather than centering on it.
+    pub(crate) fn select_matching_in_view<F: Fn(&ItemData) -> bool>(
+        &mut self,
+        predicate: F,
+    ) -> bool {
+        let Some(item_i) = self.find_item(|item| !item.unselectable && predicate(&item.data))
+        else {
+            return false;
+        };
+
+        self.cursor = item_i;
+        self.scroll_fit_end();
+        self.scroll_fit_start();
+
+        true
     }
 
     pub(crate) fn select_matching<F: Fn(&ItemData) -> bool>(&mut self, predicate: F) -> bool {

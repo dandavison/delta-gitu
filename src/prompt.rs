@@ -1,6 +1,6 @@
 use crate::Res;
 use crate::error::Error;
-use crate::text_input::TextInput;
+use crate::text_input::{self, TextInput};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::borrow::Cow;
 use std::fs::{self, OpenOptions};
@@ -236,25 +236,16 @@ impl Prompt {
         self.move_to((cursor + 1).min(self.len()));
     }
 
-    /// Where the run of letters and digits before the cursor begins.
     fn previous_word_start(&self) -> usize {
-        let chars = self.chars();
-        let end = skipping_back(&chars, self.cursor(), |c| !c.is_alphanumeric());
-        skipping_back(&chars, end, |c| c.is_alphanumeric())
+        text_input::previous_word_start(&self.chars(), self.cursor())
     }
 
-    /// Where the run of letters and digits after the cursor ends.
     fn next_word_end(&self) -> usize {
-        let chars = self.chars();
-        let start = skipping_on(&chars, self.cursor(), |c| !c.is_alphanumeric());
-        skipping_on(&chars, start, |c| c.is_alphanumeric())
+        text_input::next_word_end(&self.chars(), self.cursor())
     }
 
-    /// Where the whitespace-delimited token before the cursor begins.
     fn previous_token_start(&self) -> usize {
-        let chars = self.chars();
-        let end = skipping_back(&chars, self.cursor(), |c| c.is_whitespace());
-        skipping_back(&chars, end, |c| !c.is_whitespace())
+        text_input::previous_token_start(&self.chars(), self.cursor())
     }
 }
 
@@ -280,19 +271,6 @@ fn history_path(dir: &Path, kind: HistoryKind) -> PathBuf {
         HistoryKind::FilePatterns => "file-pattern-history",
         HistoryKind::Search => "search-history",
     })
-}
-
-fn skipping_back(chars: &[char], from: usize, matching: impl Fn(&char) -> bool) -> usize {
-    let kept = chars[..from]
-        .iter()
-        .rev()
-        .take_while(|c| matching(c))
-        .count();
-    from - kept
-}
-
-fn skipping_on(chars: &[char], from: usize, matching: impl Fn(&char) -> bool) -> usize {
-    from + chars[from..].iter().take_while(|c| matching(c)).count()
 }
 
 #[cfg(test)]

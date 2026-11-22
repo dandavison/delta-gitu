@@ -25,6 +25,8 @@ struct FakeGitHub {
     asked_for: RefCell<Vec<Option<String>>>,
     fetched_base: RefCell<bool>,
     opened: RefCell<Vec<String>>,
+    /// The comments posted, as (where, body): a thread's id, or a path and line.
+    posted: RefCell<Vec<(String, String)>>,
 }
 
 impl GitHub for FakeGitHub {
@@ -59,6 +61,35 @@ impl GitHub for FakeGitHub {
 
     fn threads(&self, _pr: &Pr) -> Result<Vec<Thread>, Error> {
         Ok(self.threads.borrow().clone())
+    }
+
+    fn reply(&self, _pr: &Pr, thread_id: &str, body: &str) -> Result<(), Error> {
+        self.posted
+            .borrow_mut()
+            .push((thread_id.to_owned(), body.to_owned()));
+        let mut threads = self.threads.borrow_mut();
+        let thread = threads
+            .iter_mut()
+            .find(|thread| thread.id == thread_id)
+            .unwrap();
+        thread.comments.push(Comment {
+            author: "me".into(),
+            body: body.to_owned(),
+            url: format!("{PR_URL}#reply"),
+            created_at: two_hours_ago(),
+        });
+        Ok(())
+    }
+
+    fn comment(&self, _pr: &Pr, path: &str, line: (Side, u32), body: &str) -> Result<(), Error> {
+        self.posted
+            .borrow_mut()
+            .push((format!("{path}:{line:?}"), body.to_owned()));
+        self.threads.borrow_mut().push(Thread {
+            path: path.to_owned(),
+            ..thread("new", Some(line), false, &[("me", body)])
+        });
+        Ok(())
     }
 
     fn set_viewed(&self, _pr: &Pr, path: &str, viewed: bool) -> Result<(), Error> {
@@ -101,6 +132,7 @@ fn setup(ctx: &TestContext) -> Rc<FakeGitHub> {
         asked_for: RefCell::new(vec![]),
         fetched_base: RefCell::new(false),
         opened: RefCell::new(vec![]),
+        posted: RefCell::new(vec![]),
     })
 }
 
@@ -1180,4 +1212,263 @@ fn comment_counts_are_aligned_against_the_diffstats_bar() {
     let big = line_with(&ctx, "big.txt");
     assert!(big.contains("[1 comment] |"), "{}", ctx.redact_buffer());
     assert!(big.contains("big.txt    ["), "{}", ctx.redact_buffer());
+}
+
+/// delta works out which features the user's config enables by settling all of
+/// its options, so a PR's screen asks it once for each set of features in
+/// force, not each time the PR's rows are built again.
+#[test]
+fn delta_is_not_asked_which_features_are_enabled_on_every_rebuild() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let mut ctx = setup_clone!();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&asked);
+    ctx.config().general.diff_renderer.enabled_features =
+        crate::config::EnabledFeatures::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            vec![]
+        });
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    // How many times delta is asked while a wider diff context builds the rows again, with the
+    // same features. Any screen asks once per rebuild, to know whether difftastic is on.
+    let asked_while_widening = |ctx: &mut TestContext, app: &mut App| {
+        let before = asked.load(Ordering::SeqCst);
+        ctx.update(app, keys("++"));
+        asked.load(Ordering::SeqCst) - before
+    };
+    ctx.update(&mut app, keys("OO"));
+    let on_the_pr = asked_while_widening(&mut ctx, &mut app);
+    ctx.update(&mut app, keys("q"));
+    let on_the_status = asked_while_widening(&mut ctx, &mut app);
+
+    assert_eq!(on_the_pr, on_the_status);
+}
+
+#[test]
+fn i_on_a_diff_line_opens_a_comment_box_under_it() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>"));
+
+    ctx.update(&mut app, keys("ihello"));
+
+    let after = lines_after(&ctx, "+new", 2);
+    let screen = ctx.redact_buffer();
+    assert!(after[0].contains("New comment"), "{screen}");
+    assert!(after[1].contains("hello"), "{screen}");
+}
+
+#[test]
+fn i_on_a_thread_opens_a_reply_box_after_it() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/alice<enter>"));
+
+    ctx.update(&mut app, keys("isure"));
+
+    let after = lines_after(&ctx, "Why new?", 2);
+    let screen = ctx.redact_buffer();
+    assert!(after[0].contains("Reply"), "{screen}");
+    assert!(after[1].contains("sure"), "{screen}");
+}
+
+/// While the box has focus, keys are text: `j` is not a move, nor `q` a quit.
+#[test]
+fn keys_are_text_while_the_box_has_focus() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>"));
+
+    ctx.update(&mut app, keys("ijq"));
+
+    assert!(!app.state.quit);
+    assert!(
+        ctx.redact_buffer().contains("jq"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn enter_in_the_box_starts_a_new_line() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>"));
+
+    ctx.update(&mut app, keys("ione<enter>two"));
+
+    let after = lines_after(&ctx, "one", 1);
+    assert!(after[0].contains("two"), "{}", ctx.redact_buffer());
+    assert!(!line_with(&ctx, "one").contains("two"));
+}
+
+/// esc leaves the box, keeping what was written, and `i` goes back to it.
+#[test]
+fn esc_leaves_the_box_and_i_goes_back_to_it() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>"));
+    ctx.update(&mut app, keys("ihi<esc>"));
+
+    // A key of the screen's again.
+    ctx.update(&mut app, keys("gg"));
+    assert!(
+        ctx.redact_buffer().contains("hi"),
+        "{}",
+        ctx.redact_buffer()
+    );
+
+    ctx.update(&mut app, keys("i!"));
+    assert!(
+        ctx.redact_buffer().contains("hi!"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_paste_goes_into_the_box() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>i"));
+
+    ctx.update(
+        &mut app,
+        vec![crossterm::event::Event::Paste("pasted\nlines".into())],
+    );
+
+    assert!(
+        lines_after(&ctx, "pasted", 1)[0].contains("lines"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+/// The box is drawn in comment-editor-style, which is comment-style unless set.
+#[test]
+fn the_box_is_drawn_in_the_editor_styles() {
+    let mut ctx = setup_clone!();
+    with_options(&mut ctx, &[("comment-style", "normal blue")]);
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ihello"));
+    assert_eq!(cell(&ctx, "hello", 'h').bg, crate::style::Color::Blue);
+
+    let mut ctx = setup_clone!();
+    with_options(
+        &mut ctx,
+        &[
+            ("comment-style", "normal blue"),
+            ("comment-editor-style", "normal red"),
+        ],
+    );
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ihello"));
+    assert_eq!(cell(&ctx, "hello", 'h').bg, crate::style::Color::Red);
+}
+
+#[test]
+fn alt_enter_posts_a_reply() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/alice<enter>isure<enter>thing"));
+
+    ctx.update(&mut app, keys("<alt+enter>"));
+
+    assert_eq!(
+        *github.posted.borrow(),
+        vec![("t1".to_owned(), "sure\nthing".to_owned())]
+    );
+    let screen = ctx.redact_buffer();
+    assert!(!screen.contains("Reply"), "the box is gone:\n{screen}");
+    assert!(screen.contains("me [2 hours ago]"), "{screen}");
+}
+
+#[test]
+fn ctrl_s_posts_a_new_comment_on_the_line() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ihello"));
+
+    ctx.update(&mut app, keys("<ctrl+s>"));
+
+    assert_eq!(
+        *github.posted.borrow(),
+        vec![("lines.txt:(New, 2)".to_owned(), "hello".to_owned())]
+    );
+    let screen = ctx.redact_buffer();
+    assert!(
+        !screen.contains("New comment"),
+        "the box is gone:\n{screen}"
+    );
+    assert!(screen.contains("me [2 hours ago]"), "{screen}");
+}
+
+/// A new comment's line is numbered against the PR's head on GitHub, so it is
+/// not posted from another commit; what was written is kept.
+#[test]
+fn a_new_comment_is_not_posted_while_head_is_not_the_prs() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let github = Rc::new(FakeGitHub {
+        head_oid: "0".repeat(40),
+        ..Rc::into_inner(github).unwrap()
+    });
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ihello"));
+
+    ctx.update(&mut app, keys("<alt+enter>"));
+
+    assert!(github.posted.borrow().is_empty());
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("hello"), "{screen}");
+    assert!(screen.contains("Cannot post"), "{screen}");
+}
+
+#[test]
+fn an_empty_comment_is_not_posted() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>i"));
+
+    ctx.update(&mut app, keys("<alt+enter>"));
+
+    assert!(github.posted.borrow().is_empty());
+    assert!(
+        ctx.redact_buffer().contains("Nothing to post"),
+        "{}",
+        ctx.redact_buffer()
+    );
 }

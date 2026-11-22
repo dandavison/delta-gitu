@@ -124,6 +124,39 @@ impl TextInput {
     }
 }
 
+/// Where the run of letters and digits before `cursor` in `chars` begins. Readline's words, as
+/// `alt+b` and `alt+backspace` take them.
+pub(crate) fn previous_word_start(chars: &[char], cursor: usize) -> usize {
+    let end = skipping_back(chars, cursor, |c| !c.is_alphanumeric());
+    skipping_back(chars, end, |c| c.is_alphanumeric())
+}
+
+/// Where the run of letters and digits after `cursor` in `chars` ends. Readline's words, as
+/// `alt+f` and `alt+d` take them.
+pub(crate) fn next_word_end(chars: &[char], cursor: usize) -> usize {
+    let start = skipping_on(chars, cursor, |c| !c.is_alphanumeric());
+    skipping_on(chars, start, |c| c.is_alphanumeric())
+}
+
+/// Where the whitespace-delimited token before `cursor` in `chars` begins, as `ctrl+w` takes it.
+pub(crate) fn previous_token_start(chars: &[char], cursor: usize) -> usize {
+    let end = skipping_back(chars, cursor, |c| c.is_whitespace());
+    skipping_back(chars, end, |c| !c.is_whitespace())
+}
+
+fn skipping_back(chars: &[char], from: usize, matching: impl Fn(&char) -> bool) -> usize {
+    let kept = chars[..from]
+        .iter()
+        .rev()
+        .take_while(|c| matching(c))
+        .count();
+    from - kept
+}
+
+fn skipping_on(chars: &[char], from: usize, matching: impl Fn(&char) -> bool) -> usize {
+    from + chars[from..].iter().take_while(|c| matching(c)).count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

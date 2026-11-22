@@ -289,6 +289,7 @@ root.blame = ["B"]
 # In a PR opened from the PR menu.
 root.toggle_viewed = ["x"]
 root.show_on_github = ["o"]
+root.write_comment = ["i"]
 # Enable or disable a renderer feature (side-by-side, line numbers, ...) in place.
 # In the list, space enables or disables the selected feature and keeps the list
 # open, enter does so and closes it, a letter sets its key, and this key closes
