@@ -6,7 +6,6 @@ use crate::{Res, error::Error, git::diff::Diff, gitu_diff::Status};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, process::Command, rc::Rc};
-use unicode_width::UnicodeWidthStr;
 
 /// A pull request, as GitHub describes it.
 #[derive(Clone, Debug)]
@@ -48,7 +47,8 @@ pub(crate) struct Review {
     pub options: RefCell<Option<(Option<String>, Rc<CommentOptions>)>>,
 }
 
-/// How many columns [`Review::checkbox`] takes before a file's row.
+/// How many columns [`Review::checkbox`] takes before a file's row. A PR's diff is rendered
+/// that much narrower, so that a row taking the whole width still fits beside it.
 pub(crate) const FILE_PREFIX_WIDTH: u16 = 4;
 
 impl Review {
@@ -80,31 +80,6 @@ impl Review {
         }
     }
 
-    /// How many columns a PR's diff is rendered narrower than the screen, so that a file's row
-    /// that takes the whole width still fits beside its checkbox and after it its comment
-    /// count, with a space before it. Rows other than files' end that many columns short of the
-    /// screen's edge.
-    pub fn reserved_columns(&self) -> u16 {
-        let threads = self.threads.borrow();
-        let paths: std::collections::HashSet<&str> =
-            threads.iter().map(|thread| thread.path.as_str()).collect();
-        let count = paths
-            .into_iter()
-            .filter_map(|path| self.comment_count(path))
-            .map(|count| count.width() + 1)
-            .max()
-            .unwrap_or(0);
-        FILE_PREFIX_WIDTH + count as u16
-    }
-
-    /// The options comments were last drawn with, or the defaults before they first are.
-    pub fn comment_options(&self) -> Rc<CommentOptions> {
-        self.options
-            .borrow()
-            .as_ref()
-            .map(|(_, options)| Rc::clone(options))
-            .unwrap_or_default()
-    }
 }
 
 /// The side of a PR's diff a line is on: the old file's, for a removed line,

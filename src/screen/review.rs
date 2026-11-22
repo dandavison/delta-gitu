@@ -27,6 +27,7 @@ pub(crate) fn with_threads(
     options: &CommentOptions,
     error_style: Style,
 ) -> Vec<Item> {
+    let items = with_comment_counts(items, review, layout.width, options.count);
     let threads = review.threads.borrow();
     let mut lines: HashMap<(String, Side, u32), usize> = HashMap::new();
     let mut files: HashMap<String, usize> = HashMap::new();
@@ -110,6 +111,43 @@ pub(crate) fn with_threads(
         }
     }
     out
+}
+
+/// `items` with each file's comment count after its name: in the names' column of its line of
+/// the diffstat, or, for a file headed by the renderer's row, at the end of that row, which ends
+/// with the file's name. `width` is the width the diffstat was laid out in.
+fn with_comment_counts(
+    mut items: Vec<Item>,
+    review: &Review,
+    width: usize,
+    style: Style,
+) -> Vec<Item> {
+    let count = |diff: &crate::git::diff::Diff, file_i: usize| {
+        review
+            .comment_count(&github::file_path(diff, file_i))
+            .map(|count| (count, style))
+    };
+    crate::items::label_stat_rows(&mut items, width, count);
+    for item in &mut items {
+        if let (ItemData::Delta { diff, file_i, .. }, None, Some(rendered)) =
+            (&item.data, &item.header, &item.rendered)
+            && let Some(label) = count(diff, *file_i)
+        {
+            let mut row = (**rendered).clone();
+            while let Some((text, _)) = row.last_mut() {
+                let trimmed = text.trim_end().len();
+                if trimmed > 0 {
+                    text.truncate(trimmed);
+                    break;
+                }
+                row.pop();
+            }
+            row.push((" ".to_owned(), Style::new()));
+            row.push(label);
+            item.rendered = Some(Rc::new(row));
+        }
+    }
+    items
 }
 
 /// Whether HEAD is the commit the PR's branch is at on GitHub.

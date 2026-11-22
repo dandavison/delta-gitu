@@ -85,7 +85,7 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
     let mut screen = screen::pager::live_decorated(
         Arc::clone(&app.state.config),
         Rc::clone(&app.state.repo),
-        app.render_params((width.saturating_sub(review.reserved_columns()), height)),
+        app.render_params((width.saturating_sub(github::FILE_PREFIX_WIDTH), height)),
         vec![
             "git".into(),
             "diff".into(),
