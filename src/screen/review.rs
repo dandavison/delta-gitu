@@ -327,10 +327,9 @@ const MIN_TEXT_WIDTH: usize = 20;
 
 /// The rows of `thread`, in `panel`, decorated as `options` say: with a box, a line under or
 /// over it, or, with none of those, a bar down its left. The first row is the first comment's
-/// first, and folds the rest, but for a line over the thread or a box's top, which are hidden
-/// while it is folded. Each comment's first row ends with when it was made, and the thread's
-/// first row also says whether the thread is resolved or outdated, and when it is not `on_line`
-/// though it has a line, which line.
+/// first, and folds the rest; a box, or lines over and under, stay around it while it is folded.
+/// The thread's first row says whether the thread is resolved or outdated, and when it is not
+/// `on_line` though it has a line, which line.
 fn thread_rows(
     thread: &Thread,
     depth: usize,
@@ -416,7 +415,6 @@ fn thread_rows(
             id: hash(("review_thread_top", &thread.id)),
             depth,
             unselectable: true,
-            decorates_next: true,
             rendered: Some(Rc::new(top)),
             ..Default::default()
         });
@@ -432,8 +430,8 @@ fn thread_rows(
                 url: first.url.clone(),
             },
             rendered: Some(Rc::clone(&header)),
-            // Folded, the row stands in for the thread, so that the decoration above it is
-            // hidden with what is under it.
+            // Folded, the row stands in for the thread, rather than being followed by the
+            // ellipsis that a folded section is, after the decoration's right edge.
             folded: Some(header),
             ..Default::default()
         });
@@ -455,9 +453,11 @@ fn thread_rows(
         } else {
             border("", "")
         };
+        // Beside the first row rather than under it, so that it stays while the thread is
+        // folded, as the decoration above it does.
         items.push(Item {
             id: hash(("review_thread_bottom", &thread.id)),
-            depth: depth + 1,
+            depth,
             unselectable: true,
             rendered: Some(Rc::new(bottom)),
             ..Default::default()
