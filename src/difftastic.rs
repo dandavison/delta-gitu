@@ -375,7 +375,7 @@ pub(crate) fn view(
     new: &str,
     json: &str,
     git_hunks: &str,
-    _layout: Layout,
+    layout: Layout,
 ) -> Option<Shown> {
     let file: json::File = serde_json::from_str(json)
         .inspect_err(|e| log::warn!("difftastic's output is not what gitu expects: {e}"))
@@ -413,7 +413,7 @@ pub(crate) fn view(
         .iter()
         .map(|taken| Drawn::of(taken, &versions, &changes))
         .collect();
-    shown(&drawn, &versions, &git_hunks)
+    shown(&drawn, &versions, &git_hunks, layout)
 }
 
 /// A line's paint, and the ranges of the tokens on it in the emph paint of its version.
@@ -544,7 +544,16 @@ fn painted(version: usize, text: &str, ranges: Vec<Range<usize>>) -> Painted {
 
 /// `drawn`, rows covering every line of both `versions`, drawn inside `git_hunks`: `None` if a row
 /// drawn as changed is not inside one of them, or a row's lines are in two.
-fn shown(drawn: &[Drawn], versions: &[Version; 2], git_hunks: &[GitHunk]) -> Option<Shown> {
+///
+/// In side by side, a row drawn as unchanged with paint is drawn as the old line, removed, and the
+/// new line, added, which the renderer draws beside each other: as an unchanged row, the renderer
+/// would draw the new line on both sides.
+fn shown(
+    drawn: &[Drawn],
+    versions: &[Version; 2],
+    git_hunks: &[GitHunk],
+    layout: Layout,
+) -> Option<Shown> {
     let mut shown = Shown {
         text: String::new(),
         stands_for: HashMap::new(),
@@ -586,10 +595,10 @@ fn shown(drawn: &[Drawn], versions: &[Version; 2], git_hunks: &[GitHunk]) -> Opt
             let counts_old_line =
                 !matches!(row, Drawn::Hidden { .. } | Drawn::Changed { old: None, .. });
             if hidden && counts_old_line {
-                let kind = if matches!(row, Drawn::Unchanged { .. }) {
-                    'c'
-                } else {
-                    'd'
+                let kind = match row {
+                    Drawn::Unchanged { paint: None, .. } => 'c',
+                    Drawn::Unchanged { .. } if layout == Layout::Unified => 'c',
+                    _ => 'd',
                 };
                 shown.text.push_str(&line_record(kind, next));
                 hidden = false;
@@ -599,6 +608,26 @@ fn shown(drawn: &[Drawn], versions: &[Version; 2], git_hunks: &[GitHunk]) -> Opt
             }
             match row {
                 Drawn::Hidden { .. } => hidden = true,
+                Drawn::Unchanged {
+                    old,
+                    new,
+                    paint: Some(paint),
+                } if layout == Layout::SideBySide => {
+                    let old_paint = match paint.0 {
+                        Paint::Reformatted => (Paint::Reformatted, vec![]),
+                        _ => (Paint::MinusNonEmph, vec![]),
+                    };
+                    for (version, marker, number, paint) in
+                        [(OLD, '-', old, &old_paint), (NEW, '+', new, paint)]
+                    {
+                        let text = versions[version].lines[*number];
+                        shown.text.push_str(&line(marker, text, Some(paint)));
+                        no_newline_marker(
+                            &mut shown.text,
+                            versions[version].lacks_newline(*number),
+                        );
+                    }
+                }
                 Drawn::Unchanged { old, new, paint } => {
                     let text = versions[NEW].lines[*new];
                     shown.text.push_str(&line(' ', text, paint.as_ref()));
