@@ -1,6 +1,7 @@
 //! A multi-line text box, such as a PR comment being written: its text, wrapped
 //! to a width, and where the cursor is in it, edited by keys.
 
+use crate::text_input;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::ops::Range;
 use unicode_width::UnicodeWidthChar;
@@ -28,6 +29,8 @@ pub(crate) struct TextArea {
     /// The column moving up or down keeps to, as it was before a shorter row
     /// was passed through.
     goal_column: Option<usize>,
+    /// What was deleted last, for `ctrl+y` to put back.
+    killed: String,
 }
 
 impl TextArea {
@@ -105,6 +108,9 @@ impl TextArea {
             c if c == ctrl('p') => return self.move_vertically(width, false),
             (KeyCode::Down, _) => return self.move_vertically(width, true),
             c if c == ctrl('n') => return self.move_vertically(width, true),
+            (KeyCode::Backspace, KeyModifiers::ALT) => {
+                self.kill(text_input::previous_word_start(&self.chars(), self.cursor)..self.cursor)
+            }
             (KeyCode::Backspace, _) => self.delete(self.cursor.saturating_sub(1)..self.cursor),
             c if c == ctrl('h') => self.delete(self.cursor.saturating_sub(1)..self.cursor),
             (KeyCode::Delete, _) => self.delete(self.cursor..self.cursor + 1),
@@ -117,9 +123,26 @@ impl TextArea {
             c if c == ctrl('a') => self.move_to(self.line().start),
             (KeyCode::End, _) => self.move_to(self.line().end),
             c if c == ctrl('e') => self.move_to(self.line().end),
-            c if c == ctrl('u') => self.delete(self.line().start..self.cursor),
-            c if c == ctrl('k') => self.delete(self.cursor..self.line().end),
-            c if c == ctrl('w') => self.delete(self.word_start()..self.cursor),
+            c if c == ctrl('u') => self.kill(self.line().start..self.cursor),
+            c if c == ctrl('k') => self.kill(self.cursor..self.line().end),
+            c if c == ctrl('w') => {
+                self.kill(text_input::previous_token_start(&self.chars(), self.cursor)..self.cursor)
+            }
+            (KeyCode::Char('d'), KeyModifiers::ALT) => {
+                self.kill(self.cursor..text_input::next_word_end(&self.chars(), self.cursor))
+            }
+            (KeyCode::Char('b'), KeyModifiers::ALT) => {
+                self.move_to(text_input::previous_word_start(&self.chars(), self.cursor))
+            }
+            (KeyCode::Char('f'), KeyModifiers::ALT) => {
+                self.move_to(text_input::next_word_end(&self.chars(), self.cursor))
+            }
+            c if c == ctrl('y') => {
+                let killed = self.killed.clone();
+                self.insert_str(&killed);
+                Outcome::Edited
+            }
+            c if c == ctrl('t') => self.transpose(),
             _ => return Outcome::Ignored,
         };
         self.goal_column = None;
@@ -162,17 +185,29 @@ impl TextArea {
         start..end
     }
 
-    /// Where the word before the cursor starts, past any spaces between it and the cursor.
-    fn word_start(&self) -> usize {
+    /// [`Self::delete`], keeping what was deleted for `ctrl+y` to put back. Deleting nothing
+    /// keeps what was deleted before.
+    fn kill(&mut self, range: Range<usize>) -> Outcome {
         let chars = self.chars();
-        let mut start = self.cursor;
-        while start > 0 && chars[start - 1] == ' ' {
-            start -= 1;
+        let range = range.start.min(chars.len())..range.end.min(chars.len());
+        if !range.is_empty() {
+            self.killed = chars[range.clone()].iter().collect();
         }
-        while start > 0 && !chars[start - 1].is_whitespace() {
-            start -= 1;
+        self.delete(range)
+    }
+
+    /// Swap the two chars the cursor is between, and step over them. At the end of the text the
+    /// last two change places instead.
+    fn transpose(&mut self) -> Outcome {
+        let mut chars = self.chars();
+        if chars.len() < 2 {
+            return Outcome::Ignored;
         }
-        start
+        let cursor = self.cursor.min(chars.len() - 1).max(1);
+        chars.swap(cursor - 1, cursor);
+        self.value = chars.into_iter().collect();
+        self.cursor = cursor + 1;
+        Outcome::Edited
     }
 
     /// Move to the row below, or above, at the column moving up and down keeps to, or the row's
