@@ -113,7 +113,7 @@ pub(crate) struct Refresh;
 impl OpTrait for Refresh {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
         Some(Rc::new(|app, _term| {
-            super::pr::reread_viewed(app)?;
+            super::pr::reread_review(app)?;
             app.update_screens()
         }))
     }

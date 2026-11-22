@@ -225,7 +225,7 @@ impl Op {
             Op::PrCurrent => "Check out the current branch's GitHub PR and review it",
             Op::PrOther => "Check out a GitHub PR you choose by number or URL and review it",
             Op::ToggleViewed => "Tick or untick the PR file's Viewed checkbox on GitHub",
-            Op::ShowOnGithub => "Open the PR file, hunk or line on GitHub, to comment on it",
+            Op::ShowOnGithub => "Open the PR file, hunk, line or comment on GitHub, to comment there",
             Op::RebaseAbort => "Abort the rebase",
             Op::RebaseContinue => "Continue the rebase",
             Op::RebaseElsewhere => "Rebase onto a branch or commit you choose",

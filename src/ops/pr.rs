@@ -71,31 +71,35 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
     if !has_base {
         app.run_cmd(term, &[], github.fetch_base(&pr)?)?;
     }
-    let viewed = github.viewed(&pr)?;
+    let review = Rc::new(Review {
+        viewed: RefCell::new(github.viewed(&pr)?),
+        threads: RefCell::new(github.threads(&pr)?),
+        pr,
+    });
 
-    let mut screen = screen::pager::live(
+    let (threads_review, repo) = (Rc::clone(&review), Rc::clone(&app.state.repo));
+    let mut screen = screen::pager::live_decorated(
         Arc::clone(&app.state.config),
         Rc::clone(&app.state.repo),
         app.render_params(term.size().map_err(Error::Term)?),
         vec![
             "git".into(),
             "diff".into(),
-            format!("{}...HEAD", pr.base_oid),
+            format!("{}...HEAD", review.pr.base_oid),
         ],
+        Rc::new(move |items| screen::review::with_threads(items, &threads_review, &repo)),
     )?;
-    screen.review = Some(Rc::new(Review {
-        pr,
-        viewed: RefCell::new(viewed),
-    }));
+    screen.review = Some(review);
     app.state.screens.push(screen);
     Ok(())
 }
 
-/// Read the checkboxes of the PR on screen from GitHub again, as they may have
-/// been ticked in the browser.
-pub(crate) fn reread_viewed(app: &mut App) -> Res<()> {
+/// Read the checkboxes and review threads of the PR on screen from GitHub
+/// again, as they may have changed in the browser.
+pub(crate) fn reread_review(app: &mut App) -> Res<()> {
     if let Some(review) = app.screen().review.clone() {
         *review.viewed.borrow_mut() = app.state.github.viewed(&review.pr)?;
+        *review.threads.borrow_mut() = app.state.github.threads(&review.pr)?;
     }
     Ok(())
 }
@@ -134,6 +138,10 @@ impl OpTrait for ToggleViewed {
 pub(crate) struct ShowOnGithub;
 impl OpTrait for ShowOnGithub {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
+        if let ItemData::ReviewThread { url } | ItemData::ReviewComment { url } = target {
+            let url = url.clone();
+            return Some(Rc::new(move |app, _term| app.state.github.open(&url)));
+        }
         let (diff, file_i) = file_of(target)?;
         let path = github::file_path(diff, file_i);
         let line = line_of(target);

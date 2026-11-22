@@ -28,6 +28,7 @@ pub(crate) mod bindings;
 pub(crate) mod blame;
 pub(crate) mod pager;
 pub(crate) mod rebase_todo;
+pub(crate) mod review;
 pub(crate) mod show_refs;
 pub(crate) mod show_stash;
 pub(crate) mod status;
@@ -214,6 +215,20 @@ fn shown_rows(items: &[Item]) -> usize {
             true
         })
         .count()
+}
+
+impl Items {
+    /// These items and those to come later, each passed through `f`.
+    pub(crate) fn map(self, f: Rc<dyn Fn(Vec<Item>) -> Vec<Item>>) -> Self {
+        let Items { now, later } = self;
+        Items {
+            now: f(now),
+            later: later.map(|mut later| {
+                Box::new(move || later().map(|(items, done)| (items.map(|items| f(items)), done)))
+                    as Later
+            }),
+        }
+    }
 }
 
 impl From<Vec<Item>> for Items {

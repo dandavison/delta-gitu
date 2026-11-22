@@ -35,10 +35,11 @@ pub(crate) enum ViewedState {
 }
 
 /// A PR checked out for review, with the checkbox state of each of its files,
-/// by path.
+/// by path, and its review threads.
 pub(crate) struct Review {
     pub pr: Pr,
     pub viewed: RefCell<HashMap<String, ViewedState>>,
+    pub threads: RefCell<Vec<Thread>>,
 }
 
 impl Review {
@@ -56,7 +57,7 @@ impl Review {
 
 /// The side of a PR's diff a line is on: the old file's, for a removed line,
 /// or the new file's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Side {
     Old,
     New,
