@@ -184,7 +184,7 @@ fn with_unplaced_rows_reported(
 /// diffstat's summary if `summarised`. The lines are laid out as git lays out
 /// `--stat` in `width` columns.
 /// Lay out again the files' lines of the diffstat that [`headed_by_counted_stat`] gave `items`,
-/// each file's name followed by `label` of it, if any, within the names' column. Items without
+/// each file's name with `label` of it, if any, at the end of the names' column. Items without
 /// them are left as they are.
 pub(crate) fn label_stat_rows(
     items: &mut [Item],
@@ -200,7 +200,7 @@ pub(crate) fn label_stat_rows(
 }
 
 /// Give each file of `items` its line of the diffstat, as its header and its folded row, its
-/// name followed by `label` of it, if any. Returns the files' stats, or `None` if there are no
+/// name with `label` of it, if any, at the end of the names' column. Returns the files' stats, or `None` if there are no
 /// files.
 fn set_stat_rows(
     items: &mut [Item],
@@ -254,7 +254,7 @@ pub(crate) fn headed_by_counted_stat(
 
 struct FileStat {
     name: String,
-    /// What follows the name, after a space, in its column.
+    /// What is drawn at the end of the name's column, after a space.
     label: Option<(String, Style)>,
     added: usize,
     removed: usize,
@@ -343,7 +343,8 @@ impl StatLayout {
         let padding = self
             .name_width
             .saturating_sub(name.chars().count() + label_width);
-        let mut row = vec![(format!(" {name}"), Style::new())];
+        // The label is right-aligned in the names' column, against the `|`.
+        let mut row = vec![(format!(" {name}{}", " ".repeat(padding)), Style::new())];
         if let Some((label, style)) = &stat.label {
             row.push((" ".to_owned(), Style::new()));
             row.push((label.clone(), *style));
@@ -351,8 +352,7 @@ impl StatLayout {
         row.extend([
             (
                 format!(
-                    "{} | {changed:>count_width$}{}",
-                    " ".repeat(padding),
+                    " | {changed:>count_width$}{}",
                     if changed > 0 { " " } else { "" },
                     count_width = self.count_width,
                 ),

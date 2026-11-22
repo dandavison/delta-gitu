@@ -114,9 +114,9 @@ pub(crate) fn with_threads(
     out
 }
 
-/// `items` with each file's comment count after its name: in the names' column of its line of
-/// the diffstat, or, for a file headed by the renderer's row, at the end of that row, which ends
-/// with the file's name. `width` is the width the diffstat was laid out in.
+/// `items` with each file's comment count: at the end of the names' column of its line of the
+/// diffstat, against the `|`, or, for a file headed by the renderer's row, at the end of that
+/// row, which ends with the file's name. `width` is the width the diffstat was laid out in.
 fn with_comment_counts(
     mut items: Vec<Item>,
     review: &Review,
