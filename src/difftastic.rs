@@ -530,6 +530,10 @@ fn shown(drawn: &[Drawn], versions: &[Version; 2], git_hunks: &[GitHunk]) -> Opt
         // Whether an old line has not been drawn since the last header: the next line that counts
         // an old line then needs one, or the renderer numbers it as the line not drawn.
         let mut hidden = false;
+        // The header the view's current hunk needs, if it starts after a line not drawn: where in
+        // the text it goes, the lines of each version it starts at, and how many of each are
+        // drawn under it.
+        let mut header: Option<(usize, [usize; 2], [usize; 2])> = None;
         while let Some(row) = rows.next_if(|row| inside(row)) {
             let lines = row.lines();
             if lines
@@ -546,12 +550,17 @@ fn shown(drawn: &[Drawn], versions: &[Version; 2], git_hunks: &[GitHunk]) -> Opt
             let counts_old_line =
                 !matches!(row, Drawn::Hidden { .. } | Drawn::Changed { old: None, .. });
             if hidden && counts_old_line {
-                let [old, new] = next.map(|line| line + 1);
-                shown.text.push_str(&format!("@@ -{old} +{new} @@\n"));
+                insert_header(&mut shown.text, header.take());
+                header = Some((shown.text.len(), next, [0, 0]));
                 hidden = false;
             }
             for version in [OLD, NEW] {
                 next[version] += usize::from(lines[version].is_some());
+                if let Some((_, _, counts)) = &mut header
+                    && !matches!(row, Drawn::Hidden { .. })
+                {
+                    counts[version] += usize::from(lines[version].is_some());
+                }
             }
             match row {
                 Drawn::Hidden { .. } => hidden = true,
@@ -578,11 +587,27 @@ fn shown(drawn: &[Drawn], versions: &[Version; 2], git_hunks: &[GitHunk]) -> Opt
                 }
             }
         }
+        insert_header(&mut shown.text, header);
     }
     if rows.any(|row| !matches!(row, Drawn::Unchanged { paint: None, .. })) {
         return None;
     }
     Some(shown)
+}
+
+/// Insert into `text` the hunk header `header` says: at its position, for the lines starting at
+/// its 0-based line numbers, as many of each version as it counts, written as git writes them.
+fn insert_header(text: &mut String, header: Option<(usize, [usize; 2], [usize; 2])>) {
+    let Some((at, first, counts)) = header else {
+        return;
+    };
+    let [old, new] = [OLD, NEW].map(|version| match counts[version] {
+        // git numbers an empty range by the line before it.
+        0 => format!("{},0", first[version]),
+        1 => format!("{}", first[version] + 1),
+        count => format!("{},{count}", first[version] + 1),
+    });
+    text.insert_str(at, &format!("@@ -{old} +{new} @@\n"));
 }
 
 fn no_newline_marker(text: &mut String, lacks_newline: bool) {
