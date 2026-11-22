@@ -1221,3 +1221,139 @@ fn delta_is_not_asked_which_features_are_enabled_on_every_rebuild() {
 
     assert_eq!(on_the_pr, on_the_status);
 }
+
+#[test]
+fn i_on_a_diff_line_opens_a_comment_box_under_it() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>"));
+
+    ctx.update(&mut app, keys("ihello"));
+
+    let after = lines_after(&ctx, "+new", 2);
+    let screen = ctx.redact_buffer();
+    assert!(after[0].contains("New comment"), "{screen}");
+    assert!(after[1].contains("hello"), "{screen}");
+}
+
+#[test]
+fn i_on_a_thread_opens_a_reply_box_after_it() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/alice<enter>"));
+
+    ctx.update(&mut app, keys("isure"));
+
+    let after = lines_after(&ctx, "Why new?", 2);
+    let screen = ctx.redact_buffer();
+    assert!(after[0].contains("Reply"), "{screen}");
+    assert!(after[1].contains("sure"), "{screen}");
+}
+
+/// While the box has focus, keys are text: `j` is not a move, nor `q` a quit.
+#[test]
+fn keys_are_text_while_the_box_has_focus() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>"));
+
+    ctx.update(&mut app, keys("ijq"));
+
+    assert!(!app.state.quit);
+    assert!(
+        ctx.redact_buffer().contains("jq"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn enter_in_the_box_starts_a_new_line() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>"));
+
+    ctx.update(&mut app, keys("ione<enter>two"));
+
+    let after = lines_after(&ctx, "one", 1);
+    assert!(after[0].contains("two"), "{}", ctx.redact_buffer());
+    assert!(!line_with(&ctx, "one").contains("two"));
+}
+
+/// esc leaves the box, keeping what was written, and `i` goes back to it.
+#[test]
+fn esc_leaves_the_box_and_i_goes_back_to_it() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>"));
+    ctx.update(&mut app, keys("ihi<esc>"));
+
+    // A key of the screen's again.
+    ctx.update(&mut app, keys("gg"));
+    assert!(
+        ctx.redact_buffer().contains("hi"),
+        "{}",
+        ctx.redact_buffer()
+    );
+
+    ctx.update(&mut app, keys("i!"));
+    assert!(
+        ctx.redact_buffer().contains("hi!"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_paste_goes_into_the_box() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>i"));
+
+    ctx.update(
+        &mut app,
+        vec![crossterm::event::Event::Paste("pasted\nlines".into())],
+    );
+
+    assert!(
+        lines_after(&ctx, "pasted", 1)[0].contains("lines"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+/// The box is drawn in comment-editor-style, which is comment-style unless set.
+#[test]
+fn the_box_is_drawn_in_the_editor_styles() {
+    let mut ctx = setup_clone!();
+    with_options(&mut ctx, &[("comment-style", "normal blue")]);
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ihello"));
+    assert_eq!(cell(&ctx, "hello", 'h').bg, crate::style::Color::Blue);
+
+    let mut ctx = setup_clone!();
+    with_options(
+        &mut ctx,
+        &[
+            ("comment-style", "normal blue"),
+            ("comment-editor-style", "normal red"),
+        ],
+    );
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ihello"));
+    assert_eq!(cell(&ctx, "hello", 'h').bg, crate::style::Color::Red);
+}
