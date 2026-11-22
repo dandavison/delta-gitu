@@ -29,6 +29,7 @@ mod style;
 pub mod term;
 #[cfg(test)]
 mod tests;
+mod text_area;
 mod text_input;
 mod ui;
 
