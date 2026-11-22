@@ -23,6 +23,7 @@ pub(crate) fn with_threads(
     review: &Review,
     repo: &Repository,
     layout: Layout,
+    styles: &CommentStyles,
 ) -> Vec<Item> {
     let threads = review.threads.borrow();
     let mut lines: HashMap<(String, Side, u32), usize> = HashMap::new();
@@ -90,7 +91,13 @@ pub(crate) fn with_threads(
         out.push(item);
         for thread in threads {
             let side = thread.line.filter(|_| on_line).map(|(side, _)| side);
-            out.extend(thread_rows(thread, depth, on_line, layout.panel(side)));
+            out.extend(thread_rows(
+                thread,
+                depth,
+                on_line,
+                layout.panel(side),
+                styles,
+            ));
         }
     }
     out
@@ -117,6 +124,14 @@ fn warning_row() -> Item {
         )])),
         ..Default::default()
     }
+}
+
+/// The styles comments are drawn in: `text` for what they say and who said it,
+/// and `decoration` for the bar before them and the notes on a thread's first
+/// row.
+pub(crate) struct CommentStyles {
+    pub text: Style,
+    pub decoration: Style,
 }
 
 /// Where a thread's rows go across the screen: from `column`, `width` columns
@@ -160,7 +175,13 @@ impl Layout {
 /// The rows of `thread`, in `panel`: the first row of its first comment,
 /// folding the rest under it. That row says whether the thread is resolved or
 /// outdated, and when it is not `on_line` though it has a line, which line.
-fn thread_rows(thread: &Thread, depth: usize, on_line: bool, panel: Panel) -> Vec<Item> {
+fn thread_rows(
+    thread: &Thread,
+    depth: usize,
+    on_line: bool,
+    panel: Panel,
+    styles: &CommentStyles,
+) -> Vec<Item> {
     let Some(first) = thread.comments.first() else {
         return vec![];
     };
@@ -188,14 +209,22 @@ fn thread_rows(thread: &Thread, depth: usize, on_line: bool, panel: Panel) -> Ve
             (Some(notes), 0) => text_width.saturating_sub(notes.width()).max(MIN_TEXT_WIDTH),
             _ => text_width,
         };
-        let comment_rows =
-            comment_rows(&comment.author, &comment.body, first_row_width, text_width);
+        let comment_rows = comment_rows(
+            &comment.author,
+            &comment.body,
+            first_row_width,
+            text_width,
+            styles.text,
+        );
         for (row_i, mut spans) in comment_rows.into_iter().enumerate() {
             let is_header = comment_i == 0 && row_i == 0;
             if is_header && let Some(notes) = &notes {
-                spans.push((notes.clone(), dim()));
+                spans.push((notes.clone(), styles.decoration));
             }
-            let mut rendered = vec![(format!("{}{GUTTER}", " ".repeat(panel.column)), dim())];
+            let mut rendered = vec![(
+                format!("{}{GUTTER}", " ".repeat(panel.column)),
+                styles.decoration,
+            )];
             rendered.extend(spans);
             rows.push(if is_header {
                 Item {
@@ -231,12 +260,13 @@ const MIN_TEXT_WIDTH: usize = 20;
 
 /// The rows of a comment by `author`, wrapped to `width` columns, the first row
 /// to `first_width`: its author's login, then its body, each row after the
-/// first indented under the login.
+/// first indented under the login, all in `style` and the login in bold.
 fn comment_rows(
     author: &str,
     body: &str,
     first_width: usize,
     width: usize,
+    style: Style,
 ) -> Vec<Vec<(String, Style)>> {
     let mut lines = body.lines();
     let first_line = format!("{author}: {}", lines.next().unwrap_or_default());
@@ -252,15 +282,15 @@ fn comment_rows(
             (0, Some(rest)) => vec![
                 (
                     author.to_owned(),
-                    Style {
+                    style.patch(Style {
                         add_modifier: Modifier::BOLD,
                         ..Style::new()
-                    },
+                    }),
                 ),
-                (rest.to_owned(), Style::new()),
+                (rest.to_owned(), style),
             ],
-            (0, None) => vec![(row, Style::new())],
-            _ => vec![(format!("{INDENT}{row}"), Style::new())],
+            (0, None) => vec![(row, style)],
+            _ => vec![(format!("{INDENT}{row}"), style)],
         })
         .collect()
 }
@@ -292,13 +322,6 @@ fn wrap(text: &str, first: usize, rest: usize) -> Vec<String> {
     }
     rows.push(row);
     rows
-}
-
-fn dim() -> Style {
-    Style {
-        add_modifier: Modifier::DIM,
-        ..Style::new()
-    }
 }
 
 #[cfg(test)]

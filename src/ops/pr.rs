@@ -11,6 +11,7 @@ use crate::{
     github::{self, Review, Side, ViewedState},
     item_data::ItemData,
     screen,
+    style::Style,
     term::Term,
 };
 use git2::Oid;
@@ -99,7 +100,11 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
                     &enabled,
                 ),
             };
-            screen::review::with_threads(items, &threads_review, &repo, layout)
+            let styles = screen::review::CommentStyles {
+                text: Style::from(&config.style.comment),
+                decoration: Style::from(&config.style.comment_decoration),
+            };
+            screen::review::with_threads(items, &threads_review, &repo, layout, &styles)
         }),
     )?;
     screen.review = Some(review);
