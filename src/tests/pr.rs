@@ -541,3 +541,103 @@ fn a_head_that_is_not_the_prs_on_github_is_warned_of() {
         ctx.redact_buffer()
     );
 }
+
+/// The column, counting from 0 at the screen's left edge, of the bar drawn
+/// before the comment showing `text`.
+fn bar_column(ctx: &TestContext, text: &str) -> usize {
+    line_with(ctx, text).chars().position(|c| c == '│').unwrap()
+}
+
+fn side_by_side(ctx: &mut TestContext) {
+    ctx.config().general.diff_renderer.enabled_features =
+        crate::config::EnabledFeatures::new(|_| vec!["side-by-side".into()]);
+}
+
+/// In side-by-side, delta draws the new file in the right panel, which starts
+/// halfway across the width delta is given: 78 columns of the 80, after the
+/// one column gitu draws the cursor in.
+#[test]
+fn side_by_side_draws_a_new_side_thread_in_the_right_panel() {
+    let mut ctx = setup_clone!();
+    side_by_side(&mut ctx);
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert_eq!(bar_column(&ctx, "alice: Why new?"), 1 + 39 + 2);
+}
+
+#[test]
+fn side_by_side_draws_an_old_side_thread_in_the_left_panel() {
+    let mut ctx = setup_clone!();
+    side_by_side(&mut ctx);
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::Old, 2)),
+        false,
+        &[("alice", "Why not old?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert_eq!(bar_column(&ctx, "alice: Why not old?"), 1 + 2);
+}
+
+/// A comment longer than the room for it wraps, each row after the first
+/// under the bar, and in side-by-side within its panel.
+#[test]
+fn a_long_comment_wraps_within_its_panel() {
+    let mut ctx = setup_clone!();
+    side_by_side(&mut ctx);
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[(
+            "alice",
+            "one two three four five six seven eight nine ten eleven twelve",
+        )],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let first = line_with(&ctx, "alice: one");
+    let last = line_with(&ctx, "twelve");
+    assert_ne!(first, last, "{}", ctx.redact_buffer());
+    assert_eq!(bar_column(&ctx, "twelve"), 1 + 39 + 2);
+    let width = last.trim_end_matches(['|', ' ']).chars().count();
+    assert!(width <= 80, "{last}");
+}
+
+#[test]
+fn a_long_comment_wraps_under_the_bar() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let words = (1..=30)
+        .map(|i| format!("w{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", &words)],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert_ne!(line_with(&ctx, "alice: w1 "), line_with(&ctx, "w30"));
+    assert_eq!(bar_column(&ctx, "w30"), 1 + 2);
+}
