@@ -136,6 +136,7 @@ pub(crate) fn create(
                         repo.as_ref(),
                         diff,
                         &config.general.difftastic.command,
+                        crate::difftastic::Layout::of(&params, &config, repo.as_ref()),
                     )
                 } else {
                     diff

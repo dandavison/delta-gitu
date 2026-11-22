@@ -20,8 +20,10 @@
 //! drawn with colors that git does not use ([`Paint`]). [`map_styles`] tells delta which of its own
 //! styles to draw each color in.
 
+use crate::config::Config;
 use crate::git::diff::{Diff, Display};
 use crate::gitu_diff::FileDiff;
+use crate::items::RenderParams;
 use git2::{ObjectType, Oid, Repository};
 use std::collections::HashMap;
 use std::fs;
@@ -128,8 +130,13 @@ pub(crate) struct Shown {
 /// sees them: those whose two versions gitu can read, from `repo`, or for a version not in it, from
 /// the work tree. `command` runs difftastic. A file that difftastic fails on, or whose output gitu
 /// does not understand, is drawn as git has it, as is an added or deleted file.
-pub(crate) fn with_display(repo: &Repository, diff: Diff, command: &[String]) -> Diff {
-    let display = display(repo, &diff.text, &diff.file_diffs, command);
+pub(crate) fn with_display(
+    repo: &Repository,
+    diff: Diff,
+    command: &[String],
+    layout: Layout,
+) -> Diff {
+    let display = display(repo, &diff.text, &diff.file_diffs, command, layout);
     Diff {
         display: Some(display),
         ..diff
@@ -142,6 +149,7 @@ pub(crate) fn display(
     text: &str,
     file_diffs: &[FileDiff],
     command: &[String],
+    layout: Layout,
 ) -> Display {
     let jobs: Vec<Option<Job>> = file_diffs
         .iter()
@@ -160,7 +168,7 @@ pub(crate) fn display(
             continue;
         };
         let git_hunks = &text[first.range.start..last.range.end];
-        let Some(shown) = view(&job.old, &job.new, &json, git_hunks) else {
+        let Some(shown) = view(&job.old, &job.new, &json, git_hunks, layout) else {
             continue;
         };
         display.text.push_str(&text[copied..first.range.start]);
@@ -333,11 +341,42 @@ fn run(command: &[String], job: &Job) -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
+/// How the renderer lays out a diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Layout {
+    /// A line to a row.
+    Unified,
+    /// The old version's lines on the left and the new version's on the right.
+    SideBySide,
+}
+
+impl Layout {
+    /// The layout the renderer is asked for: side by side if its `side-by-side` feature is
+    /// enabled, in the session or by the user's configuration. The renderer may still lay out some
+    /// hunks a line to a row, as delta does with `side-by-side = hunk` for a hunk that only adds or
+    /// only removes lines, or on a narrow terminal with `side-by-side = N`.
+    pub(crate) fn of(params: &RenderParams, config: &Config, repo: &Repository) -> Self {
+        let dir = repo.workdir().unwrap_or(repo.path());
+        let enabled = config.general.diff_renderer.enabled_features.get(dir);
+        if crate::ops::editor::is_enabled_in(&params.features, "side-by-side", &enabled) {
+            Layout::SideBySide
+        } else {
+            Layout::Unified
+        }
+    }
+}
+
 /// difftastic's view of the change from `old` to `new`, from its `json` output for them, drawn
 /// inside `git_hunks`, git's hunks for the change: `None` if the output is not what gitu
 /// understands, or difftastic pairs lines that are not in the same one of git's hunks, in which
 /// case git's hunks are drawn as they are.
-pub(crate) fn view(old: &str, new: &str, json: &str, git_hunks: &str) -> Option<Shown> {
+pub(crate) fn view(
+    old: &str,
+    new: &str,
+    json: &str,
+    git_hunks: &str,
+    _layout: Layout,
+) -> Option<Shown> {
     let file: json::File = serde_json::from_str(json)
         .inspect_err(|e| log::warn!("difftastic's output is not what gitu expects: {e}"))
         .ok()?;
@@ -1044,9 +1083,15 @@ mod tests {
     }
 
     fn shown(fixture: &Fixture) -> Shown {
-        view(fixture.old, fixture.new, fixture.json, fixture.git)
+        shown_in(fixture, Layout::Unified)
+    }
+
+    fn shown_in(fixture: &Fixture, layout: Layout) -> Shown {
+        view(fixture.old, fixture.new, fixture.json, fixture.git, layout)
             .unwrap_or_else(|| panic!("expected difftastic's view"))
     }
+
+    const LAYOUTS: [Layout; 2] = [Layout::Unified, Layout::SideBySide];
 
     /// `colored` with each changed line's colors written out: after its `-`, `+` or ` `, `!` for
     /// a line changed throughout, `.` for one with changes on it, which are in `⟦⟧`, and `~` for
@@ -1187,13 +1232,19 @@ mod tests {
     ///   version's lines in the hunk: nothing that was removed is drawn as kept.
     /// - Every line git's hunks remove is drawn as removed, drawn as unchanged in a line that stands
     ///   for it, or not drawn because its tokens are kept.
-    /// - A line drawn as removed shows what was removed: it is removed throughout, or a token on it
-    ///   is marked removed. Drawn with nothing marked, a removed line looks unchanged, as if it were
-    ///   still there.
+    /// - In unified layout, a line drawn as removed shows what was removed: it is removed
+    ///   throughout, or a token on it is marked removed. Drawn with nothing marked, a removed line
+    ///   looks unchanged, as if it were still there. In side by side, such a line is followed by
+    ///   the line it became, drawn as added, which the renderer draws beside it.
     #[test]
     fn what_the_view_shows_is_true() {
-        for (name, fixture) in FIXTURES.iter().chain(&MORE_FIXTURES) {
-            let Some(shown) = view(fixture.old, fixture.new, fixture.json, fixture.git) else {
+        let cases = FIXTURES
+            .iter()
+            .chain(&MORE_FIXTURES)
+            .flat_map(|fixture| LAYOUTS.map(|layout| (fixture, layout)));
+        for ((name, fixture), layout) in cases {
+            let Some(shown) = view(fixture.old, fixture.new, fixture.json, fixture.git, layout)
+            else {
                 continue;
             };
             let versions = [Version::of(fixture.old), Version::of(fixture.new)];
@@ -1220,7 +1271,8 @@ mod tests {
             let mut drawn_new: Vec<usize> = vec![];
             let mut drawn_removed: Vec<usize> = vec![];
             let mut next = [0, 0];
-            for colored in shown.text.split_terminator('\n') {
+            let rows: Vec<&str> = shown.text.split_terminator('\n').collect();
+            for (i, colored) in rows.iter().enumerate() {
                 let (numbers, colored) = split_line_record(colored);
                 if let Some(numbers) = numbers {
                     next = numbers;
@@ -1245,13 +1297,17 @@ mod tests {
                 let (marker, content) = line.split_at(1);
                 match marker {
                     "-" => {
-                        if colored.starts_with('\x1b') {
-                            assert!(
-                                colored.starts_with(&Paint::Minus.sgr())
-                                    || colored.contains(&Paint::MinusEmph.sgr()),
-                                "{name}: {line:?} is drawn as removed with nothing on it marked"
-                            );
-                        }
+                        let marked = !colored.starts_with('\x1b')
+                            || colored.starts_with(&Paint::Minus.sgr())
+                            || colored.contains(&Paint::MinusEmph.sgr());
+                        let added_next = rows.get(i + 1).is_some_and(|row| {
+                            uncolored(split_line_record(row).1).starts_with('+')
+                        });
+                        assert!(
+                            marked || (layout == Layout::SideBySide && added_next),
+                            "{name}, {layout:?}: {line:?} is drawn as removed with nothing on it \
+                             marked"
+                        );
                         drawn_removed.push(next[OLD]);
                         next[OLD] += 1;
                     }
@@ -1310,10 +1366,18 @@ mod tests {
     /// line, removed in git's hunks; an added row is the new version's line, added in git's hunks;
     /// and an unchanged row is the new version's line, unchanged in git's hunks or standing for a
     /// line git's hunks remove and one they add.
+    ///
+    /// In side by side, where the renderer draws an unchanged row on both sides, an unchanged row is
+    /// the line of each version at its place: each side shows its own version.
     #[test]
     fn every_row_is_the_line_it_is_shown_as() {
-        for (name, fixture) in FIXTURES.iter().chain(&MORE_FIXTURES) {
-            let Some(shown) = view(fixture.old, fixture.new, fixture.json, fixture.git) else {
+        let cases = FIXTURES
+            .iter()
+            .chain(&MORE_FIXTURES)
+            .flat_map(|fixture| LAYOUTS.map(|layout| (fixture, layout)));
+        for ((name, fixture), layout) in cases {
+            let Some(shown) = view(fixture.old, fixture.new, fixture.json, fixture.git, layout)
+            else {
                 continue;
             };
             let [removed, added, context] = git_lines(fixture.git);
@@ -1348,8 +1412,17 @@ mod tests {
                 assert_eq!(
                     versions[version].lines[number - 1],
                     content,
-                    "{name}: {line:?} is not line {number} of its version"
+                    "{name}, {layout:?}: {line:?} is not line {number} of its version"
                 );
+                if marker == " " && layout == Layout::SideBySide {
+                    assert_eq!(
+                        versions[OLD].lines[next[OLD] - 1],
+                        content,
+                        "{name}: {line:?} is drawn on the old side, but is not line {} of the old \
+                         version",
+                        next[OLD]
+                    );
+                }
                 let in_git = match marker {
                     "-" => removed.contains(&number),
                     "+" => added.contains(&number),
@@ -1361,7 +1434,10 @@ mod tests {
                                 .is_some_and(|old| removed.contains(old) && added.contains(&number))
                     }
                 };
-                assert!(in_git, "{name}: {line:?} is not a line of git's hunks");
+                assert!(
+                    in_git,
+                    "{name}, {layout:?}: {line:?} is not a line of git's hunks"
+                );
                 for (version, other) in [(OLD, "+"), (NEW, "-")] {
                     if marker != other {
                         next[version] += 1;
@@ -1396,6 +1472,36 @@ mod tests {
 "#
         );
         assert_eq!(shown.stands_for, HashMap::from([(1, 1)]));
+    }
+
+    /// In side by side, a line whose only change is an addition, or to its layout, is drawn as the
+    /// old line beside the new one, so that each side shows its own version.
+    #[test]
+    fn side_by_side_shows_each_version_on_its_own_side() {
+        let shown = shown_in(&FIXTURES[0].1, Layout::SideBySide);
+        assert_eq!(
+            legible(&shown.text),
+            r#"@@ -1,6 +1,12 @@
+-.fn load(p: &Path) -> Cfg {
++.fn load(p: &Path⟦, v: bool⟧) -> Cfg {
+-!    // parse the file
++!    // parse the TOML file
+-.    let ⟦c⟧ = parse(&read(p), Strict, None);
++.    let ⟦cfg⟧ = parse(
++~        &read(p),
++~        Strict,
++~        None,
++~    );
++!    if v {
+-.    check(&⟦c⟧);
++.        check(&⟦cfg⟧);
+-!    c
++!    }
++!    cfg
+ }
+"#
+        );
+        assert_eq!(shown.stands_for, HashMap::new());
     }
 
     #[test]
@@ -1553,6 +1659,15 @@ mod tests {
     fn output_for_other_versions_is_not_used() {
         let fixture = &FIXTURES[1].1;
         let new = fixture.new.replace("match self.state", "mutch self.state");
-        assert!(view(fixture.old, &new, fixture.json, fixture.git).is_none());
+        assert!(
+            view(
+                fixture.old,
+                &new,
+                fixture.json,
+                fixture.git,
+                Layout::Unified
+            )
+            .is_none()
+        );
     }
 }

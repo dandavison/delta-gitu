@@ -294,7 +294,8 @@ impl Source {
                 let workdir = repo.workdir().ok_or(Error::NoRepoWorkdir)?;
                 command.current_dir(workdir.join(git.prefix()));
                 let (input, difftastic) = if params.difftastic && stat == Stat::No {
-                    as_difftastic_sees_it(config, repo, &mut command)?
+                    let layout = crate::difftastic::Layout::of(params, config, repo);
+                    as_difftastic_sees_it(config, repo, &mut command, layout)?
                 } else {
                     (Input::Command(command), None)
                 };
@@ -349,6 +350,7 @@ fn as_difftastic_sees_it(
     config: &Config,
     repo: &Repository,
     command: &mut std::process::Command,
+    layout: crate::difftastic::Layout,
 ) -> Res<(Input, Option<Rc<Difftastic>>)> {
     let output = command.output().map_err(Error::GitDiff)?;
     let colored_by_git = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -360,8 +362,13 @@ fn as_difftastic_sees_it(
     if file_diffs.is_empty() || items::patches_of(&text, &file_diffs).len() > 1 {
         return Ok((Input::Text(colored_by_git), None));
     }
-    let display =
-        crate::difftastic::display(repo, &text, &file_diffs, &config.general.difftastic.command);
+    let display = crate::difftastic::display(
+        repo,
+        &text,
+        &file_diffs,
+        &config.general.difftastic.command,
+        layout,
+    );
     Ok((
         Input::Text(display.text.clone()),
         Some(Rc::new(Difftastic { git: text, display })),
