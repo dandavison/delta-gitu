@@ -1024,3 +1024,20 @@ fn a_file_whose_threads_are_all_resolved_shows_no_count() {
         ctx.redact_buffer()
     );
 }
+
+#[test]
+fn a_files_comment_count_is_drawn_in_the_comment_count_style() {
+    let mut ctx = setup_clone!();
+    with_options(&mut ctx, &[("comment-count-style", "magenta")]);
+    let github = setup_folded_to_stat(&mut ctx);
+    *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("bob", "Hm")])];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    // The checkbox's [ comes first in the row; the c of "comment" is the first c.
+    assert_eq!(
+        cell(&ctx, "lines.txt", 'c').fg,
+        crate::style::Color::Magenta
+    );
+}
