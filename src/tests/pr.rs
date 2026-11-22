@@ -811,13 +811,25 @@ fn a_bold_box_decoration_is_drawn_heavy() {
 }
 
 #[test]
-fn a_folded_boxed_thread_shows_its_first_row_alone() {
+/// Folded, a boxed thread is its first row in a closed box.
+fn a_folded_boxed_thread_is_its_first_row_in_a_box() {
     let ctx = with_decoration(setup_clone!(), "box", true);
 
     let screen = ctx.redact_buffer();
-    assert!(!line_before(&ctx, ALICE).contains('┌'), "{screen}");
+    assert!(line_before(&ctx, ALICE).contains('┌'), "{screen}");
     assert!(line_with(&ctx, ALICE).contains('│'), "{screen}");
-    assert!(!screen.contains('└'), "{screen}");
+    assert!(lines_after(&ctx, ALICE, 1)[0].contains('└'), "{screen}");
+    assert!(!screen.contains("Because"), "{screen}");
+}
+
+/// Folded, a thread between lines keeps both lines.
+#[test]
+fn a_folded_thread_keeps_its_lines_over_and_under_it() {
+    let ctx = with_decoration(setup_clone!(), "ul ol", true);
+
+    let screen = ctx.redact_buffer();
+    assert!(line_before(&ctx, ALICE).contains("───"), "{screen}");
+    assert!(lines_after(&ctx, ALICE, 1)[0].contains("───"), "{screen}");
 }
 
 #[test]
