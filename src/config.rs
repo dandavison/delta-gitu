@@ -388,14 +388,6 @@ pub struct StyleConfig {
 
     #[serde(default)]
     pub blame: BlameStyleConfig,
-
-    /// A PR review comment's text; its author's login is drawn in it, bold.
-    #[serde(default)]
-    pub comment: StyleConfigEntry,
-    /// The bar drawn before a PR review comment, and what a thread's first
-    /// row says of it, such as that it is resolved.
-    #[serde(default)]
-    pub comment_decoration: StyleConfigEntry,
 }
 
 #[derive(Default, Debug, Deserialize)]
@@ -910,19 +902,6 @@ mod tests {
         assert_eq!(style.file_header.mods, Some(Modifier::UNDERLINED));
         assert_eq!(style.section_header.fg, None);
         assert_eq!(style.section_header.bg, Some(Color::Blue));
-    }
-
-    #[test]
-    fn comment_styles_are_set_from_git_config() {
-        let config = configured(
-            "",
-            "[delta-tui \"style\"]\n\
-             \tcomment = italic red\n\
-             \tcomment-decoration = blue\n",
-        );
-        assert_eq!(config.style.comment.fg, Some(Color::Red));
-        assert_eq!(config.style.comment.mods, Some(Modifier::ITALIC));
-        assert_eq!(config.style.comment_decoration.fg, Some(Color::Blue));
     }
 
     #[test]

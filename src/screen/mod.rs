@@ -372,11 +372,10 @@ impl Screen {
     }
 
     fn params(&self) -> RenderParams {
-        let prefix = if self.review.is_some() {
-            crate::github::FILE_PREFIX_WIDTH
-        } else {
-            0
-        };
+        let prefix = self
+            .review
+            .as_ref()
+            .map_or(0, |review| review.reserved_columns());
         RenderParams {
             size: (self.size.0.saturating_sub(prefix), self.size.1),
             features: Rc::clone(&self.features),
@@ -1954,22 +1953,34 @@ fn layout_item<'a>(layout: &mut UiTree<'a>, screen: &'a Screen, hide_cursor: boo
         layout.row(opts(), |layout| layout_span(layout, gutter_char));
 
         let item = &screen.items[line.item_index];
+        let mut comment_count = None;
         if let (Some(review), ItemData::Delta { diff, file_i, .. }) = (&screen.review, &item.data) {
             let path = crate::github::file_path(diff, *file_i);
-            let unresolved = (
-                review.unresolved(&path).into(),
-                bg.patch(Style::from(&style.comment_decoration)),
-            );
             layout.row(opts(), |layout| {
                 layout_span(layout, (review.checkbox(&path).into(), bg));
-                layout_span(layout, unresolved);
+            });
+            comment_count = review.comment_count(&path).map(|count| {
+                let style = bg.patch(review.comment_options().count);
+                (format!(" {count}"), style)
             });
         }
+        // A file's comment count goes after its name, before the spaces that pad its row.
         if let Some(row) = screen.standing_in_row(item) {
-            ui::item::layout_rendered(layout, row, bg);
+            match comment_count {
+                Some(count) => layout_with_count(layout, row, count, bg),
+                None => ui::item::layout_rendered(layout, row, bg),
+            }
             return;
         }
-        ui::item::layout_item(layout, item, &screen.config, bg);
+        match (&item.rendered, comment_count) {
+            (Some(row), Some(count)) => layout_with_count(layout, row, count, bg),
+            (_, comment_count) => {
+                ui::item::layout_item(layout, item, &screen.config, bg);
+                if let Some(count) = comment_count {
+                    layout_span(layout, (count.0.into(), count.1));
+                }
+            }
+        }
 
         // A collapsed section says so only when it is hiding something.
         let has_children = screen
@@ -1980,6 +1991,27 @@ fn layout_item<'a>(layout: &mut UiTree<'a>, screen: &'a Screen, hide_cursor: boo
             layout_span(layout, ("…".into(), bg));
         }
     });
+}
+
+/// `row` without the whitespace at its end, and then `count`.
+fn layout_with_count<'a>(
+    layout: &mut UiTree<'a>,
+    row: &'a crate::items::RenderedRow,
+    count: (String, Style),
+    base: Style,
+) {
+    let last = row
+        .iter()
+        .rposition(|(text, _)| !text.trim_end().is_empty());
+    for (i, (text, style)) in row.iter().enumerate().take(last.map_or(0, |last| last + 1)) {
+        let text = if Some(i) == last {
+            text.trim_end()
+        } else {
+            text
+        };
+        layout_span(layout, (text.into(), base.patch(*style)));
+    }
+    layout_span(layout, (count.0.into(), count.1));
 }
 
 fn gutter_char<'a>(style: &'a StyleConfig, is_line_sel: bool, bg: Style) -> (Cow<'a, str>, Style) {

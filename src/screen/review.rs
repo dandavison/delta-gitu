@@ -1,6 +1,7 @@
 //! A PR's review threads, as rows under the diff lines they are on.
 
 use crate::{
+    config_git::{DecorationStyle, parse_delta_style},
     github::{self, Review, Side, Thread},
     item_data::ItemData,
     items::{Item, hash},
@@ -23,7 +24,8 @@ pub(crate) fn with_threads(
     review: &Review,
     repo: &Repository,
     layout: Layout,
-    styles: &CommentStyles,
+    options: &CommentOptions,
+    error_style: Style,
 ) -> Vec<Item> {
     let threads = review.threads.borrow();
     let mut lines: HashMap<(String, Side, u32), usize> = HashMap::new();
@@ -77,6 +79,13 @@ pub(crate) fn with_threads(
     }
 
     let mut out = Vec::with_capacity(items.len());
+    for error in &options.errors {
+        out.push(Item {
+            unselectable: true,
+            rendered: Some(Rc::new(vec![(error.clone(), error_style)])),
+            ..Default::default()
+        });
+    }
     if !at_pr_head(repo, &review.pr.head_oid) {
         out.push(warning_row());
     }
@@ -96,7 +105,7 @@ pub(crate) fn with_threads(
                 depth,
                 on_line,
                 layout.panel(side),
-                styles,
+                options,
             ));
         }
     }
@@ -126,12 +135,73 @@ fn warning_row() -> Item {
     }
 }
 
-/// The styles comments are drawn in: `text` for what they say and who said it,
-/// and `decoration` for the bar before them and the notes on a thread's first
-/// row.
-pub(crate) struct CommentStyles {
+/// The delta options gitu draws comments with. delta's config sets them, as it sets its own,
+/// so that a delta feature can.
+pub(crate) const OPTION_NAMES: [&str; 6] = [
+    "comment-style",
+    "comment-author-style",
+    "comment-timestamp-style",
+    "comment-count-style",
+    "comment-decoration-style",
+    "comment-timestamp-format",
+];
+
+/// How comments are drawn, from the delta options in [`OPTION_NAMES`].
+pub(crate) struct CommentOptions {
+    /// What a comment says.
     pub text: Style,
-    pub decoration: Style,
+    /// Who said it.
+    pub author: Style,
+    /// When.
+    pub timestamp: Style,
+    /// How many comments a file's unresolved threads have, after its name.
+    pub count: Style,
+    /// What is drawn around a thread, and the notes on its first row, such as that it is
+    /// resolved.
+    pub decoration: DecorationStyle,
+    /// A strftime format for when a comment was made, or `None` for how long ago.
+    pub timestamp_format: Option<String>,
+    /// An option whose value is not a style, as what to tell the user. Its default is used.
+    pub errors: Vec<String>,
+}
+
+impl CommentOptions {
+    /// From the values of [`OPTION_NAMES`], in that order, `None` for one not set.
+    pub(crate) fn of(values: &[Option<String>]) -> Self {
+        let mut errors = vec![];
+        let mut style = |i: usize, default: &str, decoration: bool| {
+            let value = values.get(i).cloned().flatten();
+            let parsed = value
+                .as_deref()
+                .map(|value| parse_delta_style(value, decoration))
+                .transpose()
+                .unwrap_or_else(|error| {
+                    errors.push(format!("{}: {error}", OPTION_NAMES[i]));
+                    None
+                });
+            parsed.unwrap_or_else(|| parse_delta_style(default, decoration).unwrap())
+        };
+        let text = style(0, "", false).style;
+        let author = style(1, "bold", false).style;
+        let timestamp = style(2, "dim", false).style;
+        let count = style(3, "blue", false).style;
+        let decoration = style(4, "blue", true);
+        CommentOptions {
+            text,
+            author,
+            timestamp,
+            count,
+            decoration,
+            timestamp_format: values.get(5).cloned().flatten(),
+            errors,
+        }
+    }
+}
+
+impl Default for CommentOptions {
+    fn default() -> Self {
+        Self::of(&[])
+    }
 }
 
 /// Where a thread's rows go across the screen: from `column`, `width` columns
@@ -172,15 +242,55 @@ impl Layout {
     }
 }
 
-/// The rows of `thread`, in `panel`: the first row of its first comment,
-/// folding the rest under it. That row says whether the thread is resolved or
-/// outdated, and when it is not `on_line` though it has a line, which line.
+type Row = Vec<(String, Style)>;
+
+/// The characters a decoration is drawn with: delta's light box-drawing characters, or its
+/// heavy ones when the decoration style is bold.
+struct Lines {
+    horizontal: &'static str,
+    vertical: &'static str,
+    down_right: &'static str,
+    down_left: &'static str,
+    up_right: &'static str,
+    up_left: &'static str,
+}
+
+const LIGHT: Lines = Lines {
+    horizontal: "─",
+    vertical: "│",
+    down_right: "┌",
+    down_left: "┐",
+    up_right: "└",
+    up_left: "┘",
+};
+
+const HEAVY: Lines = Lines {
+    horizontal: "━",
+    vertical: "┃",
+    down_right: "┏",
+    down_left: "┓",
+    up_right: "┗",
+    up_left: "┛",
+};
+
+/// The columns between a panel's edge and what is drawn there.
+const MARGIN: &str = "  ";
+
+/// The fewest columns a comment is wrapped to, however narrow its panel.
+const MIN_TEXT_WIDTH: usize = 20;
+
+/// The rows of `thread`, in `panel`, decorated as `options` say: with a box, a line under or
+/// over it, or, with none of those, a bar down its left. The first row is the first comment's
+/// first, and folds the rest, but for a line over the thread or a box's top, which are hidden
+/// while it is folded. Each comment's first row ends with when it was made, and the thread's
+/// first row also says whether the thread is resolved or outdated, and when it is not `on_line`
+/// though it has a line, which line.
 fn thread_rows(
     thread: &Thread,
     depth: usize,
     on_line: bool,
     panel: Panel,
-    styles: &CommentStyles,
+    options: &CommentOptions,
 ) -> Vec<Item> {
     let Some(first) = thread.comments.first() else {
         return vec![];
@@ -197,78 +307,156 @@ fn thread_rows(
     if thread.resolved {
         notes.push("resolved".to_owned());
     }
-    let notes = (!notes.is_empty()).then(|| format!(" ({})", notes.join(", ")));
+    let notes = (!notes.is_empty()).then(|| format!("({})", notes.join(", ")));
 
-    let text_width = panel
-        .width
-        .saturating_sub(GUTTER.width())
-        .max(MIN_TEXT_WIDTH);
-    let mut rows = vec![];
+    let decoration = &options.decoration;
+    let lines = if decoration.style.add_modifier.contains(Modifier::BOLD) {
+        &HEAVY
+    } else {
+        &LIGHT
+    };
+    let boxed = decoration.boxed;
+    let bar = !boxed && !decoration.underline && !decoration.overline;
+    // What goes before and after a comment's text on each row.
+    let (before, after) = if boxed || bar {
+        (
+            format!("{}{} ", MARGIN, lines.vertical),
+            format!(" {}", lines.vertical),
+        )
+    } else {
+        (format!("{MARGIN}  "), String::new())
+    };
+    let chrome = before.width() + if boxed { after.width() } else { 0 };
+    let text_width = panel.width.saturating_sub(chrome).max(MIN_TEXT_WIDTH);
+    let indent = " ".repeat(panel.column);
+    let decorated = |content: Row| -> Row {
+        let mut row = vec![(format!("{indent}{before}"), decoration.style)];
+        let width: usize = content.iter().map(|(text, _)| text.width()).sum();
+        row.extend(content);
+        if boxed {
+            row.push((" ".repeat(text_width.saturating_sub(width)), Style::new()));
+            row.push((after.clone(), decoration.style));
+        }
+        row
+    };
+    let border = |left: &str, right: &str| -> Row {
+        let span = text_width + chrome - MARGIN.len() - left.width() - right.width();
+        vec![(
+            format!(
+                "{indent}{MARGIN}{left}{}{right}",
+                lines.horizontal.repeat(span)
+            ),
+            decoration.style,
+        )]
+    };
+
+    let mut rows: Vec<(usize, usize, Row)> = vec![];
     for (comment_i, comment) in thread.comments.iter().enumerate() {
-        let first_row_width = match (&notes, comment_i) {
-            (Some(notes), 0) => text_width.saturating_sub(notes.width()).max(MIN_TEXT_WIDTH),
-            _ => text_width,
-        };
-        let comment_rows = comment_rows(
-            &comment.author,
-            &comment.body,
-            first_row_width,
-            text_width,
-            styles.text,
-        );
-        for (row_i, mut spans) in comment_rows.into_iter().enumerate() {
-            let is_header = comment_i == 0 && row_i == 0;
-            if is_header && let Some(notes) = &notes {
-                spans.push((notes.clone(), styles.decoration));
-            }
-            let mut rendered = vec![(
-                format!("{}{GUTTER}", " ".repeat(panel.column)),
-                styles.decoration,
-            )];
-            rendered.extend(spans);
-            rows.push(if is_header {
-                Item {
-                    id: hash(("review_thread", &thread.id)),
-                    depth,
-                    default_collapsed: thread.resolved,
-                    data: ItemData::ReviewThread {
-                        url: first.url.clone(),
-                    },
-                    rendered: Some(Rc::new(rendered)),
-                    ..Default::default()
-                }
-            } else {
-                Item {
-                    id: hash(("review_comment", &thread.id, comment_i, row_i)),
-                    depth: depth + 1,
-                    data: ItemData::ReviewComment {
-                        url: comment.url.clone(),
-                    },
-                    rendered: Some(Rc::new(rendered)),
-                    ..Default::default()
-                }
-            });
+        let mut right = vec![];
+        if comment_i == 0
+            && let Some(notes) = &notes
+        {
+            right.push((notes.clone(), decoration.style));
+        }
+        right.push((timestamp(comment, options), options.timestamp));
+        for (row_i, row) in comment_rows(comment, &right, text_width, options)
+            .into_iter()
+            .enumerate()
+        {
+            rows.push((comment_i, row_i, decorated(row)));
         }
     }
-    rows
+
+    let mut items = vec![];
+    if boxed || decoration.overline {
+        let top = if boxed {
+            border(lines.down_right, lines.down_left)
+        } else {
+            border("", "")
+        };
+        items.push(Item {
+            id: hash(("review_thread_top", &thread.id)),
+            depth,
+            unselectable: true,
+            decorates_next: true,
+            rendered: Some(Rc::new(top)),
+            ..Default::default()
+        });
+    }
+    let mut rows = rows.into_iter();
+    if let Some((_, _, header)) = rows.next() {
+        let header = Rc::new(header);
+        items.push(Item {
+            id: hash(("review_thread", &thread.id)),
+            depth,
+            default_collapsed: thread.resolved,
+            data: ItemData::ReviewThread {
+                url: first.url.clone(),
+            },
+            rendered: Some(Rc::clone(&header)),
+            // Folded, the row stands in for the thread, so that the decoration above it is
+            // hidden with what is under it.
+            folded: Some(header),
+            ..Default::default()
+        });
+    }
+    for (comment_i, row_i, row) in rows {
+        items.push(Item {
+            id: hash(("review_comment", &thread.id, comment_i, row_i)),
+            depth: depth + 1,
+            data: ItemData::ReviewComment {
+                url: thread.comments[comment_i].url.clone(),
+            },
+            rendered: Some(Rc::new(row)),
+            ..Default::default()
+        });
+    }
+    if boxed || decoration.underline {
+        let bottom = if boxed {
+            border(lines.up_right, lines.up_left)
+        } else {
+            border("", "")
+        };
+        items.push(Item {
+            id: hash(("review_thread_bottom", &thread.id)),
+            depth: depth + 1,
+            unselectable: true,
+            rendered: Some(Rc::new(bottom)),
+            ..Default::default()
+        });
+    }
+    items
 }
 
-const GUTTER: &str = "  │ ";
+/// When `comment` was made: as `options.timestamp_format` formats it in local time, or how long
+/// ago.
+fn timestamp(comment: &github::Comment, options: &CommentOptions) -> String {
+    match &options.timestamp_format {
+        Some(format) => comment
+            .created_at
+            .with_timezone(&chrono::Local)
+            .format(format)
+            .to_string(),
+        None => chrono_humanize::HumanTime::from(comment.created_at).to_string(),
+    }
+}
 
-/// The fewest columns a comment is wrapped to, however narrow its panel.
-const MIN_TEXT_WIDTH: usize = 20;
-
-/// The rows of a comment by `author`, wrapped to `width` columns, the first row
-/// to `first_width`: its author's login, then its body, each row after the
-/// first indented under the login, all in `style` and the login in bold.
+/// The rows of `comment`, wrapped to `width` columns: its author's login, then its body, each
+/// row after the first indented under the login. The first row ends with `right`, aligned to
+/// `width`.
 fn comment_rows(
-    author: &str,
-    body: &str,
-    first_width: usize,
+    comment: &github::Comment,
+    right: &Row,
     width: usize,
-    style: Style,
-) -> Vec<Vec<(String, Style)>> {
-    let mut lines = body.lines();
+    options: &CommentOptions,
+) -> Vec<Row> {
+    let right_width = right
+        .iter()
+        .map(|(text, _)| text.width() + 1)
+        .sum::<usize>();
+    let first_width = width.saturating_sub(right_width).max(MIN_TEXT_WIDTH);
+    let author = &comment.author;
+    let mut lines = comment.body.lines();
     let first_line = format!("{author}: {}", lines.next().unwrap_or_default());
     let mut wrapped = wrap(&first_line, first_width, width - INDENT.len());
     for line in lines {
@@ -278,19 +466,24 @@ fn comment_rows(
     wrapped
         .into_iter()
         .enumerate()
-        .map(|(i, row)| match (i, row.strip_prefix(author)) {
-            (0, Some(rest)) => vec![
-                (
-                    author.to_owned(),
-                    style.patch(Style {
-                        add_modifier: Modifier::BOLD,
-                        ..Style::new()
-                    }),
-                ),
-                (rest.to_owned(), style),
-            ],
-            (0, None) => vec![(row, style)],
-            _ => vec![(format!("{INDENT}{row}"), style)],
+        .map(|(i, row)| {
+            if i > 0 {
+                return vec![(format!("{INDENT}{row}"), options.text)];
+            }
+            let mut spans = match row.strip_prefix(author.as_str()) {
+                Some(rest) => vec![
+                    (author.clone(), options.author),
+                    (rest.to_owned(), options.text),
+                ],
+                None => vec![(row.clone(), options.text)],
+            };
+            let gap = width.saturating_sub(row.width() + right_width);
+            spans.push((" ".repeat(gap), Style::new()));
+            for (text, style) in right {
+                spans.push((" ".to_owned(), Style::new()));
+                spans.push((text.clone(), *style));
+            }
+            spans
         })
         .collect()
 }

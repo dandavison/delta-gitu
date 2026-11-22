@@ -576,11 +576,13 @@ fn side_by_side(ctx: &mut TestContext) {
         crate::config::EnabledFeatures::new(|_| vec!["side-by-side".into()]);
 }
 
-/// Where delta's right panel starts in side-by-side: halfway across the width
-/// delta is given, which is the 80 columns but for the two gitu keeps for the
-/// cursor and those it keeps for a file's checkbox and thread count. The
+/// Where delta's right panel starts in side-by-side, in these tests, whose
+/// one thread has one comment: halfway across the width delta is given, which
+/// is the 80 columns but for the two gitu keeps for the cursor and those it
+/// keeps for a file's checkbox and, after its name, its comment count. The
 /// screen's column 0 is the cursor's.
-const RIGHT_PANEL: usize = 1 + (80 - 2 - crate::github::FILE_PREFIX_WIDTH as usize) / 2;
+const RIGHT_PANEL: usize =
+    1 + (80 - 2 - crate::github::FILE_PREFIX_WIDTH as usize - " [1 comment]".len()) / 2;
 
 /// In side-by-side, delta draws the new file in the right panel.
 #[test]

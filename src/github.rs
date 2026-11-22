@@ -1,10 +1,12 @@
 //! Pull requests on GitHub, read and written with the `gh` command, which holds
 //! the user's GitHub login.
 
+use crate::screen::review::CommentOptions;
 use crate::{Res, error::Error, git::diff::Diff, gitu_diff::Status};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, process::Command};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, process::Command, rc::Rc};
+use unicode_width::UnicodeWidthStr;
 
 /// A pull request, as GitHub describes it.
 #[derive(Clone, Debug)]
@@ -40,12 +42,14 @@ pub(crate) struct Review {
     pub pr: Pr,
     pub viewed: RefCell<HashMap<String, ViewedState>>,
     pub threads: RefCell<Vec<Thread>>,
+    /// The options comments were last drawn with, and the features in force they were asked
+    /// with, as `DELTA_FEATURES` gives them; `None` until they are first asked for, and once the
+    /// review is read again, so that a change to delta's config counts.
+    pub options: RefCell<Option<(Option<String>, Rc<CommentOptions>)>>,
 }
 
-/// How many columns [`Review::checkbox`] and [`Review::unresolved`] take
-/// before a file's row. A PR's diff is rendered that much narrower, so that a
-/// row taking the whole width still fits beside them.
-pub(crate) const FILE_PREFIX_WIDTH: u16 = 8;
+/// How many columns [`Review::checkbox`] takes before a file's row.
+pub(crate) const FILE_PREFIX_WIDTH: u16 = 4;
 
 impl Review {
     /// The checkbox drawn before the file at `path`: blank for a file GitHub
@@ -59,22 +63,47 @@ impl Review {
         }
     }
 
-    /// What is drawn after the checkbox of the file at `path`: `●` and the
-    /// number of its unresolved review threads, or blank when it has none.
-    /// More than 99 does not fit, and pushes the row right.
-    pub fn unresolved(&self, path: &str) -> String {
-        let count = self
+    /// What is drawn after the name of the file at `path`: how many comments its unresolved
+    /// review threads have, as `[3 comments]`, or `None` when it has none.
+    pub fn comment_count(&self, path: &str) -> Option<String> {
+        let count: usize = self
             .threads
             .borrow()
             .iter()
             .filter(|thread| thread.path == path && !thread.resolved)
-            .count();
-        let marker = if count == 0 {
-            String::new()
-        } else {
-            format!("●{count}")
-        };
-        format!("{marker:<4}")
+            .map(|thread| thread.comments.len())
+            .sum();
+        match count {
+            0 => None,
+            1 => Some("[1 comment]".to_owned()),
+            n => Some(format!("[{n} comments]")),
+        }
+    }
+
+    /// How many columns a PR's diff is rendered narrower than the screen, so that a file's row
+    /// that takes the whole width still fits beside its checkbox and after it its comment
+    /// count, with a space before it. Rows other than files' end that many columns short of the
+    /// screen's edge.
+    pub fn reserved_columns(&self) -> u16 {
+        let threads = self.threads.borrow();
+        let paths: std::collections::HashSet<&str> =
+            threads.iter().map(|thread| thread.path.as_str()).collect();
+        let count = paths
+            .into_iter()
+            .filter_map(|path| self.comment_count(path))
+            .map(|count| count.width() + 1)
+            .max()
+            .unwrap_or(0);
+        FILE_PREFIX_WIDTH + count as u16
+    }
+
+    /// The options comments were last drawn with, or the defaults before they first are.
+    pub fn comment_options(&self) -> Rc<CommentOptions> {
+        self.options
+            .borrow()
+            .as_ref()
+            .map(|(_, options)| Rc::clone(options))
+            .unwrap_or_default()
     }
 }
 

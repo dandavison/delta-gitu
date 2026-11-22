@@ -75,6 +75,7 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
     let review = Rc::new(Review {
         viewed: RefCell::new(github.viewed(&pr)?),
         threads: RefCell::new(github.threads(&pr)?),
+        options: RefCell::new(None),
         pr,
     });
 
@@ -84,7 +85,7 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
     let mut screen = screen::pager::live_decorated(
         Arc::clone(&app.state.config),
         Rc::clone(&app.state.repo),
-        app.render_params((width.saturating_sub(github::FILE_PREFIX_WIDTH), height)),
+        app.render_params((width.saturating_sub(review.reserved_columns()), height)),
         vec![
             "git".into(),
             "diff".into(),
@@ -101,11 +102,16 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
                     &enabled,
                 ),
             };
-            let styles = screen::review::CommentStyles {
-                text: Style::from(&config.style.comment),
-                decoration: Style::from(&config.style.comment_decoration),
-            };
-            screen::review::with_threads(items, &threads_review, &repo, layout, &styles)
+            let options = comment_options(&threads_review, &config, dir, &params.features);
+            let error_style = Style::from(&config.style.error_msg);
+            screen::review::with_threads(
+                items,
+                &threads_review,
+                &repo,
+                layout,
+                &options,
+                error_style,
+            )
         }),
     )?;
     screen.review = Some(review);
@@ -119,8 +125,34 @@ pub(crate) fn reread_review(app: &mut App) -> Res<()> {
     if let Some(review) = app.screen().review.clone() {
         *review.viewed.borrow_mut() = app.state.github.viewed(&review.pr)?;
         *review.threads.borrow_mut() = app.state.github.threads(&review.pr)?;
+        *review.options.borrow_mut() = None;
     }
     Ok(())
+}
+
+/// The options to draw the review's comments with, as delta's config sets them with `features`
+/// in force. delta is asked once for each set of features in force, and again after the review
+/// is read again.
+fn comment_options(
+    review: &Review,
+    config: &crate::config::Config,
+    dir: &std::path::Path,
+    features: &[String],
+) -> Rc<screen::review::CommentOptions> {
+    let features = crate::diff_renderer::feature_overlay(features);
+    if let Some((asked_with, options)) = &*review.options.borrow()
+        && *asked_with == features
+    {
+        return Rc::clone(options);
+    }
+    let values = config.general.diff_renderer.options.get(
+        dir,
+        features.as_deref(),
+        &screen::review::OPTION_NAMES,
+    );
+    let options = Rc::new(screen::review::CommentOptions::of(&values));
+    *review.options.borrow_mut() = Some((features, Rc::clone(&options)));
+    options
 }
 
 pub(crate) struct ToggleViewed;

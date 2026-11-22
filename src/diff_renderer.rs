@@ -504,7 +504,7 @@ pub(crate) fn failure_message(
 /// The value to give [`FEATURES_VAR`] for `features`, or `None` to leave the
 /// variable unset so the user's configuration applies untouched. Feature names
 /// are space-separated and may not themselves contain whitespace.
-fn feature_overlay(features: &[String]) -> Option<String> {
+pub(crate) fn feature_overlay(features: &[String]) -> Option<String> {
     if features.is_empty() {
         return None;
     }
