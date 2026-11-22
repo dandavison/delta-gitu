@@ -3,6 +3,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::ops::Range;
+use unicode_width::UnicodeWidthChar;
 
 /// What a key did to a [`TextArea`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,28 +39,219 @@ impl TextArea {
     /// it: each line, split at spaces where it is wider than `width`, a space
     /// a row is split at ending the row before. A word wider than `width` is
     /// split where the row ends. A line break is in no row.
-    pub(crate) fn rows(&self, _width: usize) -> Vec<Range<usize>> {
-        todo!()
+    pub(crate) fn rows(&self, width: usize) -> Vec<Range<usize>> {
+        let chars = self.chars();
+        let width = width.max(1);
+        let mut rows = vec![];
+        let mut line_start = 0;
+        loop {
+            let line_end = chars[line_start..]
+                .iter()
+                .position(|&c| c == '\n')
+                .map_or(chars.len(), |i| line_start + i);
+            wrap_line(&chars, line_start..line_end, width, &mut rows);
+            if line_end == chars.len() {
+                return rows;
+            }
+            line_start = line_end + 1;
+        }
     }
 
     /// The row and column the cursor is drawn at, at `width` columns.
-    pub(crate) fn cursor_at(&self, _width: usize) -> (usize, usize) {
-        todo!()
+    pub(crate) fn cursor_at(&self, width: usize) -> (usize, usize) {
+        let chars = self.chars();
+        let rows = self.rows(width);
+        // Where a line is split at a space, the cursor after the space is at the next row's start.
+        let row = rows
+            .iter()
+            .rposition(|row| row.start <= self.cursor && self.cursor <= row.end)
+            .unwrap_or(0);
+        let column = columns(&chars[rows[row].start..self.cursor]);
+        (row, column)
     }
 
     /// Insert `text` where the cursor is, as a paste does.
-    pub(crate) fn insert_str(&mut self, _text: &str) {
-        todo!()
+    pub(crate) fn insert_str(&mut self, text: &str) {
+        let mut chars = self.chars();
+        let inserted: Vec<char> = text.chars().collect();
+        let count = inserted.len();
+        chars.splice(self.cursor..self.cursor, inserted);
+        self.value = chars.into_iter().collect();
+        self.cursor += count;
+        self.goal_column = None;
     }
 
     /// Edit or move as `key` says, with the text drawn at `width` columns,
     /// which moving up and down goes by.
-    pub(crate) fn handle_key(&mut self, key: KeyEvent, _width: usize) -> Outcome {
+    pub(crate) fn handle_key(&mut self, key: KeyEvent, width: usize) -> Outcome {
         if key.kind == KeyEventKind::Release {
             return Outcome::Ignored;
         }
-        let _ = (KeyCode::Enter, KeyModifiers::NONE);
-        todo!()
+        let ctrl = |c: char| (KeyCode::Char(c), KeyModifiers::CONTROL);
+        let code_and_modifiers = (key.code, key.modifiers);
+        let outcome = match code_and_modifiers {
+            (KeyCode::Enter, KeyModifiers::ALT) => return Outcome::Submit,
+            c if c == ctrl('s') => return Outcome::Submit,
+            (KeyCode::Esc, _) => return Outcome::Leave,
+            (KeyCode::Enter, _) => {
+                self.insert_str("\n");
+                Outcome::Edited
+            }
+            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                self.insert_str(&c.to_string());
+                Outcome::Edited
+            }
+            (KeyCode::Up, _) => return self.move_vertically(width, false),
+            c if c == ctrl('p') => return self.move_vertically(width, false),
+            (KeyCode::Down, _) => return self.move_vertically(width, true),
+            c if c == ctrl('n') => return self.move_vertically(width, true),
+            (KeyCode::Backspace, _) => self.delete(self.cursor.saturating_sub(1)..self.cursor),
+            c if c == ctrl('h') => self.delete(self.cursor.saturating_sub(1)..self.cursor),
+            (KeyCode::Delete, _) => self.delete(self.cursor..self.cursor + 1),
+            c if c == ctrl('d') => self.delete(self.cursor..self.cursor + 1),
+            (KeyCode::Left, _) => self.move_to(self.cursor.saturating_sub(1)),
+            c if c == ctrl('b') => self.move_to(self.cursor.saturating_sub(1)),
+            (KeyCode::Right, _) => self.move_to(self.cursor + 1),
+            c if c == ctrl('f') => self.move_to(self.cursor + 1),
+            (KeyCode::Home, _) => self.move_to(self.line().start),
+            c if c == ctrl('a') => self.move_to(self.line().start),
+            (KeyCode::End, _) => self.move_to(self.line().end),
+            c if c == ctrl('e') => self.move_to(self.line().end),
+            c if c == ctrl('u') => self.delete(self.line().start..self.cursor),
+            c if c == ctrl('k') => self.delete(self.cursor..self.line().end),
+            c if c == ctrl('w') => self.delete(self.word_start()..self.cursor),
+            _ => return Outcome::Ignored,
+        };
+        self.goal_column = None;
+        outcome
+    }
+
+    fn chars(&self) -> Vec<char> {
+        self.value.chars().collect()
+    }
+
+    fn move_to(&mut self, cursor: usize) -> Outcome {
+        self.cursor = cursor.min(self.value.chars().count());
+        Outcome::Moved
+    }
+
+    /// Delete the chars in `range`, cut to the text, leaving the cursor where they were.
+    fn delete(&mut self, range: Range<usize>) -> Outcome {
+        let mut chars = self.chars();
+        let range = range.start.min(chars.len())..range.end.min(chars.len());
+        if range.is_empty() {
+            return Outcome::Ignored;
+        }
+        self.cursor = range.start;
+        chars.drain(range);
+        self.value = chars.into_iter().collect();
+        Outcome::Edited
+    }
+
+    /// The line the cursor is in, as a char range of the text without its line break.
+    fn line(&self) -> Range<usize> {
+        let chars = self.chars();
+        let start = chars[..self.cursor]
+            .iter()
+            .rposition(|&c| c == '\n')
+            .map_or(0, |i| i + 1);
+        let end = chars[self.cursor..]
+            .iter()
+            .position(|&c| c == '\n')
+            .map_or(chars.len(), |i| self.cursor + i);
+        start..end
+    }
+
+    /// Where the word before the cursor starts, past any spaces between it and the cursor.
+    fn word_start(&self) -> usize {
+        let chars = self.chars();
+        let mut start = self.cursor;
+        while start > 0 && chars[start - 1] == ' ' {
+            start -= 1;
+        }
+        while start > 0 && !chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        start
+    }
+
+    /// Move to the row below, or above, at the column moving up and down keeps to, or the row's
+    /// end if it is shorter.
+    fn move_vertically(&mut self, width: usize, down: bool) -> Outcome {
+        let rows = self.rows(width);
+        let (row, column) = self.cursor_at(width);
+        let target = if down {
+            row + 1
+        } else {
+            match row.checked_sub(1) {
+                Some(target) => target,
+                None => return Outcome::Ignored,
+            }
+        };
+        let Some(range) = rows.get(target) else {
+            return Outcome::Ignored;
+        };
+        let goal = *self.goal_column.get_or_insert(column);
+        let chars = self.chars();
+        // A row split at a space ends with it, and the cursor after it is at the next row's start.
+        let split = rows
+            .get(target + 1)
+            .is_some_and(|next| next.start == range.end);
+        let last = if split && range.end > range.start {
+            range.end - 1
+        } else {
+            range.end
+        };
+        let mut cursor = range.start;
+        let mut used = 0;
+        while cursor < last {
+            let next = used + columns(&chars[cursor..cursor + 1]);
+            if next > goal {
+                break;
+            }
+            used = next;
+            cursor += 1;
+        }
+        self.cursor = cursor;
+        Outcome::Moved
+    }
+}
+
+/// The columns `chars` take on the screen.
+fn columns(chars: &[char]) -> usize {
+    chars.iter().map(|c| c.width().unwrap_or(0)).sum()
+}
+
+/// Add to `rows` the rows of the line `line`, a char range of `chars` without a line break, at
+/// `width` columns.
+fn wrap_line(chars: &[char], line: Range<usize>, width: usize, rows: &mut Vec<Range<usize>>) {
+    let mut start = line.start;
+    loop {
+        let mut end = start;
+        let mut used = 0;
+        while end < line.end {
+            let next = used + columns(&chars[end..end + 1]);
+            if next > width {
+                break;
+            }
+            used = next;
+            end += 1;
+        }
+        if end == line.end {
+            rows.push(start..end);
+            return;
+        }
+        let split = if chars[end] == ' ' {
+            end + 1
+        } else {
+            match chars[start..end].iter().rposition(|&c| c == ' ') {
+                Some(space) => start + space + 1,
+                // A word wider than a row; at least one char a row, however narrow.
+                None => end.max(start + 1),
+            }
+        };
+        rows.push(start..split);
+        start = split;
     }
 }
 
