@@ -19,6 +19,9 @@ pub(crate) struct Pr {
     /// The commit `base_ref` is at on GitHub. The PR's diff is taken from where
     /// the PR branched from it, as GitHub takes it.
     pub base_oid: String,
+    /// The commit the PR's branch is at on GitHub, which the lines of its
+    /// review threads are numbered against.
+    pub head_oid: String,
 }
 
 /// The "Viewed" checkbox GitHub shows on each file of a PR. Each reviewer has
@@ -53,10 +56,34 @@ impl Review {
 
 /// The side of a PR's diff a line is on: the old file's, for a removed line,
 /// or the new file's.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Side {
     Old,
     New,
+}
+
+/// A review thread: comments on a line of the PR's diff, and the replies.
+#[derive(Clone, Debug)]
+pub(crate) struct Thread {
+    /// The id GitHub's GraphQL API knows the thread by.
+    pub id: String,
+    pub path: String,
+    /// The line the thread is on, numbered as in the PR's head commit on
+    /// GitHub for the new side and its base for the old. None once the line
+    /// has changed since the thread was started (GitHub calls the thread
+    /// outdated).
+    pub line: Option<(Side, u32)>,
+    pub resolved: bool,
+    pub comments: Vec<Comment>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Comment {
+    /// The author's login: "ghost" for an account since deleted, as GitHub
+    /// shows it.
+    pub author: String,
+    pub body: String,
+    pub url: String,
 }
 
 /// The path GitHub knows a file of `diff` by: its new path, or for a deleted
@@ -96,6 +123,8 @@ pub(crate) trait GitHub {
     fn fetch_base(&self, pr: &Pr) -> Res<Command>;
     /// The checkbox state of each file of the PR, by path.
     fn viewed(&self, pr: &Pr) -> Res<HashMap<String, ViewedState>>;
+    /// The PR's review threads.
+    fn threads(&self, pr: &Pr) -> Res<Vec<Thread>>;
     /// Tick or untick the checkbox of the file at `path`.
     fn set_viewed(&self, pr: &Pr, path: &str, viewed: bool) -> Res<()>;
     /// Open `url` in the browser.
@@ -113,6 +142,20 @@ const VIEWED_QUERY: &str = "query($id: ID!, $endCursor: String) {
       files(first: 100, after: $endCursor) {
         pageInfo { hasNextPage endCursor }
         nodes { path viewerViewedState }
+      }
+    }
+  }
+}";
+
+const THREADS_QUERY: &str = "query($id: ID!, $endCursor: String) {
+  node(id: $id) {
+    ... on PullRequest {
+      reviewThreads(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isResolved path line diffSide
+          comments(first: 100) { nodes { author { login } body url } }
+        }
       }
     }
   }
@@ -154,11 +197,12 @@ impl GitHub for Gh {
             url: String,
             base_ref_name: String,
             base_ref_oid: String,
+            head_ref_oid: String,
         }
 
         let mut args = vec!["pr", "view"];
         args.extend(selector);
-        args.extend(["--json", "id,number,url,baseRefName,baseRefOid"]);
+        args.extend(["--json", "id,number,url,baseRefName,baseRefOid,headRefOid"]);
         let view: View = serde_json::from_str(&self.run(&args)?)
             .map_err(|e| Error::Gh(format!("Couldn't read gh's description of the PR: {e}")))?;
         Ok(Pr {
@@ -167,6 +211,7 @@ impl GitHub for Gh {
             url: view.url,
             base_ref: view.base_ref_name,
             base_oid: view.base_ref_oid,
+            head_oid: view.head_ref_oid,
         })
     }
 
@@ -204,6 +249,20 @@ impl GitHub for Gh {
             ".data.node.files.nodes[] | [.path, .viewerViewedState] | @tsv",
         ])?;
         Ok(parse_viewed(&output))
+    }
+
+    fn threads(&self, pr: &Pr) -> Res<Vec<Thread>> {
+        let output = self.run(&[
+            "api",
+            "graphql",
+            "--paginate",
+            "-f",
+            &format!("query={THREADS_QUERY}"),
+            "-f",
+            &format!("id={}", pr.id),
+        ])?;
+        parse_threads(&output)
+            .map_err(|e| Error::Gh(format!("Couldn't read gh's review threads: {e}")))
     }
 
     fn set_viewed(&self, pr: &Pr, path: &str, viewed: bool) -> Res<()> {
@@ -265,6 +324,86 @@ fn remote_for(slug: &str, remotes: impl IntoIterator<Item = (String, String)>) -
     })
 }
 
+/// The pages of review threads [`Gh::threads`] has gh print: a JSON document
+/// a page.
+fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
+    #[derive(Deserialize)]
+    struct Page {
+        data: Data,
+    }
+    #[derive(Deserialize)]
+    struct Data {
+        node: Node,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Node {
+        review_threads: Nodes<ThreadNode>,
+    }
+    #[derive(Deserialize)]
+    struct Nodes<T> {
+        nodes: Vec<T>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ThreadNode {
+        id: String,
+        is_resolved: bool,
+        path: String,
+        line: Option<u32>,
+        diff_side: String,
+        comments: Nodes<CommentNode>,
+    }
+    #[derive(Deserialize)]
+    struct CommentNode {
+        author: Option<Author>,
+        body: String,
+        url: String,
+    }
+    #[derive(Deserialize)]
+    struct Author {
+        login: String,
+    }
+
+    let mut threads = vec![];
+    for page in serde_json::Deserializer::from_str(output).into_iter::<Page>() {
+        threads.extend(
+            page?
+                .data
+                .node
+                .review_threads
+                .nodes
+                .into_iter()
+                .map(|node| {
+                    let side = if node.diff_side == "LEFT" {
+                        Side::Old
+                    } else {
+                        Side::New
+                    };
+                    Thread {
+                        id: node.id,
+                        path: node.path,
+                        line: node.line.map(|line| (side, line)),
+                        resolved: node.is_resolved,
+                        comments: node
+                            .comments
+                            .nodes
+                            .into_iter()
+                            .map(|comment| Comment {
+                                author: comment
+                                    .author
+                                    .map_or_else(|| "ghost".to_owned(), |author| author.login),
+                                body: comment.body,
+                                url: comment.url,
+                            })
+                            .collect(),
+                    }
+                }),
+        );
+    }
+    Ok(threads)
+}
+
 /// The lines `path<TAB>state` that [`Gh::viewed`] has gh print. A line it
 /// cannot read is left out.
 fn parse_viewed(output: &str) -> HashMap<String, ViewedState> {
@@ -314,6 +453,23 @@ mod tests {
             remote_for("o/r", remotes("https://github.com/xo/r.git")),
             None
         );
+    }
+
+    #[test]
+    fn parse_threads_reads_every_page() {
+        let page = |id: &str, line: &str, side: &str| {
+            format!(
+                r#"{{"data":{{"node":{{"reviewThreads":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{{"id":"{id}","isResolved":false,"path":"a.txt","line":{line},"diffSide":"{side}","comments":{{"nodes":[{{"author":null,"body":"hm","url":"u"}}]}}}}]}}}}}}}}"#
+            )
+        };
+        let output = format!("{}{}", page("t1", "3", "LEFT"), page("t2", "null", "RIGHT"));
+
+        let threads = parse_threads(&output).unwrap();
+
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].line, Some((Side::Old, 3)));
+        assert_eq!(threads[0].comments[0].author, "ghost");
+        assert_eq!(threads[1].line, None);
     }
 
     #[test]

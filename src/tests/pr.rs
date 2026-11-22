@@ -1,12 +1,13 @@
 //! Reviewing a GitHub PR: `O` checks it out and shows its diff, each file with
 //! its Viewed checkbox from GitHub; `x` ticks or unticks it, and `o` opens the
-//! line on GitHub to comment on it.
+//! line on GitHub to comment on it. Review threads are shown under the lines
+//! they are on.
 
 use super::*;
 use crate::{
     app::App,
     error::Error,
-    github::{GitHub, Pr, ViewedState},
+    github::{Comment, GitHub, Pr, Side, Thread, ViewedState},
 };
 use std::{cell::RefCell, collections::HashMap, process::Command, rc::Rc};
 
@@ -18,6 +19,8 @@ const ADDED_TXT_HASH: &str = "005338a261920beed70d358c421c16850b4a5fb5e6ff7e9746
 /// recording what gitu asks of it.
 struct FakeGitHub {
     base_oid: String,
+    head_oid: String,
+    threads: RefCell<Vec<Thread>>,
     viewed: RefCell<HashMap<String, ViewedState>>,
     asked_for: RefCell<Vec<Option<String>>>,
     fetched_base: RefCell<bool>,
@@ -33,6 +36,7 @@ impl GitHub for FakeGitHub {
             url: PR_URL.into(),
             base_ref: "main".into(),
             base_oid: self.base_oid.clone(),
+            head_oid: self.head_oid.clone(),
         })
     }
 
@@ -51,6 +55,10 @@ impl GitHub for FakeGitHub {
 
     fn viewed(&self, _pr: &Pr) -> Result<HashMap<String, ViewedState>, Error> {
         Ok(self.viewed.borrow().clone())
+    }
+
+    fn threads(&self, _pr: &Pr) -> Result<Vec<Thread>, Error> {
+        Ok(self.threads.borrow().clone())
     }
 
     fn set_viewed(&self, _pr: &Pr, path: &str, viewed: bool) -> Result<(), Error> {
@@ -82,6 +90,10 @@ fn setup(ctx: &TestContext) -> Rc<FakeGitHub> {
         base_oid: run(&ctx.dir, &["git", "rev-parse", "main"])
             .trim()
             .to_owned(),
+        head_oid: run(&ctx.dir, &["git", "rev-parse", "feature"])
+            .trim()
+            .to_owned(),
+        threads: RefCell::new(vec![]),
         viewed: RefCell::new(HashMap::from([
             ("lines.txt".to_owned(), ViewedState::Viewed),
             ("added.txt".to_owned(), ViewedState::Unviewed),
@@ -103,6 +115,46 @@ fn head_branch(ctx: &TestContext) -> String {
     run(&ctx.dir, &["git", "branch", "--show-current"])
         .trim()
         .to_owned()
+}
+
+/// A thread on `lines.txt`, its comments given as `(author, body)`.
+fn thread(
+    id: &str,
+    line: Option<(Side, u32)>,
+    resolved: bool,
+    comments: &[(&str, &str)],
+) -> Thread {
+    Thread {
+        id: id.to_owned(),
+        path: "lines.txt".to_owned(),
+        line,
+        resolved,
+        comments: comments
+            .iter()
+            .enumerate()
+            .map(|(i, (author, body))| Comment {
+                author: (*author).to_owned(),
+                body: (*body).to_owned(),
+                url: format!("{PR_URL}#discussion_{id}_{i}"),
+            })
+            .collect(),
+    }
+}
+
+/// The lines of the screen after the one that shows `text`, as many as
+/// `count`.
+fn lines_after(ctx: &TestContext, text: &str, count: usize) -> Vec<String> {
+    let screen = ctx.redact_buffer();
+    let lines: Vec<&str> = screen.lines().collect();
+    let i = lines
+        .iter()
+        .position(|line| line.contains(text))
+        .unwrap_or_else(|| panic!("no line with {text}:\n{screen}"));
+    lines[i + 1..]
+        .iter()
+        .take(count)
+        .map(|line| line.to_string())
+        .collect()
 }
 
 /// The line of the screen that shows `text`.
@@ -302,4 +354,190 @@ fn x_outside_a_pr_says_how_to_open_one() {
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("No PR here: O opens one"), "{screen}");
+}
+
+#[test]
+fn a_thread_is_shown_under_its_added_line() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let after = lines_after(&ctx, "+new", 1);
+    assert!(
+        after[0].contains("alice: Why new?"),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert!(
+        !ctx.redact_buffer().contains("not the PR's head"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_thread_on_the_old_side_is_shown_under_its_removed_line() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::Old, 2)),
+        false,
+        &[("alice", "Why not old?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let after = lines_after(&ctx, "-old", 1);
+    assert!(
+        after[0].contains("alice: Why not old?"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn replies_are_shown_under_the_first_comment() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?"), ("bob", "Because\nreasons")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let after = lines_after(&ctx, "+new", 3);
+    assert!(
+        after[0].contains("alice: Why new?"),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert!(after[1].contains("bob: Because"), "{}", ctx.redact_buffer());
+    assert!(after[2].contains("reasons"), "{}", ctx.redact_buffer());
+}
+
+#[test]
+fn a_resolved_thread_starts_folded() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        true,
+        &[("alice", "Why new?"), ("bob", "Because")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let header = line_with(&ctx, "alice: Why new?");
+    assert!(header.contains("resolved"), "{header}");
+    assert!(
+        !ctx.redact_buffer().contains("bob: Because"),
+        "{}",
+        ctx.redact_buffer()
+    );
+
+    ctx.update(&mut app, keys("/alice<enter><tab>"));
+    assert!(
+        ctx.redact_buffer().contains("bob: Because"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn an_outdated_thread_is_shown_under_its_file() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("alice", "Why new?")])];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let after = lines_after(&ctx, "lines.txt", 1);
+    assert!(
+        after[0].contains("alice: Why new?"),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert!(after[0].contains("outdated"), "{}", ctx.redact_buffer());
+}
+
+#[test]
+fn o_on_a_comment_opens_it_on_github() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?"), ("bob", "Because")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO"));
+
+    ctx.update(&mut app, keys("/alice<enter>o/bob<enter>o"));
+
+    assert_eq!(
+        *github.opened.borrow(),
+        vec![
+            format!("{PR_URL}#discussion_t1_0"),
+            format!("{PR_URL}#discussion_t1_1")
+        ]
+    );
+}
+
+#[test]
+fn refresh_reads_the_threads_again() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO"));
+
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    ctx.update(&mut app, keys("gr"));
+
+    assert!(
+        ctx.redact_buffer().contains("alice: Why new?"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_head_that_is_not_the_prs_on_github_is_warned_of() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let github = Rc::new(FakeGitHub {
+        head_oid: "0".repeat(40),
+        ..Rc::into_inner(github).unwrap()
+    });
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert!(
+        ctx.redact_buffer().contains("not the PR's head on GitHub"),
+        "{}",
+        ctx.redact_buffer()
+    );
 }
