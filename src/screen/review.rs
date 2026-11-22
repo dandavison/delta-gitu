@@ -9,7 +9,10 @@ use crate::{
     style::{Modifier, Style},
 };
 use git2::Repository;
-use std::{collections::HashMap, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// `items`, a PR's diff, under a warning when HEAD is not the commit GitHub
@@ -30,38 +33,42 @@ pub(crate) fn with_threads(
 ) -> Vec<Item> {
     let items = with_comment_counts(items, review, layout.width, options.count);
     let threads = review.threads.borrow();
+    let paths: HashSet<&str> = threads.iter().map(|thread| thread.path.as_str()).collect();
+    // Only the files with threads are indexed, as a big PR's rows are built again and again
+    // while the renderer draws them.
     let mut lines: HashMap<(String, Side, u32), usize> = HashMap::new();
     let mut files: HashMap<String, usize> = HashMap::new();
+    let mut path_of: HashMap<usize, Option<String>> = HashMap::new();
+    let mut hunk_lines: HashMap<(usize, usize), NumberedLines> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
+        let (ItemData::Delta { diff, file_i, .. } | ItemData::HunkLine { diff, file_i, .. }) =
+            &item.data
+        else {
+            continue;
+        };
+        let Some(path) = path_of
+            .entry(*file_i)
+            .or_insert_with(|| {
+                Some(github::file_path(diff, *file_i)).filter(|path| paths.contains(path.as_str()))
+            })
+            .clone()
+        else {
+            continue;
+        };
         match &item.data {
-            ItemData::Delta { diff, file_i, .. } => {
-                files.insert(github::file_path(diff, *file_i), i);
+            ItemData::Delta { .. } => {
+                files.insert(path, i);
             }
             ItemData::HunkLine {
-                diff,
-                file_i,
                 hunk_i,
                 line_indices,
                 ..
             } => {
-                let path = github::file_path(diff, *file_i);
-                let content = diff.hunk_content(*file_i, *hunk_i);
+                let numbered = hunk_lines
+                    .entry((*file_i, *hunk_i))
+                    .or_insert_with(|| numbered_lines(diff, *file_i, *hunk_i));
                 for &line_i in line_indices {
-                    let line = content.lines().nth(line_i).unwrap_or_default();
-                    let old = (
-                        Side::Old,
-                        diff.hunk_line_old_file_num(*file_i, *hunk_i, line_i),
-                    );
-                    let new = (
-                        Side::New,
-                        diff.hunk_line_new_file_num(*file_i, *hunk_i, line_i),
-                    );
-                    let sides = match line.chars().next() {
-                        Some('-') => vec![old],
-                        Some('+') => vec![new],
-                        _ => vec![old, new],
-                    };
-                    for (side, n) in sides {
+                    for &(side, n) in numbered.get(line_i).into_iter().flatten() {
                         lines.insert((path.clone(), side, n), i);
                     }
                 }
@@ -123,6 +130,10 @@ fn with_comment_counts(
     width: usize,
     style: Style,
 ) -> Vec<Item> {
+    // Laying out the diffstat again counts every file's lines, which is not done for nothing.
+    if review.threads.borrow().iter().all(|thread| thread.resolved) {
+        return items;
+    }
     let count = |diff: &crate::git::diff::Diff, file_i: usize| {
         review
             .comment_count(&github::file_path(diff, file_i))
@@ -149,6 +160,34 @@ fn with_comment_counts(
         }
     }
     items
+}
+
+/// Each line of a hunk's content, as the lines of the old and new files it is.
+type NumberedLines = Vec<Vec<(Side, u32)>>;
+
+/// The lines of a hunk each line of its content is, by side: a removed line is a line of the
+/// old file, an added one of the new, and an unchanged one of both. One pass over the hunk.
+fn numbered_lines(diff: &crate::git::diff::Diff, file_i: usize, hunk_i: usize) -> NumberedLines {
+    let header = &diff.file_diffs[file_i].hunks[hunk_i].header;
+    let (mut old, mut new) = (header.old_line_start, header.new_line_start);
+    diff.hunk_content(file_i, hunk_i)
+        .lines()
+        .map(|line| match line.chars().next() {
+            Some('-') => {
+                old += 1;
+                vec![(Side::Old, old - 1)]
+            }
+            Some('+') => {
+                new += 1;
+                vec![(Side::New, new - 1)]
+            }
+            _ => {
+                old += 1;
+                new += 1;
+                vec![(Side::Old, old - 1), (Side::New, new - 1)]
+            }
+        })
+        .collect()
 }
 
 /// Whether HEAD is the commit the PR's branch is at on GitHub.
@@ -202,6 +241,8 @@ pub(crate) struct CommentOptions {
     pub timestamp_format: Option<String>,
     /// An option whose value is not a style, as what to tell the user. Its default is used.
     pub errors: Vec<String>,
+    /// Whether delta draws the diff side by side, which decides the panel a comment goes in.
+    pub side_by_side: bool,
 }
 
 impl CommentOptions {
@@ -240,6 +281,7 @@ impl CommentOptions {
             decoration,
             timestamp_format: values.get(5).cloned().flatten(),
             errors,
+            side_by_side: false,
         }
     }
 }
