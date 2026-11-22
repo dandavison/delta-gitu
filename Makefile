@@ -9,6 +9,12 @@ test:
 test-depend:
 	cargo install cargo-insta || true
 
+# Records each difftastic fixture's difft.json as the difftastic on PATH prints it.
+record-difftastic-fixtures:
+	for dir in src/tests/fixtures/difftastic/*/; do \
+		(cd "$$dir" && DFT_UNSTABLE=yes difft --display=json old.rs new.rs > difft.json) || exit 1; \
+	done
+
 bump-version:
 	next=$$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1 | awk -F. '{print $$1"."$$2"."$$3+1}') && \
 	perl -pi -e 'if (!$$d && s/^version = "[^"]+"/version = "'$$next'"/) { $$d = 1 }' Cargo.toml && \

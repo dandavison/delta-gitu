@@ -1007,6 +1007,42 @@ mod tests {
         ("join-then-change", fixture!("join-then-change")),
     ];
 
+    /// Each fixture's `difft.json` is what the difftastic on `PATH` prints for it, so that the
+    /// tests notice when a difftastic release changes its output. `make
+    /// record-difftastic-fixtures` records them again. Without difftastic installed the test
+    /// checks nothing, unless `GITU_REQUIRE_DIFFTASTIC` is set, as it is in CI.
+    #[test]
+    fn fixtures_are_difftastics_output() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tests/fixtures/difftastic");
+        let required = std::env::var_os("GITU_REQUIRE_DIFFTASTIC").is_some();
+        let mut stale = vec![];
+        for (name, fixture) in FIXTURES.iter().chain(&MORE_FIXTURES) {
+            let output = Command::new("difft")
+                .args(["--display=json", "old.rs", "new.rs"])
+                .current_dir(dir.join(name))
+                .env("DFT_UNSTABLE", "yes")
+                .output();
+            let output = match output {
+                Ok(output) => output,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => return,
+                Err(e) => panic!("difftastic could not be run: {e}"),
+            };
+            assert!(
+                output.status.success(),
+                "{name}: difft exited with {}",
+                output.status
+            );
+            if String::from_utf8(output.stdout).unwrap() != fixture.json {
+                stale.push(*name);
+            }
+        }
+        assert!(
+            stale.is_empty(),
+            "difftastic's output differs from difft.json for {stale:?}: \
+             run make record-difftastic-fixtures"
+        );
+    }
+
     fn shown(fixture: &Fixture) -> Shown {
         view(fixture.old, fixture.new, fixture.json, fixture.git)
             .unwrap_or_else(|| panic!("expected difftastic's view"))

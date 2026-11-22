@@ -33,8 +33,20 @@ jobs:
 
     - run: git --version
     - run: make test-depend
+    # The latest release, not a pinned one, so that a release that changes difftastic's output
+    # fails `fixtures_are_difftastics_output` soon after it is published.
+    - name: Install difftastic
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        mkdir -p ~/.local/bin
+        gh release download -R Wilfred/difftastic -p 'difft-*-x86_64-unknown-linux-gnu.tar.gz' -O - | tar -xz -C ~/.local/bin
+        echo ~/.local/bin >> "$GITHUB_PATH"
+        ~/.local/bin/difft --version
     # Under a virtual X display, so that there is a clipboard to copy to.
     - run: xvfb-run make test
+      env:
+        GITU_REQUIRE_DIFFTASTIC: 1
 
   test:
     strategy:
