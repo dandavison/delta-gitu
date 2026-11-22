@@ -8,6 +8,7 @@ use crate::{
 };
 use git2::Repository;
 use std::{collections::HashMap, rc::Rc};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// `items`, a PR's diff, under a warning when HEAD is not the commit GitHub
 /// numbers the PR's lines against, and with each of the review's threads under the line it
@@ -15,8 +16,14 @@ use std::{collections::HashMap, rc::Rc};
 /// or as its line is outside the diff's hunks, goes under its file's header. A
 /// thread on a file not among the rows is not shown. While the renderer is
 /// still drawing, a thread on a line not yet drawn shows under its file's
-/// header until the line is.
-pub(crate) fn with_threads(items: Vec<Item>, review: &Review, repo: &Repository) -> Vec<Item> {
+/// header until the line is. Comments are wrapped to the width of the panel
+/// of the side their line is on (see [`Layout`]).
+pub(crate) fn with_threads(
+    items: Vec<Item>,
+    review: &Review,
+    repo: &Repository,
+    layout: Layout,
+) -> Vec<Item> {
     let threads = review.threads.borrow();
     let mut lines: HashMap<(String, Side, u32), usize> = HashMap::new();
     let mut files: HashMap<String, usize> = HashMap::new();
@@ -82,7 +89,8 @@ pub(crate) fn with_threads(items: Vec<Item>, review: &Review, repo: &Repository)
         let on_line = !matches!(item.data, ItemData::Delta { .. });
         out.push(item);
         for thread in threads {
-            out.extend(thread_rows(thread, depth, on_line));
+            let side = thread.line.filter(|_| on_line).map(|(side, _)| side);
+            out.extend(thread_rows(thread, depth, on_line, layout.panel(side)));
         }
     }
     out
@@ -111,14 +119,51 @@ fn warning_row() -> Item {
     }
 }
 
-/// The rows of `thread`: its first comment's first line, folding the rest
-/// under it. It says whether the thread is resolved or outdated, and when it
-/// is not `on_line` though it has a line, which line.
-fn thread_rows(thread: &Thread, depth: usize, on_line: bool) -> Vec<Item> {
-    let Some((first, replies)) = thread.comments.split_first() else {
+/// Where a thread's rows go across the screen: from `column`, `width` columns
+/// wide, within the width delta draws the diff at.
+#[derive(Clone, Copy)]
+struct Panel {
+    column: usize,
+    width: usize,
+}
+
+/// The width delta draws the diff at, and whether it draws the old and new
+/// files side by side, each in half of it.
+#[derive(Clone, Copy)]
+pub(crate) struct Layout {
+    pub width: usize,
+    pub side_by_side: bool,
+}
+
+impl Layout {
+    /// Where the rows of a thread on `side` go: in side-by-side, that side's
+    /// panel, and otherwise, or for a thread not on a line, the whole width.
+    fn panel(&self, side: Option<Side>) -> Panel {
+        let half = self.width / 2;
+        match (self.side_by_side, side) {
+            (true, Some(Side::Old)) => Panel {
+                column: 0,
+                width: half,
+            },
+            (true, Some(Side::New)) => Panel {
+                column: half,
+                width: half,
+            },
+            _ => Panel {
+                column: 0,
+                width: self.width,
+            },
+        }
+    }
+}
+
+/// The rows of `thread`, in `panel`: the first row of its first comment,
+/// folding the rest under it. That row says whether the thread is resolved or
+/// outdated, and when it is not `on_line` though it has a line, which line.
+fn thread_rows(thread: &Thread, depth: usize, on_line: bool, panel: Panel) -> Vec<Item> {
+    let Some(first) = thread.comments.first() else {
         return vec![];
     };
-    let mut first_lines = first.body.lines();
     let mut notes = vec![];
     match thread.line {
         None => notes.push("outdated".to_owned()),
@@ -131,43 +176,49 @@ fn thread_rows(thread: &Thread, depth: usize, on_line: bool) -> Vec<Item> {
     if thread.resolved {
         notes.push("resolved".to_owned());
     }
-    let mut header = comment_line(&first.author, first_lines.next().unwrap_or_default());
-    if !notes.is_empty() {
-        header.push((format!(" ({})", notes.join(", ")), dim()));
-    }
+    let notes = (!notes.is_empty()).then(|| format!(" ({})", notes.join(", ")));
 
-    let mut rows = vec![Item {
-        id: hash(("review_thread", &thread.id)),
-        depth,
-        default_collapsed: thread.resolved,
-        data: ItemData::ReviewThread {
-            url: first.url.clone(),
-        },
-        rendered: Some(Rc::new(header)),
-        ..Default::default()
-    }];
-    let row = |id: (usize, usize), url: &str, rendered| Item {
-        id: hash(("review_comment", &thread.id, id)),
-        depth: depth + 1,
-        data: ItemData::ReviewComment {
-            url: url.to_owned(),
-        },
-        rendered: Some(Rc::new(rendered)),
-        ..Default::default()
-    };
-    for (line_i, line) in first_lines.enumerate() {
-        rows.push(row((0, line_i + 1), &first.url, body_line(line)));
-    }
-    for (comment_i, comment) in replies.iter().enumerate() {
-        let mut lines = comment.body.lines();
-        let author_line = comment_line(&comment.author, lines.next().unwrap_or_default());
-        rows.push(row((comment_i + 1, 0), &comment.url, author_line));
-        for (line_i, line) in lines.enumerate() {
-            rows.push(row(
-                (comment_i + 1, line_i + 1),
-                &comment.url,
-                body_line(line),
-            ));
+    let text_width = panel
+        .width
+        .saturating_sub(GUTTER.width())
+        .max(MIN_TEXT_WIDTH);
+    let mut rows = vec![];
+    for (comment_i, comment) in thread.comments.iter().enumerate() {
+        let first_row_width = match (&notes, comment_i) {
+            (Some(notes), 0) => text_width.saturating_sub(notes.width()).max(MIN_TEXT_WIDTH),
+            _ => text_width,
+        };
+        let comment_rows =
+            comment_rows(&comment.author, &comment.body, first_row_width, text_width);
+        for (row_i, mut spans) in comment_rows.into_iter().enumerate() {
+            let is_header = comment_i == 0 && row_i == 0;
+            if is_header && let Some(notes) = &notes {
+                spans.push((notes.clone(), dim()));
+            }
+            let mut rendered = vec![(format!("{}{GUTTER}", " ".repeat(panel.column)), dim())];
+            rendered.extend(spans);
+            rows.push(if is_header {
+                Item {
+                    id: hash(("review_thread", &thread.id)),
+                    depth,
+                    default_collapsed: thread.resolved,
+                    data: ItemData::ReviewThread {
+                        url: first.url.clone(),
+                    },
+                    rendered: Some(Rc::new(rendered)),
+                    ..Default::default()
+                }
+            } else {
+                Item {
+                    id: hash(("review_comment", &thread.id, comment_i, row_i)),
+                    depth: depth + 1,
+                    data: ItemData::ReviewComment {
+                        url: comment.url.clone(),
+                    },
+                    rendered: Some(Rc::new(rendered)),
+                    ..Default::default()
+                }
+            });
         }
     }
     rows
@@ -175,32 +226,90 @@ fn thread_rows(thread: &Thread, depth: usize, on_line: bool) -> Vec<Item> {
 
 const GUTTER: &str = "  │ ";
 
-/// A comment's first line, after its author's login.
-fn comment_line(author: &str, line: &str) -> Vec<(String, Style)> {
-    vec![
-        (GUTTER.to_owned(), dim()),
-        (
-            author.to_owned(),
-            Style {
-                add_modifier: Modifier::BOLD,
-                ..Style::new()
-            },
-        ),
-        (format!(": {line}"), Style::new()),
-    ]
+/// The fewest columns a comment is wrapped to, however narrow its panel.
+const MIN_TEXT_WIDTH: usize = 20;
+
+/// The rows of a comment by `author`, wrapped to `width` columns, the first row
+/// to `first_width`: its author's login, then its body, each row after the
+/// first indented under the login.
+fn comment_rows(
+    author: &str,
+    body: &str,
+    first_width: usize,
+    width: usize,
+) -> Vec<Vec<(String, Style)>> {
+    let mut lines = body.lines();
+    let first_line = format!("{author}: {}", lines.next().unwrap_or_default());
+    let mut wrapped = wrap(&first_line, first_width, width - INDENT.len());
+    for line in lines {
+        wrapped.extend(wrap(line, width - INDENT.len(), width - INDENT.len()));
+    }
+
+    wrapped
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| match (i, row.strip_prefix(author)) {
+            (0, Some(rest)) => vec![
+                (
+                    author.to_owned(),
+                    Style {
+                        add_modifier: Modifier::BOLD,
+                        ..Style::new()
+                    },
+                ),
+                (rest.to_owned(), Style::new()),
+            ],
+            (0, None) => vec![(row, Style::new())],
+            _ => vec![(format!("{INDENT}{row}"), Style::new())],
+        })
+        .collect()
 }
 
-/// A line of a comment after its first, indented under the author's login.
-fn body_line(line: &str) -> Vec<(String, Style)> {
-    vec![
-        (GUTTER.to_owned(), dim()),
-        (format!("  {line}"), Style::new()),
-    ]
+const INDENT: &str = "  ";
+
+/// `text` split into rows at spaces, the first at most `first` columns wide and
+/// the rest at most `rest`. A word wider than a row is split where the row
+/// ends.
+fn wrap(text: &str, first: usize, rest: usize) -> Vec<String> {
+    let mut rows = vec![];
+    let mut row = String::new();
+    let mut room = first;
+    for word in text.split(' ') {
+        if !row.is_empty() && row.width() + 1 + word.width() > room {
+            rows.push(std::mem::take(&mut row));
+            room = rest;
+        }
+        if !row.is_empty() {
+            row.push(' ');
+        }
+        for c in word.chars() {
+            if row.width() + c.width().unwrap_or(0) > room {
+                rows.push(std::mem::take(&mut row));
+                room = rest;
+            }
+            row.push(c);
+        }
+    }
+    rows.push(row);
+    rows
 }
 
 fn dim() -> Style {
     Style {
         add_modifier: Modifier::DIM,
         ..Style::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap;
+
+    #[test]
+    fn wrap_breaks_at_spaces_and_splits_a_word_wider_than_a_row() {
+        assert_eq!(wrap("aa bb cc", 5, 5), ["aa bb", "cc"]);
+        assert_eq!(wrap("aa bb cc", 2, 5), ["aa", "bb cc"]);
+        assert_eq!(wrap("abcdefg", 3, 3), ["abc", "def", "g"]);
+        assert_eq!(wrap("", 3, 3), [""]);
     }
 }

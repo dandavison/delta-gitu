@@ -47,9 +47,9 @@ pub(crate) fn create(
 }
 
 /// Rows of gitu's own added to those built from the output, each time they are
-/// built: given all the rows built so far, it returns them with its own among
-/// them.
-pub(crate) type Decorate = Rc<dyn Fn(Vec<Item>) -> Vec<Item>>;
+/// built: given the rows built so far and what they were rendered with, it
+/// returns them with its own among them.
+pub(crate) type Decorate = Rc<dyn Fn(&RenderParams, Vec<Item>) -> Vec<Item>>;
 
 fn create_decorated(
     config: Arc<Config>,
@@ -71,7 +71,10 @@ fn create_decorated(
                 source.items(&config, &repo, &params).map(Items::from)
             }?;
             Ok(match &decorate {
-                Some(decorate) => items.map(Rc::clone(decorate)),
+                Some(decorate) => {
+                    let decorate = Rc::clone(decorate);
+                    items.map(Rc::new(move |items| decorate(&params, items)))
+                }
                 None => items,
             })
         }),

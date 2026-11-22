@@ -78,6 +78,7 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
     });
 
     let (threads_review, repo) = (Rc::clone(&review), Rc::clone(&app.state.repo));
+    let config = Arc::clone(&app.state.config);
     let mut screen = screen::pager::live_decorated(
         Arc::clone(&app.state.config),
         Rc::clone(&app.state.repo),
@@ -87,7 +88,19 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
             "diff".into(),
             format!("{}...HEAD", review.pr.base_oid),
         ],
-        Rc::new(move |items| screen::review::with_threads(items, &threads_review, &repo)),
+        Rc::new(move |params, items| {
+            let dir = repo.workdir().unwrap_or(repo.path());
+            let enabled = config.general.diff_renderer.enabled_features.get(dir);
+            let layout = screen::review::Layout {
+                width: params.width(),
+                side_by_side: super::editor::is_enabled_in(
+                    &params.features,
+                    "side-by-side",
+                    &enabled,
+                ),
+            };
+            screen::review::with_threads(items, &threads_review, &repo, layout)
+        }),
     )?;
     screen.review = Some(review);
     app.state.screens.push(screen);
