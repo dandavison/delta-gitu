@@ -21,7 +21,11 @@ use figment::{
     value::{Dict, Empty, Value},
 };
 
-use crate::{Res, error::Error, style::Color};
+use crate::{
+    Res,
+    error::Error,
+    style::{Color, Modifier, Style},
+};
 
 pub(crate) const SECTION: &str = "delta-tui";
 
@@ -198,18 +202,7 @@ fn parse_style(value: &Option<String>, name: &str) -> Res<Dict> {
     let mut colors = vec![];
     let mut mods = vec![];
     for word in value.split_whitespace() {
-        let attribute = match word.to_lowercase().as_str() {
-            "bold" => Some("BOLD"),
-            "dim" => Some("DIM"),
-            "italic" => Some("ITALIC"),
-            "ul" | "underline" => Some("UNDERLINED"),
-            "blink" => Some("SLOW_BLINK"),
-            "reverse" => Some("REVERSED"),
-            "hidden" => Some("HIDDEN"),
-            "strike" => Some("CROSSED_OUT"),
-            _ => None,
-        };
-        if let Some(attribute) = attribute {
+        if let Some((attribute, _)) = attribute(word) {
             mods.push(attribute);
         } else if word.eq_ignore_ascii_case("normal") {
             colors.push(Value::from(Empty::None));
@@ -234,6 +227,83 @@ fn parse_style(value: &Option<String>, name: &str) -> Res<Dict> {
     Ok(style)
 }
 
+/// The attribute a word of a delta style is, by the name gitu's config gives it and as a
+/// modifier.
+fn attribute(word: &str) -> Option<(&'static str, Modifier)> {
+    Some(match word.to_lowercase().as_str() {
+        "bold" => ("BOLD", Modifier::BOLD),
+        "dim" => ("DIM", Modifier::DIM),
+        "italic" => ("ITALIC", Modifier::ITALIC),
+        "ul" | "underline" => ("UNDERLINED", Modifier::UNDERLINED),
+        "blink" => ("SLOW_BLINK", Modifier::SLOW_BLINK),
+        "reverse" => ("REVERSED", Modifier::REVERSED),
+        "hidden" => ("HIDDEN", Modifier::HIDDEN),
+        "strike" => ("CROSSED_OUT", Modifier::CROSSED_OUT),
+        _ => return None,
+    })
+}
+
+/// A delta decoration style: a style, and which of delta's decorations it asks for.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct DecorationStyle {
+    pub style: Style,
+    pub boxed: bool,
+    pub underline: bool,
+    pub overline: bool,
+}
+
+/// `value`, a delta style, as gitu draws with it: attributes, and a foreground then a
+/// background color, where `normal` is no color. With `decoration`, `box`, `ul` and `ol` are
+/// delta's decorations rather than attributes. delta's `auto`, `raw`, `syntax` and `omit` mean
+/// nothing for what gitu draws, and are refused with the other words it does not know.
+pub(crate) fn parse_delta_style(value: &str, decoration: bool) -> Result<DecorationStyle, String> {
+    let mut parsed = DecorationStyle::default();
+    let mut colors = vec![];
+    for word in value.split_whitespace() {
+        let lower = word.to_lowercase();
+        if decoration && lower == "box" {
+            parsed.boxed = true;
+        } else if decoration && lower == "ul" {
+            parsed.underline = true;
+        } else if decoration && lower == "ol" {
+            parsed.overline = true;
+        } else if let Some((_, modifier)) = attribute(word) {
+            parsed.style.add_modifier |= modifier;
+        } else if lower == "normal" {
+            colors.push(None);
+        } else if let Ok(color) = Color::from_str(word) {
+            colors.push(Some(color));
+        } else {
+            return Err(format!("'{value}' is not a style: unknown word '{word}'"));
+        }
+    }
+    if colors.len() > 2 {
+        return Err(format!("'{value}' is not a style: more than two colors"));
+    }
+    let mut colors = colors.into_iter();
+    parsed.style.fg = colors.next().flatten();
+    parsed.style.bg = colors.next().flatten();
+    Ok(parsed)
+}
+
 fn config_error(message: &str) -> Error {
     Error::Config(Box::new(figment::Error::from(message.to_owned())))
+}
+
+#[cfg(test)]
+mod delta_style_tests {
+    use super::*;
+
+    #[test]
+    fn a_delta_style_has_colors_attributes_and_decorations() {
+        let parsed = parse_delta_style("bold blue box ul", true).unwrap();
+        assert_eq!(parsed.style.fg, Some(Color::Blue));
+        assert_eq!(parsed.style.add_modifier, Modifier::BOLD);
+        assert!(parsed.boxed && parsed.underline && !parsed.overline);
+        let parsed = parse_delta_style("ul normal red", false).unwrap();
+        assert_eq!(parsed.style.add_modifier, Modifier::UNDERLINED);
+        assert_eq!((parsed.style.fg, parsed.style.bg), (None, Some(Color::Red)));
+        assert!(parse_delta_style("box", false).is_err());
+        assert!(parse_delta_style("syntax", false).is_err());
+    }
 }

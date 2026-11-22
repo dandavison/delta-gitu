@@ -149,6 +149,22 @@ impl Diff {
         hunk.header.new_line_start + non_minus_before
     }
 
+    pub(crate) fn hunk_line_old_file_num(
+        &self,
+        file_i: usize,
+        hunk_i: usize,
+        line_i: usize,
+    ) -> u32 {
+        let hunk = &self.file_diffs[file_i].hunks[hunk_i];
+        let non_plus_before = self
+            .hunk_content(file_i, hunk_i)
+            .lines()
+            .take(line_i)
+            .filter(|l| l.starts_with(' ') || l.starts_with('-'))
+            .count() as u32;
+        hunk.header.old_line_start + non_plus_before
+    }
+
     pub(crate) fn file_line_of_first_diff(&self, file_i: usize, hunk_i: usize) -> usize {
         let hunk = &self.file_diffs[file_i].hunks[hunk_i];
         let line = hunk.header.new_line_start as usize;

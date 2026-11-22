@@ -13,15 +13,15 @@ expression: ctx.redact_buffer()
  ?                Key bindings            T                Themes           l Log                                                                     |
  alt+h/alt+left   Parent section          U                Diff context     m Merge                                                                   |
  alt+j/alt+down   Next section            Y                Show Refs        M Remote                                                                  |
- alt+k/alt+up     Prev section                                              P Push                                                                    |
- ctrl+d           Scroll half page down                                     r Rebase                                                                  |
- ctrl+e           Scroll view down                                          V Revert                                                                  |
- ctrl+j/ctrl+down Down                                                      X Reset                                                                   |
- ctrl+k/ctrl+up   Up                                                        z Stash                                                                   |
- ctrl+u           Scroll half page up                                                                                                                 |
- ctrl+y           Scroll view up                                            Hotkeys                                                                   |
- ctrl+z           Suspend                                                   x side-by-side                                                            |
- G                Bottom                                                                                                                              |
+ alt+k/alt+up     Prev section                                              O PR                                                                      |
+ ctrl+d           Scroll half page down                                     P Push                                                                    |
+ ctrl+e           Scroll view down                                          r Rebase                                                                  |
+ ctrl+j/ctrl+down Down                                                      V Revert                                                                  |
+ ctrl+k/ctrl+up   Up                                                        X Reset                                                                   |
+ ctrl+u           Scroll half page up                                       z Stash                                                                   |
+ ctrl+y           Scroll view up                                                                                                                      |
+ ctrl+z           Suspend                                                   Hotkeys                                                                   |
+ G                Bottom                                                    e side-by-side                                                            |
  g+g              Top                                                                                                                                 |
  g+r              Refresh                                                                                                                             |
  g+s              Status                                                                                                                              |
@@ -32,4 +32,4 @@ expression: ctx.redact_buffer()
  n                Next match                                                                                                                          |
  N                Previous match                                                                                                                      |
  pagedown/space   Scroll page down                                                                                                                    |
-styles_hash: cdb3341191ad2904
+styles_hash: 797e7a8cb1e39eb5

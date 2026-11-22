@@ -112,7 +112,10 @@ impl OpTrait for Suspend {
 pub(crate) struct Refresh;
 impl OpTrait for Refresh {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
-        Some(Rc::new(|app, _term| app.update_screens()))
+        Some(Rc::new(|app, _term| {
+            super::pr::reread_review(app)?;
+            app.update_screens()
+        }))
     }
 
     fn display(&self, _state: &State) -> String {
@@ -729,7 +732,12 @@ pub(crate) fn toggle_feature(app: &mut App, feature: &str) -> Res<()> {
 /// effect is delta's to decide, from the rest of the user's configuration, such
 /// as a minimum width.
 pub(crate) fn is_enabled(state: &State, feature: &str, enabled: &[String]) -> bool {
-    let held = |entry: &str| state.features.iter().any(|held| held == entry);
+    is_enabled_in(&state.features, feature, enabled)
+}
+
+/// [`is_enabled`], with the features chosen in-session given as `features`.
+pub(crate) fn is_enabled_in(features: &[String], feature: &str, enabled: &[String]) -> bool {
+    let held = |entry: &str| features.iter().any(|held| held == entry);
     held(feature) || (is_enabled_by_config(feature, enabled) && !held(&format!("-{feature}")))
 }
 

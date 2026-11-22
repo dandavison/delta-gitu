@@ -22,6 +22,7 @@ pub(crate) mod editor;
 pub(crate) mod fetch;
 pub(crate) mod log;
 pub(crate) mod merge;
+pub(crate) mod pr;
 pub(crate) mod pull;
 pub(crate) mod push;
 pub(crate) mod rebase;
@@ -78,6 +79,10 @@ pub(crate) enum Op {
     PushToPushRemote,
     PushToUpstream,
     PushToElsewhere,
+    PrCurrent,
+    PrOther,
+    ToggleViewed,
+    ShowOnGithub,
     RebaseAbort,
     RebaseContinue,
     RebaseElsewhere,
@@ -217,6 +222,10 @@ impl Op {
             Op::PushToPushRemote => "Push to the push remote",
             Op::PushToUpstream => "Push to the upstream",
             Op::PushToElsewhere => "Push to a branch you choose",
+            Op::PrCurrent => "Check out the current branch's GitHub PR and review it",
+            Op::PrOther => "Check out a GitHub PR you choose by number or URL and review it",
+            Op::ToggleViewed => "Tick or untick the PR file's Viewed checkbox on GitHub",
+            Op::ShowOnGithub => "Open the PR file, hunk, line or comment on GitHub, to comment there",
             Op::RebaseAbort => "Abort the rebase",
             Op::RebaseContinue => "Continue the rebase",
             Op::RebaseElsewhere => "Rebase onto a branch or commit you choose",
@@ -345,6 +354,8 @@ impl Op {
             | Op::PushToPushRemote
             | Op::PushToUpstream
             | Op::PushToElsewhere
+            | Op::PrCurrent
+            | Op::PrOther
             | Op::RebaseAbort
             | Op::RebaseContinue
             | Op::RebaseElsewhere
@@ -438,6 +449,10 @@ impl Op {
             Op::PushToPushRemote => Box::new(push::PushToPushRemote),
             Op::PushToUpstream => Box::new(push::PushToUpstream),
             Op::PushToElsewhere => Box::new(push::PushToElsewhere),
+            Op::PrCurrent => Box::new(pr::PrCurrent),
+            Op::PrOther => Box::new(pr::PrOther),
+            Op::ToggleViewed => Box::new(pr::ToggleViewed),
+            Op::ShowOnGithub => Box::new(pr::ShowOnGithub),
             Op::RebaseAbort => Box::new(rebase::RebaseAbort),
             Op::RebaseContinue => Box::new(rebase::RebaseContinue),
             Op::RebaseElsewhere => Box::new(rebase::RebaseElsewhere),
@@ -515,6 +530,7 @@ impl Display for Menu {
             Menu::Remote => "Remote",
             Menu::Pull => "Pull",
             Menu::Push => "Push",
+            Menu::Pr => "PR",
             Menu::Rebase => "Rebase",
             Menu::RebaseTodo => "Rebase todo",
             Menu::Reset => "Reset",

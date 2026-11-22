@@ -74,6 +74,16 @@ pub(crate) enum ItemData {
         commit_hash: String,
         file_path: String,
     },
+    /// The first row of a PR's review thread, the comments under it, and the
+    /// first comment's page on GitHub.
+    ReviewThread {
+        url: String,
+    },
+    /// A row of a comment in a PR's review thread, and the comment's page on
+    /// GitHub.
+    ReviewComment {
+        url: String,
+    },
 }
 
 impl ItemData {
@@ -98,6 +108,7 @@ impl ItemData {
             ItemData::Header(_) => "Section",
             ItemData::BranchStatus(..) => "Branch",
             ItemData::Error(_) => "Error",
+            ItemData::ReviewThread { .. } | ItemData::ReviewComment { .. } => "Comment",
         }
     }
 
@@ -117,6 +128,7 @@ impl ItemData {
                 // rows a rendered log gives it.
                 | ItemData::Commit { .. }
                 | ItemData::RebaseTodo { .. }
+                | ItemData::ReviewThread { .. }
         )
     }
 

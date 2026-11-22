@@ -182,11 +182,11 @@ mod tests {
     fn keys_go_in_the_global_git_config_by_default() {
         let repo = Repo::new("");
 
-        repo.set_feature_keys(&keys(&[("side-by-side", 'x')]));
+        repo.set_feature_keys(&keys(&[("side-by-side", 'e')]));
 
         assert_eq!(
             repo.feature_keys("global.gitconfig"),
-            [("side-by-side".into(), 'x')]
+            [("side-by-side".into(), 'e')]
         );
     }
 
@@ -201,7 +201,7 @@ mod tests {
         )
         .unwrap();
 
-        repo.set_feature_keys(&keys(&[("side-by-side", 'x')]));
+        repo.set_feature_keys(&keys(&[("side-by-side", 'e')]));
 
         assert_eq!(
             repo.read("global.gitconfig"),
@@ -209,7 +209,7 @@ mod tests {
         );
         assert_eq!(
             repo.feature_keys("tui.gitconfig"),
-            [("side-by-side".into(), 'x')]
+            [("side-by-side".into(), 'e')]
         );
     }
 
@@ -224,13 +224,13 @@ mod tests {
                     \tline-numbers = w  # mine\n";
         let repo = Repo::new(mine);
 
-        repo.set_feature_keys(&keys(&[("line-numbers", 'w'), ("side-by-side", 'x')]));
+        repo.set_feature_keys(&keys(&[("line-numbers", 'w'), ("side-by-side", 'e')]));
 
         let written = repo.read("global.gitconfig");
         assert!(written.starts_with(mine), "{written}");
         assert_eq!(
             repo.feature_keys("global.gitconfig"),
-            [("line-numbers".into(), 'w'), ("side-by-side".into(), 'x')]
+            [("line-numbers".into(), 'w'), ("side-by-side".into(), 'e')]
         );
     }
 
@@ -238,7 +238,7 @@ mod tests {
     fn a_feature_left_out_loses_its_key() {
         let repo = Repo::new("");
 
-        repo.set_feature_keys(&keys(&[("side-by-side", 'x'), ("line-numbers", 'w')]));
+        repo.set_feature_keys(&keys(&[("side-by-side", 'e'), ("line-numbers", 'w')]));
         repo.set_feature_keys(&keys(&[("line-numbers", 'w')]));
 
         assert_eq!(
@@ -251,12 +251,12 @@ mod tests {
     fn a_key_moves_to_the_feature_it_is_set_for() {
         let repo = Repo::new("");
 
-        repo.set_feature_keys(&keys(&[("side-by-side", 'x'), ("line-numbers", 'w')]));
-        repo.set_feature_keys(&keys(&[("line-numbers", 'x')]));
+        repo.set_feature_keys(&keys(&[("side-by-side", 'e'), ("line-numbers", 'w')]));
+        repo.set_feature_keys(&keys(&[("line-numbers", 'e')]));
 
         assert_eq!(
             repo.feature_keys("global.gitconfig"),
-            [("line-numbers".into(), 'x')]
+            [("line-numbers".into(), 'e')]
         );
     }
 
@@ -273,7 +273,7 @@ mod tests {
         std::os::unix::fs::symlink(repo.path("dotfiles.gitconfig"), repo.path("tui.gitconfig"))
             .unwrap();
 
-        repo.set_feature_keys(&keys(&[("side-by-side", 'x')]));
+        repo.set_feature_keys(&keys(&[("side-by-side", 'e')]));
 
         assert!(
             fs::symlink_metadata(repo.path("tui.gitconfig"))
@@ -282,7 +282,7 @@ mod tests {
         );
         assert_eq!(
             repo.feature_keys("dotfiles.gitconfig"),
-            [("side-by-side".into(), 'x')]
+            [("side-by-side".into(), 'e')]
         );
     }
 }

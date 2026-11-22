@@ -28,6 +28,7 @@ pub(crate) mod bindings;
 pub(crate) mod blame;
 pub(crate) mod pager;
 pub(crate) mod rebase_todo;
+pub(crate) mod review;
 pub(crate) mod show_refs;
 pub(crate) mod show_stash;
 pub(crate) mod status;
@@ -216,6 +217,20 @@ fn shown_rows(items: &[Item]) -> usize {
         .count()
 }
 
+impl Items {
+    /// These items and those to come later, each passed through `f`.
+    pub(crate) fn map(self, f: Rc<dyn Fn(Vec<Item>) -> Vec<Item>>) -> Self {
+        let Items { now, later } = self;
+        Items {
+            now: f(now),
+            later: later.map(|mut later| {
+                Box::new(move || later().map(|(items, done)| (items.map(|items| f(items)), done)))
+                    as Later
+            }),
+        }
+    }
+}
+
 impl From<Vec<Item>> for Items {
     fn from(now: Vec<Item>) -> Self {
         Self { now, later: None }
@@ -281,6 +296,9 @@ pub(crate) struct Screen {
     /// does not add to it.
     unfolded: HashSet<ItemId>,
     search: Option<Search>,
+    /// The GitHub PR this screen shows the diff of, whose files are drawn with
+    /// their Viewed checkboxes.
+    pub(crate) review: Option<Rc<crate::github::Review>>,
 }
 
 impl Screen {
@@ -335,6 +353,7 @@ impl Screen {
             seen: HashSet::new(),
             unfolded: HashSet::new(),
             search: None,
+            review: None,
         };
 
         let Items { now, later } = (screen.refresh_items)(screen.params())?;
@@ -353,8 +372,12 @@ impl Screen {
     }
 
     fn params(&self) -> RenderParams {
+        let prefix = self
+            .review
+            .as_ref()
+            .map_or(0, |_| crate::github::FILE_PREFIX_WIDTH);
         RenderParams {
-            size: self.size,
+            size: (self.size.0.saturating_sub(prefix), self.size.1),
             features: Rc::clone(&self.features),
             context: self.context.clone(),
             difftastic: self.difftastic,
@@ -1930,6 +1953,12 @@ fn layout_item<'a>(layout: &mut UiTree<'a>, screen: &'a Screen, hide_cursor: boo
         layout.row(opts(), |layout| layout_span(layout, gutter_char));
 
         let item = &screen.items[line.item_index];
+        if let (Some(review), ItemData::Delta { diff, file_i, .. }) = (&screen.review, &item.data) {
+            let path = crate::github::file_path(diff, *file_i);
+            layout.row(opts(), |layout| {
+                layout_span(layout, (review.checkbox(&path).into(), bg));
+            });
+        }
         if let Some(row) = screen.standing_in_row(item) {
             ui::item::layout_rendered(layout, row, bg);
             return;

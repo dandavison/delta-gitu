@@ -81,6 +81,11 @@ pub enum Error {
     EditedCommandWrites(String),
     GitRefusedTheCommand(String),
     NotATerminal,
+    /// gh failed, or what it printed could not be read: what went wrong.
+    Gh(String),
+    PrCheckoutDirty,
+    /// No remote is the repository a PR is on, `{owner}/{repo}`.
+    NoRemoteForPr(String),
 }
 
 impl std::error::Error for Error {}
@@ -234,6 +239,13 @@ impl Display for Error {
                 "delta --tui needs a terminal to draw in. \
                  To write a diff to a file or a pipe, use delta without --tui",
             ),
+            Error::Gh(message) => f.write_str(message),
+            Error::PrCheckoutDirty => {
+                f.write_str("Cannot check out PR: working tree has uncommitted changes")
+            }
+            Error::NoRemoteForPr(repo) => {
+                write!(f, "Cannot fetch the PR's base: no remote is {repo}")
+            }
         }
     }
 }

@@ -183,28 +183,61 @@ fn with_unplaced_rows_reported(
 /// not, in place of the renderer's header, and the diff followed by the
 /// diffstat's summary if `summarised`. The lines are laid out as git lays out
 /// `--stat` in `width` columns.
-pub(crate) fn headed_by_counted_stat(
-    mut items: Vec<Item>,
+/// Lay out again the files' lines of the diffstat that [`headed_by_counted_stat`] gave `items`,
+/// each file's name with `label` of it, if any, at the end of the names' column. Items without
+/// them are left as they are.
+pub(crate) fn label_stat_rows(
+    items: &mut [Item],
     width: usize,
-    summarised: bool,
-) -> Vec<Item> {
+    label: impl Fn(&Diff, usize) -> Option<(String, Style)>,
+) {
+    let headed_by_stat = items
+        .iter()
+        .any(|item| matches!(item.data, ItemData::Delta { .. }) && item.header.is_some());
+    if headed_by_stat {
+        set_stat_rows(items, width, label);
+    }
+}
+
+/// Give each file of `items` its line of the diffstat, as its header and its folded row, its
+/// name with `label` of it, if any, at the end of the names' column. Returns the files' stats, or `None` if there are no
+/// files.
+fn set_stat_rows(
+    items: &mut [Item],
+    width: usize,
+    label: impl Fn(&Diff, usize) -> Option<(String, Style)>,
+) -> Option<Vec<(usize, FileStat)>> {
     let stats: Vec<(usize, FileStat)> = items
         .iter()
         .enumerate()
         .filter_map(|(item_i, item)| match &item.data {
-            ItemData::Delta { diff, file_i, .. } => Some((item_i, FileStat::of(diff, *file_i))),
+            ItemData::Delta { diff, file_i, .. } => Some((
+                item_i,
+                FileStat {
+                    label: label(diff, *file_i),
+                    ..FileStat::of(diff, *file_i)
+                },
+            )),
             _ => None,
         })
         .collect();
-    let Some(layout) = StatLayout::of(stats.iter().map(|(_, stat)| stat), width) else {
-        return items;
-    };
-
+    let layout = StatLayout::of(stats.iter().map(|(_, stat)| stat), width)?;
     for (item_i, stat) in &stats {
         let row = Some(Rc::new(layout.row(stat)));
         items[*item_i].header = row.clone();
         items[*item_i].folded = row;
     }
+    Some(stats)
+}
+
+pub(crate) fn headed_by_counted_stat(
+    mut items: Vec<Item>,
+    width: usize,
+    summarised: bool,
+) -> Vec<Item> {
+    let Some(stats) = set_stat_rows(&mut items, width, |_, _| None) else {
+        return items;
+    };
     if summarised {
         let summary = stat_summary(stats.iter().map(|(_, stat)| stat));
         // At the files' depth, so that it folds away with what they are under.
@@ -221,6 +254,8 @@ pub(crate) fn headed_by_counted_stat(
 
 struct FileStat {
     name: String,
+    /// What is drawn at the end of the name's column, after a space.
+    label: Option<(String, Style)>,
     added: usize,
     removed: usize,
 }
@@ -241,6 +276,7 @@ impl FileStat {
         };
         Self {
             name,
+            label: None,
             added: lines().filter(|line| line.starts_with('+')).count(),
             removed: lines().filter(|line| line.starts_with('-')).count(),
         }
@@ -248,6 +284,13 @@ impl FileStat {
 
     fn changed(&self) -> usize {
         self.added + self.removed
+    }
+
+    /// The columns the label takes after the name, with the space before it.
+    fn label_width(&self) -> usize {
+        self.label
+            .as_ref()
+            .map_or(0, |(label, _)| 1 + label.chars().count())
     }
 }
 
@@ -265,7 +308,9 @@ struct StatLayout {
 impl StatLayout {
     fn of<'a>(stats: impl Iterator<Item = &'a FileStat> + Clone, width: usize) -> Option<Self> {
         let largest = stats.clone().map(FileStat::changed).max()?;
-        let longest = stats.map(|stat| stat.name.chars().count()).max()?;
+        let longest = stats
+            .map(|stat| stat.name.chars().count() + stat.label_width())
+            .max()?;
         let count_width = largest.to_string().len();
         let (width, fixed) = (width as isize, count_width as isize + 6);
         let (mut name_width, mut bar_width) = (longest as isize, largest as isize);
@@ -293,20 +338,30 @@ impl StatLayout {
             style.fg = Some(color);
             (symbol.repeat(count), style)
         };
-        vec![
+        let label_width = stat.label_width();
+        let name = shortened(&stat.name, self.name_width.saturating_sub(label_width));
+        let padding = self
+            .name_width
+            .saturating_sub(name.chars().count() + label_width);
+        // The label is right-aligned in the names' column, against the `|`.
+        let mut row = vec![(format!(" {name}{}", " ".repeat(padding)), Style::new())];
+        if let Some((label, style)) = &stat.label {
+            row.push((" ".to_owned(), Style::new()));
+            row.push((label.clone(), *style));
+        }
+        row.extend([
             (
                 format!(
-                    " {:<name_width$} | {changed:>count_width$}{}",
-                    shortened(&stat.name, self.name_width),
+                    " | {changed:>count_width$}{}",
                     if changed > 0 { " " } else { "" },
-                    name_width = self.name_width,
                     count_width = self.count_width,
                 ),
                 Style::new(),
             ),
             mark("+", added, Color::Green),
             mark("-", removed, Color::Red),
-        ]
+        ]);
+        row
     }
 
     /// How many `+` and `-` marks a file's bar has: one per changed line, or

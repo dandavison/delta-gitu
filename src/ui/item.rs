@@ -231,6 +231,8 @@ pub(crate) fn layout_item<'a>(
         ItemData::Error(err) => {
             layout_span(layout, (err.as_str().into(), base));
         }
+        // Drawn from their `rendered` rows, which they always have.
+        ItemData::ReviewThread { .. } | ItemData::ReviewComment { .. } => {}
         ItemData::BlameHeader {
             short_hash,
             summary,

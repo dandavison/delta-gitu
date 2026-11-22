@@ -12,6 +12,7 @@ mod difftastic;
 pub mod error;
 mod file_watcher;
 mod git;
+mod github;
 mod gitu_diff;
 mod item_data;
 mod items;

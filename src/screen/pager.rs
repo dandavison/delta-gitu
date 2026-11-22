@@ -43,6 +43,21 @@ pub(crate) fn create(
     params: RenderParams,
     paged: Paged,
 ) -> Res<Screen> {
+    create_decorated(config, repo, params, paged, None)
+}
+
+/// Rows of gitu's own added to those built from the output, each time they are
+/// built: given the rows built so far and what they were rendered with, it
+/// returns them with its own among them.
+pub(crate) type Decorate = Rc<dyn Fn(&RenderParams, Vec<Item>) -> Vec<Item>>;
+
+fn create_decorated(
+    config: Arc<Config>,
+    repo: Rc<Repository>,
+    params: RenderParams,
+    paged: Paged,
+    decorate: Option<Decorate>,
+) -> Res<Screen> {
     let source = Source::of(paged, &config.general.hide);
     let git_command = source.git_command();
 
@@ -50,11 +65,18 @@ pub(crate) fn create(
         Arc::clone(&config),
         params,
         Box::new(move |params: RenderParams| {
-            if params.streaming {
+            let items = if params.streaming {
                 source.first_items(&config, &repo, &params)
             } else {
                 source.items(&config, &repo, &params).map(Items::from)
-            }
+            }?;
+            Ok(match &decorate {
+                Some(decorate) => {
+                    let decorate = Rc::clone(decorate);
+                    items.map(Rc::new(move |items| decorate(&params, items)))
+                }
+                None => items,
+            })
         }),
     )?;
     screen.git_command = git_command;
@@ -120,6 +142,29 @@ pub(crate) fn live(
     git_argv: Vec<String>,
 ) -> Res<Screen> {
     live_in(config, repo, params, git_argv, String::new())
+}
+
+/// [`live`], with `decorate` adding rows of gitu's own each time the rows are
+/// built.
+pub(crate) fn live_decorated(
+    config: Arc<Config>,
+    repo: Rc<Repository>,
+    params: RenderParams,
+    git_argv: Vec<String>,
+    decorate: Decorate,
+) -> Res<Screen> {
+    create_decorated(
+        config,
+        repo,
+        params,
+        Paged {
+            text: String::new(),
+            git_argv: Some(git_argv),
+            prefix: String::new(),
+            truncated: false,
+        },
+        Some(decorate),
+    )
 }
 
 /// [`live`], for a command run in `prefix` (see [`GitCommand::prefix`]).
