@@ -480,7 +480,7 @@ fn timestamp(comment: &github::Comment, options: &CommentOptions) -> String {
 }
 
 /// The rows of `comment`, each `width` columns wide: its author's login and when it was made,
-/// with `notes`, then its body wrapped to the width. All of it is drawn over the comment style,
+/// which links to the comment on GitHub, with `notes`, then its body wrapped to the width. All of it is drawn over the comment style,
 /// so that its background fills the rows.
 fn comment_rows(
     comment: &github::Comment,
@@ -490,17 +490,22 @@ fn comment_rows(
 ) -> Vec<Row> {
     let text = options.text;
     let padded = |mut row: Row| -> Row {
-        let used: usize = row.iter().map(|(span, _)| span.width()).sum();
+        let used: usize = row
+            .iter()
+            .map(|(span, _)| crate::ui::display_text(span).width())
+            .sum();
         row.push((" ".repeat(width.saturating_sub(used)), text));
         row
     };
     let mut header = vec![
         (comment.author.clone(), text.patch(options.author)),
         (" ".to_owned(), text),
+        ("[".to_owned(), text.patch(options.timestamp)),
         (
-            format!("[{}]", timestamp(comment, options)),
+            crate::ui::osc8_hyperlink(&timestamp(comment, options), &comment.url),
             text.patch(options.timestamp),
         ),
+        ("]".to_owned(), text.patch(options.timestamp)),
     ];
     if let Some(notes) = notes {
         header.push((" ".to_owned(), text));
