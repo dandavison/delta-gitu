@@ -977,7 +977,7 @@ mod tests {
     ];
 
     /// Changes a view could misrepresent, beside those above.
-    const MORE_FIXTURES: [(&str, Fixture); 11] = [
+    const MORE_FIXTURES: [(&str, Fixture); 12] = [
         ("optional-field", fixture!("optional-field")),
         ("remove-from-line", fixture!("remove-from-line")),
         ("delete-line", fixture!("delete-line")),
@@ -989,6 +989,7 @@ mod tests {
         ("multibyte", fixture!("multibyte")),
         ("tabs", fixture!("tabs")),
         ("crlf", fixture!("crlf")),
+        ("join-then-change", fixture!("join-then-change")),
     ];
 
     fn shown(fixture: &Fixture) -> Shown {
@@ -1397,6 +1398,25 @@ mod tests {
 -.    let ⟦x⟧ = add(
 +.    let ⟦y⟧ = add(a, b);
 @@ -6 +3 @@
+ }
+"
+        );
+    }
+
+    /// A hunk header after a line that is not drawn counts the lines of each version under it, as
+    /// delta, drawing a hunk side by side only if it removes and adds lines, reads that many.
+    #[test]
+    fn a_hunk_after_a_line_not_drawn_counts_its_lines() {
+        let shown = shown(&MORE_FIXTURES[11].1);
+        assert_eq!(
+            legible(&shown.text),
+            "@@ -1,7 +1,4 @@
+ fn f() {
+-.    let ⟦x⟧ = add(
++.    let ⟦y⟧ = add(a, b);
+@@ -6,2 +3,2 @@
+-.    g(⟦x⟧);
++.    g(⟦y⟧);
  }
 "
         );
