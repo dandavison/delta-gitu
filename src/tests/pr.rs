@@ -1043,3 +1043,26 @@ fn a_files_comment_count_is_drawn_in_the_comment_count_style() {
         crate::style::Color::Magenta
     );
 }
+
+/// On a file's line of the diffstat the count goes straight after its name,
+/// and the files' `|`s stay in a column.
+#[test]
+fn a_files_comment_count_goes_after_its_name_in_the_diffstat() {
+    let mut ctx = setup_clone!();
+    let github = setup_folded_to_stat(&mut ctx);
+    *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("bob", "Hm")])];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let row = line_with(&ctx, "lines.txt");
+    assert!(row.contains("lines.txt [1 comment]"), "{row}");
+    let bar = |text: &str| line_with(&ctx, text).chars().position(|c| c == '|');
+    assert_eq!(
+        bar("lines.txt"),
+        bar("added.txt"),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert_eq!(bar("big.txt"), bar("added.txt"), "{}", ctx.redact_buffer());
+}
