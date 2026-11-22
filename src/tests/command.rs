@@ -176,6 +176,45 @@ fn a_command_writing_much_output_finishes() {
     assert!(ctx.dir.join("finished").exists(), "{}", ctx.redact_buffer());
 }
 
+/// While a command runs that the TUI waits for, such as `git checkout`, its spinner turns.
+#[test]
+fn the_spinner_turns_while_the_tui_waits_for_a_command() {
+    let mut ctx = setup_clone!();
+    ctx.debug = false;
+    run(&ctx.dir, &["git", "branch", "other"]);
+    let hook = ctx.dir.join(".git/hooks/post-checkout");
+    fs::write(&hook, "#!/bin/sh\nsleep 0.5\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut app = ctx.init_app_streaming_with_args(Default::default());
+
+    ctx.update(&mut app, keys("bbother<enter>"));
+
+    let crate::term::TermBackend::Test { buffer, .. } = &ctx.term else {
+        unreachable!();
+    };
+    let spinners: std::collections::HashSet<char> = buffer
+        .frames
+        .iter()
+        .flat_map(|frame| frame.lines())
+        .filter_map(|line| {
+            let row = line.trim();
+            let spinner = row.strip_suffix("git checkout other")?.trim_end();
+            let mut chars = spinner.chars();
+            let spinner = chars.next()?;
+            (chars.next().is_none() && spinner != '$').then_some(spinner)
+        })
+        .collect();
+    assert!(
+        spinners.len() > 1,
+        "the spinner did not turn: {spinners:?}\n{}",
+        ctx.redact_buffer()
+    );
+}
+
 /// While a command runs, the bottom row says so, with a spinner that turns;
 /// once it exits, the row is gone.
 #[test]

@@ -78,6 +78,9 @@ pub struct TestBuffer {
     cursor: (u16, u16),
     /// The link printing is currently inside, if any.
     link: Option<String>,
+    /// The text of each frame flushed, so that a test can see what was drawn while the TUI was
+    /// busy, such as waiting for a command.
+    pub frames: Vec<String>,
 }
 
 impl TestBuffer {
@@ -88,7 +91,21 @@ impl TestBuffer {
             height,
             cursor: (0, 0),
             link: None,
+            frames: vec![],
         }
+    }
+
+    /// The buffer's text, a line to a row.
+    fn text(&self) -> String {
+        self.cells
+            .chunks(self.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect()
     }
 
     fn clear(&mut self) {
@@ -242,7 +259,10 @@ impl TermBackend {
     pub(crate) fn flush(&mut self) -> io::Result<()> {
         match self {
             TermBackend::Crossterm(t) => t.flush(),
-            TermBackend::Test { .. } => Ok(()),
+            TermBackend::Test { buffer, .. } => {
+                buffer.frames.push(buffer.text());
+                Ok(())
+            }
         }
     }
 }
