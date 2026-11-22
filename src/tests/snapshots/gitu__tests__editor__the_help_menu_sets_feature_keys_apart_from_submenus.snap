@@ -5,10 +5,10 @@ expression: ctx.redact_buffer()
 ▌Branch: main                                                                                                                                         |
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
  Commands                                                                   Submenus         Section                                                  |
- &                Files                   pageup/backspace Scroll page up   A Cherry-pick    x     Toggle viewed                                      |
- +                Wider context           q/esc            Quit/Close       b Branch         o     Show on GitHub                                     |
- -                Narrower context        shift+down       Select down      c Commit         right Unfold                                             |
- /                Search                  shift+tab        Fold all         f Fetch          tab   Fold                                               |
+ &                Files                   pageup/backspace Scroll page up   A Cherry-pick    right Unfold                                             |
+ +                Wider context           q/esc            Quit/Close       b Branch         tab   Fold                                               |
+ -                Narrower context        shift+down       Select down      c Commit                                                                  |
+ /                Search                  shift+tab        Fold all         f Fetch                                                                   |
  :                Edit git command        shift+up         Select up        F Pull                                                                    |
  ?                Key bindings            T                Themes           l Log                                                                     |
  alt+h/alt+left   Parent section          U                Diff context     m Merge                                                                   |
@@ -32,4 +32,4 @@ expression: ctx.redact_buffer()
  n                Next match                                                                                                                          |
  N                Previous match                                                                                                                      |
  pagedown/space   Scroll page down                                                                                                                    |
-styles_hash: 41745063cb229a82
+styles_hash: 797e7a8cb1e39eb5

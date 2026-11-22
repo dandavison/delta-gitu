@@ -1,8 +1,9 @@
 //! Pull requests on GitHub, read and written with the `gh` command, which holds
 //! the user's GitHub login.
 
-use crate::{Res, error::Error};
+use crate::{Res, error::Error, git::diff::Diff, gitu_diff::Status};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, process::Command};
 
 /// A pull request, as GitHub describes it.
@@ -23,7 +24,7 @@ pub(crate) struct Pr {
 /// The "Viewed" checkbox GitHub shows on each file of a PR. Each reviewer has
 /// their own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Viewed {
+pub(crate) enum ViewedState {
     Viewed,
     Unviewed,
     /// Marked viewed, but the file has changed since.
@@ -34,7 +35,54 @@ pub(crate) enum Viewed {
 /// by path.
 pub(crate) struct Review {
     pub pr: Pr,
-    pub viewed: RefCell<HashMap<String, Viewed>>,
+    pub viewed: RefCell<HashMap<String, ViewedState>>,
+}
+
+impl Review {
+    /// The checkbox drawn before the file at `path`: blank for a file GitHub
+    /// does not have in the PR, such as one changed by a commit not pushed.
+    pub fn checkbox(&self, path: &str) -> &'static str {
+        match self.viewed.borrow().get(path) {
+            Some(ViewedState::Viewed) => "[x] ",
+            Some(ViewedState::Unviewed) => "[ ] ",
+            Some(ViewedState::Dismissed) => "[~] ",
+            None => "    ",
+        }
+    }
+}
+
+/// The side of a PR's diff a line is on: the old file's, for a removed line,
+/// or the new file's.
+#[derive(Clone, Copy)]
+pub(crate) enum Side {
+    Old,
+    New,
+}
+
+/// The path GitHub knows a file of `diff` by: its new path, or for a deleted
+/// file its old one.
+pub(crate) fn file_path(diff: &Diff, file_i: usize) -> String {
+    let header = &diff.file_diffs[file_i].header;
+    let path = match header.status {
+        Status::Deleted => &header.old_file,
+        _ => &header.new_file,
+    };
+    path.fmt(&diff.text).into_owned()
+}
+
+/// The URL of the file at `path` in the PR's diff on GitHub, at `line` when
+/// given.
+pub(crate) fn file_url(pr: &Pr, path: &str, line: Option<(Side, u32)>) -> String {
+    let hash: String = Sha256::digest(path.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let line = match line {
+        Some((Side::Old, n)) => format!("L{n}"),
+        Some((Side::New, n)) => format!("R{n}"),
+        None => String::new(),
+    };
+    format!("{}/files#diff-{hash}{line}", pr.url)
 }
 
 pub(crate) trait GitHub {
@@ -47,7 +95,7 @@ pub(crate) trait GitHub {
     /// not in the repository.
     fn fetch_base(&self, pr: &Pr) -> Res<Command>;
     /// The checkbox state of each file of the PR, by path.
-    fn viewed(&self, pr: &Pr) -> Res<HashMap<String, Viewed>>;
+    fn viewed(&self, pr: &Pr) -> Res<HashMap<String, ViewedState>>;
     /// Tick or untick the checkbox of the file at `path`.
     fn set_viewed(&self, pr: &Pr, path: &str, viewed: bool) -> Res<()>;
     /// Open `url` in the browser.
@@ -143,7 +191,7 @@ impl GitHub for Gh {
         Ok(cmd)
     }
 
-    fn viewed(&self, pr: &Pr) -> Res<HashMap<String, Viewed>> {
+    fn viewed(&self, pr: &Pr) -> Res<HashMap<String, ViewedState>> {
         let output = self.run(&[
             "api",
             "graphql",
@@ -219,15 +267,15 @@ fn remote_for(slug: &str, remotes: impl IntoIterator<Item = (String, String)>) -
 
 /// The lines `path<TAB>state` that [`Gh::viewed`] has gh print. A line it
 /// cannot read is left out.
-fn parse_viewed(output: &str) -> HashMap<String, Viewed> {
+fn parse_viewed(output: &str) -> HashMap<String, ViewedState> {
     output
         .lines()
         .filter_map(|line| {
             let (path, state) = line.rsplit_once('\t')?;
             let viewed = match state {
-                "VIEWED" => Viewed::Viewed,
-                "UNVIEWED" => Viewed::Unviewed,
-                "DISMISSED" => Viewed::Dismissed,
+                "VIEWED" => ViewedState::Viewed,
+                "UNVIEWED" => ViewedState::Unviewed,
+                "DISMISSED" => ViewedState::Dismissed,
                 _ => return None,
             };
             Some((path.to_owned(), viewed))
@@ -274,9 +322,9 @@ mod tests {
         assert_eq!(
             viewed,
             HashMap::from([
-                ("a.txt".to_owned(), Viewed::Viewed),
-                ("b c.txt".to_owned(), Viewed::Unviewed),
-                ("d.txt".to_owned(), Viewed::Dismissed),
+                ("a.txt".to_owned(), ViewedState::Viewed),
+                ("b c.txt".to_owned(), ViewedState::Unviewed),
+                ("d.txt".to_owned(), ViewedState::Dismissed),
             ])
         );
     }

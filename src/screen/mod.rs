@@ -281,6 +281,9 @@ pub(crate) struct Screen {
     /// does not add to it.
     unfolded: HashSet<ItemId>,
     search: Option<Search>,
+    /// The GitHub PR this screen shows the diff of, whose files are drawn with
+    /// their Viewed checkboxes.
+    pub(crate) review: Option<Rc<crate::github::Review>>,
 }
 
 impl Screen {
@@ -335,6 +338,7 @@ impl Screen {
             seen: HashSet::new(),
             unfolded: HashSet::new(),
             search: None,
+            review: None,
         };
 
         let Items { now, later } = (screen.refresh_items)(screen.params())?;
@@ -1930,6 +1934,10 @@ fn layout_item<'a>(layout: &mut UiTree<'a>, screen: &'a Screen, hide_cursor: boo
         layout.row(opts(), |layout| layout_span(layout, gutter_char));
 
         let item = &screen.items[line.item_index];
+        if let (Some(review), ItemData::Delta { diff, file_i, .. }) = (&screen.review, &item.data) {
+            let checkbox = review.checkbox(&crate::github::file_path(diff, *file_i));
+            layout.row(opts(), |layout| layout_span(layout, (checkbox.into(), bg)));
+        }
         if let Some(row) = screen.standing_in_row(item) {
             ui::item::layout_rendered(layout, row, bg);
             return;

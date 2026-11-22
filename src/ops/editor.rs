@@ -112,7 +112,10 @@ impl OpTrait for Suspend {
 pub(crate) struct Refresh;
 impl OpTrait for Refresh {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
-        Some(Rc::new(|app, _term| app.update_screens()))
+        Some(Rc::new(|app, _term| {
+            super::pr::reread_viewed(app)?;
+            app.update_screens()
+        }))
     }
 
     fn display(&self, _state: &State) -> String {

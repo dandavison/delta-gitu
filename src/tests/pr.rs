@@ -6,7 +6,7 @@ use super::*;
 use crate::{
     app::App,
     error::Error,
-    github::{GitHub, Pr, Viewed},
+    github::{GitHub, Pr, ViewedState},
 };
 use std::{cell::RefCell, collections::HashMap, process::Command, rc::Rc};
 
@@ -18,7 +18,7 @@ const ADDED_TXT_HASH: &str = "005338a261920beed70d358c421c16850b4a5fb5e6ff7e9746
 /// recording what gitu asks of it.
 struct FakeGitHub {
     base_oid: String,
-    viewed: RefCell<HashMap<String, Viewed>>,
+    viewed: RefCell<HashMap<String, ViewedState>>,
     asked_for: RefCell<Vec<Option<String>>>,
     fetched_base: RefCell<bool>,
     opened: RefCell<Vec<String>>,
@@ -49,15 +49,15 @@ impl GitHub for FakeGitHub {
         Ok(cmd)
     }
 
-    fn viewed(&self, _pr: &Pr) -> Result<HashMap<String, Viewed>, Error> {
+    fn viewed(&self, _pr: &Pr) -> Result<HashMap<String, ViewedState>, Error> {
         Ok(self.viewed.borrow().clone())
     }
 
     fn set_viewed(&self, _pr: &Pr, path: &str, viewed: bool) -> Result<(), Error> {
         let state = if viewed {
-            Viewed::Viewed
+            ViewedState::Viewed
         } else {
-            Viewed::Unviewed
+            ViewedState::Unviewed
         };
         self.viewed.borrow_mut().insert(path.to_owned(), state);
         Ok(())
@@ -83,8 +83,8 @@ fn setup(ctx: &TestContext) -> Rc<FakeGitHub> {
             .trim()
             .to_owned(),
         viewed: RefCell::new(HashMap::from([
-            ("lines.txt".to_owned(), Viewed::Viewed),
-            ("added.txt".to_owned(), Viewed::Unviewed),
+            ("lines.txt".to_owned(), ViewedState::Viewed),
+            ("added.txt".to_owned(), ViewedState::Unviewed),
         ])),
         asked_for: RefCell::new(vec![]),
         fetched_base: RefCell::new(false),
@@ -220,11 +220,11 @@ fn x_ticks_and_unticks_the_file_on_github() {
     ctx.update(&mut app, keys("OO/added.txt<enter>"));
 
     ctx.update(&mut app, keys("x"));
-    assert_eq!(github.viewed.borrow()["added.txt"], Viewed::Viewed);
+    assert_eq!(github.viewed.borrow()["added.txt"], ViewedState::Viewed);
     assert!(line_with(&ctx, "added.txt").contains("[x]"));
 
     ctx.update(&mut app, keys("x"));
-    assert_eq!(github.viewed.borrow()["added.txt"], Viewed::Unviewed);
+    assert_eq!(github.viewed.borrow()["added.txt"], ViewedState::Unviewed);
     assert!(line_with(&ctx, "added.txt").contains("[ ]"));
 }
 
@@ -239,7 +239,7 @@ fn refresh_reads_the_checkboxes_again() {
     github
         .viewed
         .borrow_mut()
-        .insert("added.txt".to_owned(), Viewed::Viewed);
+        .insert("added.txt".to_owned(), ViewedState::Viewed);
     ctx.update(&mut app, keys("gr"));
 
     assert!(line_with(&ctx, "added.txt").contains("[x]"));
