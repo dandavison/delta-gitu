@@ -436,4 +436,48 @@ mod tests {
         assert_eq!(area.value(), "ab\ncd");
         assert_eq!(area.cursor_at(WIDTH), (1, 1));
     }
+
+    fn alt(area: &mut TextArea, code: KeyCode) -> Outcome {
+        area.handle_key(key(code, KeyModifiers::ALT), WIDTH)
+    }
+
+    /// As in gitu's prompt: `alt+b` and `alt+f` step over runs of letters and digits.
+    #[test]
+    fn alt_b_and_alt_f_move_by_word() {
+        let mut area = typed("src/lib.rs x");
+        alt(&mut area, KeyCode::Char('b'));
+        alt(&mut area, KeyCode::Char('b'));
+        press(&mut area, KeyCode::Char('_'));
+        assert_eq!(area.value(), "src/lib._rs x");
+        alt(&mut area, KeyCode::Char('f'));
+        press(&mut area, KeyCode::Char('_'));
+        assert_eq!(area.value(), "src/lib._rs_ x");
+    }
+
+    #[test]
+    fn alt_d_and_alt_backspace_delete_by_word() {
+        let mut area = typed("src/lib.rs");
+        alt(&mut area, KeyCode::Backspace);
+        assert_eq!(area.value(), "src/lib.");
+        ctrl(&mut area, 'a');
+        alt(&mut area, KeyCode::Char('d'));
+        assert_eq!(area.value(), "/lib.");
+    }
+
+    #[test]
+    fn ctrl_y_puts_back_what_was_deleted_last() {
+        let mut area = typed("one two");
+        ctrl(&mut area, 'w');
+        ctrl(&mut area, 'a');
+        assert_eq!(ctrl(&mut area, 'y'), Outcome::Edited);
+        assert_eq!(area.value(), "twoone ");
+    }
+
+    #[test]
+    fn ctrl_t_swaps_the_chars_around_the_cursor() {
+        let mut area = typed("abc");
+        press(&mut area, KeyCode::Left);
+        ctrl(&mut area, 't');
+        assert_eq!(area.value(), "acb");
+    }
 }
