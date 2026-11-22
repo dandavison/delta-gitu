@@ -371,9 +371,49 @@ pub(crate) fn handle_draft_key(app: &mut App, _term: &mut Term, key: KeyEvent) -
     };
     match outcome {
         Outcome::Edited | Outcome::Moved | Outcome::Leave => show_draft(app),
-        Outcome::Submit => app.display_error("Posting comments is not built yet"),
+        Outcome::Submit => post_draft(app)?,
         Outcome::Ignored => {}
     }
+    Ok(())
+}
+
+/// Post the comment being written, as a reply to its thread or on its line, and read the threads
+/// again to show it, with the box gone. A new comment is not posted while HEAD is not the PR's
+/// head on GitHub, which its line is numbered against. What was written is kept if it is not
+/// posted.
+fn post_draft(app: &mut App) -> Res<()> {
+    let Some(review) = app.screen().review.clone() else {
+        return Ok(());
+    };
+    let Some((target, body)) = review
+        .draft
+        .borrow()
+        .as_ref()
+        .map(|draft| (draft.target.clone(), draft.text.value().to_owned()))
+    else {
+        return Ok(());
+    };
+    if body.trim().is_empty() {
+        app.display_error("Nothing to post");
+        return Ok(());
+    }
+    let github = Rc::clone(&app.state.github);
+    match &target {
+        DraftTarget::Reply { thread_id } => github.reply(&review.pr, thread_id, &body)?,
+        DraftTarget::Line { path, line } => {
+            if !screen::review::at_pr_head(&app.state.repo, &review.pr.head_oid) {
+                app.display_error(
+                    "Cannot post: HEAD is not the PR's head on GitHub, so the comment's line may be wrong",
+                );
+                return Ok(());
+            }
+            github.comment(&review.pr, path, *line, &body)?;
+        }
+    }
+    *review.draft.borrow_mut() = None;
+    *review.threads.borrow_mut() = github.threads(&review.pr)?;
+    app.screen_mut().redecorate();
+    app.display_info("Comment posted");
     Ok(())
 }
 

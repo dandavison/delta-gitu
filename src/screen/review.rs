@@ -217,7 +217,7 @@ fn numbered_lines(diff: &crate::git::diff::Diff, file_i: usize, hunk_i: usize) -
 }
 
 /// Whether HEAD is the commit the PR's branch is at on GitHub.
-fn at_pr_head(repo: &Repository, head_oid: &str) -> bool {
+pub(crate) fn at_pr_head(repo: &Repository, head_oid: &str) -> bool {
     repo.head()
         .ok()
         .and_then(|head| head.target())
