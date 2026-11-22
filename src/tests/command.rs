@@ -23,10 +23,10 @@ fn with_command(mut ctx: TestContext, name: &str, command: &str, key: char) -> T
 fn a_command_key_runs_the_command_on_the_commit_under_the_cursor() {
     let ctx = setup_clone!();
     commit(&ctx.dir, "a", "");
-    let mut ctx = with_command(ctx, "record", "echo {commit} > recorded", 'o');
+    let mut ctx = with_command(ctx, "record", "echo {commit} > recorded", 'i');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("llo"));
+    ctx.update(&mut app, keys("lli"));
 
     let head = run(&ctx.dir, &["git", "rev-parse", "HEAD"]);
     assert_eq!(
@@ -42,10 +42,10 @@ fn a_command_key_runs_the_command_on_the_commit_under_the_cursor() {
 fn a_command_key_runs_the_command_on_the_file_under_the_cursor() {
     let ctx = setup_clone!();
     fs::write(ctx.dir.join("a file"), "").unwrap();
-    let mut ctx = with_command(ctx, "record", "echo {file} > recorded", 'o');
+    let mut ctx = with_command(ctx, "record", "echo {file} > recorded", 'i');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("/a file<enter>o"));
+    ctx.update(&mut app, keys("/a file<enter>i"));
 
     assert_eq!(
         fs::read_to_string(ctx.dir.join("recorded")).unwrap(),
@@ -59,10 +59,10 @@ fn a_command_key_runs_the_command_on_the_file_under_the_cursor() {
 #[test]
 fn a_command_needing_a_commit_is_not_run_off_one() {
     let ctx = setup_clone!();
-    let mut ctx = with_command(ctx, "record", "echo {commit} > recorded", 'o');
+    let mut ctx = with_command(ctx, "record", "echo {commit} > recorded", 'i');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("o"));
+    ctx.update(&mut app, keys("i"));
 
     assert!(!ctx.dir.join("recorded").exists());
     assert!(
@@ -76,13 +76,13 @@ fn a_command_needing_a_commit_is_not_run_off_one() {
 #[test]
 fn the_feature_list_lists_commands() {
     let ctx = setup_clone!();
-    let mut ctx = with_command(ctx, "record", "echo {commit} > recorded", 'o');
+    let mut ctx = with_command(ctx, "record", "echo {commit} > recorded", 'i');
     let mut app = ctx.init_app();
 
     ctx.update(&mut app, keys("H"));
 
     assert!(
-        ctx.redact_buffer().contains("o record"),
+        ctx.redact_buffer().contains("i record"),
         "{}",
         ctx.redact_buffer()
     );
@@ -95,10 +95,10 @@ fn the_feature_list_lists_commands() {
 fn a_failing_command_shows_its_stderr_and_the_command_as_written() {
     let ctx = setup_clone!();
     commit(&ctx.dir, "a", "");
-    let mut ctx = with_command(ctx, "fail", "echo {commit} oops >&2; exit 3", 'o');
+    let mut ctx = with_command(ctx, "fail", "echo {commit} oops >&2; exit 3", 'i');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("llo"));
+    ctx.update(&mut app, keys("lli"));
 
     let head = run(&ctx.dir, &["git", "rev-parse", "HEAD"]);
     let head = head.trim();
@@ -126,10 +126,10 @@ fn a_failing_command_shows_its_stderr_and_the_command_as_written() {
 #[test]
 fn a_command_key_runs_the_command_on_the_git_command_shown() {
     let ctx = setup_clone!();
-    let mut ctx = with_command(ctx, "record", "echo {command} > recorded", 'o');
+    let mut ctx = with_command(ctx, "record", "echo {command} > recorded", 'i');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("llo"));
+    ctx.update(&mut app, keys("lli"));
 
     let recorded = fs::read_to_string(ctx.dir.join("recorded")).unwrap_or_default();
     assert!(recorded.starts_with("git log"), "{recorded:?}");
@@ -144,11 +144,11 @@ fn a_command_gets_the_width_and_features_gitu_draws_with() {
         ctx,
         "record",
         r#"printf '%s %s' "$COLUMNS" "$DELTA_FEATURES" > recorded"#,
-        'o',
+        'i',
     );
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("So"));
+    ctx.update(&mut app, keys("Si"));
 
     let recorded = fs::read_to_string(ctx.dir.join("recorded")).unwrap_or_default();
     assert!(recorded.starts_with("78 "), "{recorded:?}");
@@ -167,11 +167,11 @@ fn a_command_writing_much_output_finishes() {
         "yes | head -c 1000000 & w=$!; \
          (sleep 5; kill $w) >/dev/null 2>&1 & \
          wait $w && touch finished",
-        'o',
+        'i',
     );
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("o"));
+    ctx.update(&mut app, keys("i"));
 
     assert!(ctx.dir.join("finished").exists(), "{}", ctx.redact_buffer());
 }
@@ -185,13 +185,13 @@ fn a_running_command_is_shown_with_a_spinner_until_it_exits() {
         ctx,
         "wait",
         "while [ ! -e go-on ]; do sleep 0.02; done",
-        'o',
+        'i',
     );
     ctx.debug = false;
     let mut app = ctx.init_app_streaming_with_args(Default::default());
     let shown = |ctx: &TestContext| ctx.redact_buffer().contains("while [ ! -e go-on ]");
 
-    ctx.update(&mut app, keys("o"));
+    ctx.update(&mut app, keys("i"));
     assert!(shown(&ctx), "{}", ctx.redact_buffer());
 
     let before = ctx.redact_buffer();

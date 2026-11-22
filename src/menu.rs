@@ -46,6 +46,9 @@ pub(crate) enum Menu {
     #[serde(rename = "push_menu")]
     #[strum(serialize = "push_menu")]
     Push,
+    #[serde(rename = "pr_menu")]
+    #[strum(serialize = "pr_menu")]
+    Pr,
     #[serde(rename = "rebase_menu")]
     #[strum(serialize = "rebase_menu")]
     Rebase,
@@ -88,6 +91,7 @@ impl PendingMenu {
                 Menu::Merge => ops::merge::init_args(),
                 Menu::Pull => ops::pull::init_args(),
                 Menu::Push => ops::push::init_args(),
+                Menu::Pr => vec![],
                 Menu::Rebase => ops::rebase::init_args(),
                 Menu::RebaseTodo => vec![],
                 Menu::Remote => vec![],

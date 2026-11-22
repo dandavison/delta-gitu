@@ -286,6 +286,9 @@ root.apply = ["a"]
 root.reverse = ["v"]
 root.copy_hash = ["y"]
 root.blame = ["B"]
+# In a PR opened from the PR menu.
+root.toggle_viewed = ["x"]
+root.show_on_github = ["o"]
 # Enable or disable a renderer feature (side-by-side, line numbers, ...) in place.
 # In the list, space enables or disables the selected feature and keeps the list
 # open, enter does so and closes it, a letter sets its key, and this key closes
@@ -392,6 +395,12 @@ push_menu.push_to_push_remote = ["p"]
 push_menu.push_to_upstream = ["u"]
 push_menu.push_to_elsewhere = ["e"]
 push_menu.quit = ["q", "esc", "left"]
+
+# Check out a GitHub PR with gh and review its diff.
+root.pr_menu = ["O"]
+pr_menu.pr_current = ["O"]
+pr_menu.pr_other = ["o"]
+pr_menu.quit = ["q", "esc", "left"]
 
 root.rebase_menu = ["r"]
 rebase_menu.--keep-empty = ["-k"]

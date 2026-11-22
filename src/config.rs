@@ -784,7 +784,7 @@ mod tests {
         let config = configured(
             "",
             "[delta-tui \"general.diff-renderer.feature-keys\"]\n\
-             \tmy-feature = x\n",
+             \tmy-feature = e\n",
         );
         assert_eq!(
             config
@@ -793,7 +793,7 @@ mod tests {
                 .feature_keys
                 .into_iter()
                 .collect::<Vec<_>>(),
-            [("my-feature".to_string(), 'x')]
+            [("my-feature".to_string(), 'e')]
         );
     }
 

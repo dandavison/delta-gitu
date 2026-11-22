@@ -89,6 +89,7 @@ pub(crate) struct State {
     pub(crate) terminal_width: Option<(u16, Instant)>,
     file_watcher: Option<FileWatcher>,
     inhibit_close_menu: bool,
+    pub github: Rc<dyn crate::github::GitHub>,
 }
 
 pub struct App {
@@ -175,6 +176,10 @@ impl App {
         let read_only = config.general.read_only.is_on(&repo);
         let prompt = prompt::Prompt::with_history(repo.path().join("gitu"), read_only);
 
+        let github = Rc::new(crate::github::Gh {
+            workdir: repo.workdir().unwrap_or(repo.path()).to_path_buf(),
+        });
+
         let mut app = Self {
             state: State {
                 repo,
@@ -204,6 +209,7 @@ impl App {
                 needs_redraw: true,
                 terminal_width: None,
                 inhibit_close_menu: false,
+                github,
             },
         };
 

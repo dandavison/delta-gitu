@@ -3,6 +3,8 @@ source: src/tests/bindings.rs
 expression: ctx.redact_buffer()
 ---
 ▌Root (bindings.root)                                                                                                                                 |
+▌ x                 toggle-viewed          Tick or untick the PR file's Viewed checkbox on GitHub                                                     |
+▌ o                 show-on-github         Open the PR file, hunk or line on GitHub, to comment on it                                                 |
 ▌ Y                 show-refs              List branches and tags                                                                                     |
 ▌ g+s               status                 Status view, from any view                                                                                 |
 ▌ H                 renderer-features      List delta features, shell commands and views, and set their keys                                          |
@@ -30,6 +32,4 @@ expression: ctx.redact_buffer()
 ▌ ctrl+k ctrl+up    move-up                Up, stopping only at file headers, hunk headers and commits                                                |
 ▌ ctrl+j ctrl+down  move-down              Down, stopping only at file headers, hunk headers and commits                                              |
 ▌ shift+up          extend-selection-up    Select lines in a hunk, upwards                                                                            |
-▌ shift+down        extend-selection-down  Select lines in a hunk, downwards                                                                          |
-▌ alt+k alt+up      move-prev-section      Previous section at the same level                                                                         |
 styles_hash: e39343c74ddcf565
