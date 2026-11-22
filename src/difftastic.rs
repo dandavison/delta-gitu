@@ -1378,7 +1378,8 @@ mod tests {
             legible(&shown.text),
             r#"@@ -1,6 +1,12 @@
  .fn load(p: &Path⟦, v: bool⟧) -> Cfg {
- .    // parse the ⟦TOML⟧ file
+-!    // parse the file
++!    // parse the TOML file
 -.    let ⟦c⟧ = parse(&read(p), Strict, None);
 +.    let ⟦cfg⟧ = parse(
 +~        &read(p),
@@ -1394,7 +1395,7 @@ mod tests {
  }
 "#
         );
-        assert_eq!(shown.stands_for, HashMap::from([(1, 1), (2, 2)]));
+        assert_eq!(shown.stands_for, HashMap::from([(1, 1)]));
     }
 
     #[test]
