@@ -7,6 +7,11 @@
 //! rewrapped) is drawn once, as it is now, in its own style. Old lines that difftastic finds joined
 //! into another line, with nothing on them changed, are not drawn.
 //!
+//! That is in unified layout. Side by side, where the renderer draws an unchanged line on both
+//! sides, each side shows its own version's lines: a line changed only by an addition or in its
+//! layout is drawn as the old line beside the new one, and old lines joined into another line are
+//! drawn, as removed lines with nothing marked ([`Layout`]).
+//!
 //! What gitu draws is not a patch, and gitu does not stage from it: it stages from git's patch.
 //! Each drawn line is a line of git's hunks, or stands for a line git's hunks remove and one they
 //! add ([`Shown::stands_for`]), and staging it stages those lines.
@@ -421,8 +426,8 @@ type Painted = (Paint, Vec<Range<usize>>);
 
 /// How a row of the view is drawn.
 enum Drawn {
-    /// Not drawn: an old line difftastic finds joined into another line, with nothing on it
-    /// changed.
+    /// An old line difftastic finds joined into another line, with nothing on it changed: not
+    /// drawn in unified layout, and drawn as removed with nothing marked side by side.
     Hidden { old: usize },
     /// An unchanged line, or a line drawn as unchanged with `paint`: one whose only change is an
     /// addition, or to its layout.
@@ -545,9 +550,13 @@ fn painted(version: usize, text: &str, ranges: Vec<Range<usize>>) -> Painted {
 /// `drawn`, rows covering every line of both `versions`, drawn inside `git_hunks`: `None` if a row
 /// drawn as changed is not inside one of them, or a row's lines are in two.
 ///
-/// In side by side, a row drawn as unchanged with paint is drawn as the old line, removed, and the
-/// new line, added, which the renderer draws beside each other: as an unchanged row, the renderer
-/// would draw the new line on both sides.
+/// In side by side, each side shows its own version's lines. A row drawn as unchanged with paint is
+/// drawn as the old line, removed, and the new line, added, which the renderer draws beside each
+/// other: as an unchanged row, the renderer would draw the new line on both sides. An old line
+/// joined into another line is drawn, as a removed line with nothing marked.
+///
+/// In unified layout, an old line joined into another line is not drawn. The next line that counts
+/// an old line then starts a new hunk, as a unified diff can skip old lines only by starting one.
 fn shown(
     drawn: &[Drawn],
     versions: &[Version; 2],
@@ -575,10 +584,13 @@ fn shown(
         shown.text.push_str(&git_hunk.header);
         shown.text.push('\n');
         let mut next = git_hunk.lines.clone().map(|range| range.start);
-        // Whether an old line has not been drawn since the last line that counts one: the next line
-        // that counts one then gives its line numbers, or the renderer numbers it as the first line
-        // not drawn.
+        // Whether an old line has not been drawn since the last header: the next line that counts
+        // an old line then needs one, or the renderer numbers it as the line not drawn.
         let mut hidden = false;
+        // The header the view's current hunk needs, if it starts after a line not drawn: where in
+        // the text it goes, the lines of each version it starts at, and how many of each are
+        // drawn under it.
+        let mut header: Option<(usize, [usize; 2], [usize; 2])> = None;
         while let Some(row) = rows.next_if(|row| inside(row)) {
             let lines = row.lines();
             if lines
@@ -595,18 +607,25 @@ fn shown(
             let counts_old_line =
                 !matches!(row, Drawn::Hidden { .. } | Drawn::Changed { old: None, .. });
             if hidden && counts_old_line {
-                let kind = match row {
-                    Drawn::Unchanged { paint: None, .. } => 'c',
-                    Drawn::Unchanged { .. } if layout == Layout::Unified => 'c',
-                    _ => 'd',
-                };
-                shown.text.push_str(&line_record(kind, next));
+                insert_header(&mut shown.text, header.take());
+                header = Some((shown.text.len(), next, [0, 0]));
                 hidden = false;
             }
             for version in [OLD, NEW] {
                 next[version] += usize::from(lines[version].is_some());
+                if let Some((_, _, counts)) = &mut header
+                    && !matches!(row, Drawn::Hidden { .. })
+                {
+                    counts[version] += usize::from(lines[version].is_some());
+                }
             }
             match row {
+                Drawn::Hidden { old } if layout == Layout::SideBySide => {
+                    let text = versions[OLD].lines[*old];
+                    let paint = (Paint::MinusNonEmph, vec![]);
+                    shown.text.push_str(&line('-', text, Some(&paint)));
+                    no_newline_marker(&mut shown.text, versions[OLD].lacks_newline(*old));
+                }
                 Drawn::Hidden { .. } => hidden = true,
                 Drawn::Unchanged {
                     old,
@@ -651,6 +670,7 @@ fn shown(
                 }
             }
         }
+        insert_header(&mut shown.text, header);
     }
     if rows.any(|row| !matches!(row, Drawn::Unchanged { paint: None, .. })) {
         return None;
@@ -658,14 +678,19 @@ fn shown(
     Some(shown)
 }
 
-/// The OSC 1717 per-line record that gives the line it starts, of `kind`, the line numbers after
-/// the 0-based `next` of each version: delta numbers the line as it says. After old lines that are
-/// not drawn, the line numbers do not follow on from the previous line's, which in a unified diff
-/// can otherwise be expressed only by starting a new hunk, and delta's `side-by-side = hunk` lays
-/// out each hunk on its own.
-fn line_record(kind: char, next: [usize; 2]) -> String {
-    let [old, new] = next.map(|line| line + 1);
-    format!("\x1b]1717;1;{kind};{new};{old};\x1b\\")
+/// Insert into `text` the hunk header `header` says: at its position, for the lines starting at
+/// its 0-based line numbers, as many of each version as it counts, written as git writes them.
+fn insert_header(text: &mut String, header: Option<(usize, [usize; 2], [usize; 2])>) {
+    let Some((at, first, counts)) = header else {
+        return;
+    };
+    let [old, new] = [OLD, NEW].map(|version| match counts[version] {
+        // git numbers an empty range by the line before it.
+        0 => format!("{},0", first[version]),
+        1 => format!("{}", first[version] + 1),
+        count => format!("{},{count}", first[version] + 1),
+    });
+    text.insert_str(at, &format!("@@ -{old} +{new} @@\n"));
 }
 
 fn no_newline_marker(text: &mut String, lacks_newline: bool) {
