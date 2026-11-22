@@ -692,3 +692,79 @@ fn comments_are_drawn_in_the_comment_styles() {
     );
     assert_eq!(cell(&ctx, "bob: Because", 'B').fg, Color::Red);
 }
+
+/// [`setup`], with the files folded to their lines of a diffstat, as
+/// `file-header = stat` and `start-folded` show them, and the PR adding
+/// `big.txt`, whose line of the diffstat takes the whole width.
+fn setup_folded_to_stat(ctx: &mut TestContext) -> Rc<FakeGitHub> {
+    ctx.config().general.file_header = crate::config::FileHeader::Stat;
+    ctx.config().general.start_folded = true;
+    let github = setup(ctx);
+    run(&ctx.dir, &["git", "checkout", "feature"]);
+    let lines = (1..=200).map(|i| format!("{i}\n")).collect::<String>();
+    commit(&ctx.dir, "big.txt", &lines);
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    Rc::new(FakeGitHub {
+        head_oid: run(&ctx.dir, &["git", "rev-parse", "feature"])
+            .trim()
+            .to_owned(),
+        ..Rc::into_inner(github).unwrap()
+    })
+}
+
+#[test]
+fn a_files_line_of_the_diffstat_fits_beside_its_checkbox() {
+    let mut ctx = setup_clone!();
+    let github = setup_folded_to_stat(&mut ctx);
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let after = &lines_after(&ctx, "big.txt", 1)[0];
+    assert!(
+        after.contains("lines.txt"),
+        "big.txt's row runs onto the next:\n{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_file_with_unresolved_threads_shows_how_many() {
+    let mut ctx = setup_clone!();
+    let github = setup_folded_to_stat(&mut ctx);
+    *github.threads.borrow_mut() = vec![
+        thread("t1", Some((Side::New, 2)), false, &[("alice", "Why?")]),
+        thread("t2", None, false, &[("bob", "Hm")]),
+        thread("t3", None, true, &[("carol", "Done")]),
+    ];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert!(
+        line_with(&ctx, "lines.txt").contains("●2"),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert!(
+        !line_with(&ctx, "added.txt").contains('●'),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+#[test]
+fn a_file_whose_threads_are_all_resolved_shows_none() {
+    let mut ctx = setup_clone!();
+    let github = setup_folded_to_stat(&mut ctx);
+    *github.threads.borrow_mut() = vec![thread("t1", None, true, &[("carol", "Done")])];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert!(
+        !line_with(&ctx, "lines.txt").contains('●'),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
