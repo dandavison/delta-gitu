@@ -1181,3 +1181,43 @@ fn comment_counts_are_aligned_against_the_diffstats_bar() {
     assert!(big.contains("[1 comment] |"), "{}", ctx.redact_buffer());
     assert!(big.contains("big.txt    ["), "{}", ctx.redact_buffer());
 }
+
+/// delta works out which features the user's config enables by settling all of
+/// its options, so a PR's screen asks it once for each set of features in
+/// force, not each time the PR's rows are built again.
+#[test]
+fn delta_is_not_asked_which_features_are_enabled_on_every_rebuild() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let mut ctx = setup_clone!();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&asked);
+    ctx.config().general.diff_renderer.enabled_features =
+        crate::config::EnabledFeatures::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            vec![]
+        });
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    // How many times delta is asked while a wider diff context builds the rows again, with the
+    // same features. Any screen asks once per rebuild, to know whether difftastic is on.
+    let asked_while_widening = |ctx: &mut TestContext, app: &mut App| {
+        let before = asked.load(Ordering::SeqCst);
+        ctx.update(app, keys("++"));
+        asked.load(Ordering::SeqCst) - before
+    };
+    ctx.update(&mut app, keys("OO"));
+    let on_the_pr = asked_while_widening(&mut ctx, &mut app);
+    ctx.update(&mut app, keys("q"));
+    let on_the_status = asked_while_widening(&mut ctx, &mut app);
+
+    assert_eq!(on_the_pr, on_the_status);
+}
