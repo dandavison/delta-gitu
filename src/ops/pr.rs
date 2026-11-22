@@ -93,16 +93,11 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
         ],
         Rc::new(move |params, items| {
             let dir = repo.workdir().unwrap_or(repo.path());
-            let enabled = config.general.diff_renderer.enabled_features.get(dir);
+            let options = comment_options(&threads_review, &config, dir, &params.features);
             let layout = screen::review::Layout {
                 width: params.width(),
-                side_by_side: super::editor::is_enabled_in(
-                    &params.features,
-                    "side-by-side",
-                    &enabled,
-                ),
+                side_by_side: options.side_by_side,
             };
-            let options = comment_options(&threads_review, &config, dir, &params.features);
             let error_style = Style::from(&config.style.error_msg);
             screen::review::with_threads(
                 items,
@@ -131,30 +126,32 @@ pub(crate) fn reread_review(app: &mut App) -> Res<()> {
 }
 
 /// The options to draw the review's comments with, as delta's config sets them with `features`
-/// in force. delta is asked once for each set of features in force, and again after the review
-/// is read again.
+/// in force, and whether delta draws side by side. delta settles all its options to answer, so
+/// it is asked once for each set of features in force, and again after the review is read
+/// again, rather than each time the rows are built.
 fn comment_options(
     review: &Review,
     config: &crate::config::Config,
     dir: &std::path::Path,
     features: &[String],
 ) -> Rc<screen::review::CommentOptions> {
-    let features = crate::diff_renderer::feature_overlay(features);
+    let overlay = crate::diff_renderer::feature_overlay(features);
     if let Some((asked_with, options)) = &*review.options.borrow()
-        && *asked_with == features
+        && *asked_with == overlay
     {
         return Rc::clone(options);
     }
     let values = config.general.diff_renderer.options.get(
         dir,
-        features.as_deref(),
+        overlay.as_deref(),
         &screen::review::OPTION_NAMES,
     );
-    let options = Rc::new(screen::review::CommentOptions::of(
-        &values,
-        config.general.diff_renderer.color_mode,
-    ));
-    *review.options.borrow_mut() = Some((features, Rc::clone(&options)));
+    let enabled = config.general.diff_renderer.enabled_features.get(dir);
+    let options = Rc::new(screen::review::CommentOptions {
+        side_by_side: super::editor::is_enabled_in(features, "side-by-side", &enabled),
+        ..screen::review::CommentOptions::of(&values, config.general.diff_renderer.color_mode)
+    });
+    *review.options.borrow_mut() = Some((overlay, Rc::clone(&options)));
     options
 }
 
