@@ -1129,25 +1129,8 @@ mod tests {
         colored.split_inclusive('\n').map(legible_line).collect()
     }
 
-    /// The old and new line numbers that a record at the start of `line` gives it, if it has one,
-    /// and the rest of it.
-    fn split_line_record(line: &str) -> (Option<[usize; 2]>, &str) {
-        let Some(rest) = line.strip_prefix("\x1b]1717;1;") else {
-            return (None, line);
-        };
-        let (record, rest) = rest.split_once("\x1b\\").unwrap();
-        let fields: Vec<&str> = record.split(';').collect();
-        let numbers = [fields[2], fields[1]].map(|field| field.parse().unwrap());
-        (Some(numbers), rest)
-    }
-
-    /// `line` as [`legible`] writes it, with `[-OLD +NEW]` before it if a record gives it line
-    /// numbers.
     fn legible_line(line: &str) -> String {
-        match split_line_record(line) {
-            (None, line) => legible_painted_line(line),
-            (Some([old, new]), line) => format!("[-{old} +{new}]{}", legible_painted_line(line)),
-        }
+        legible_painted_line(line)
     }
 
     fn legible_painted_line(line: &str) -> String {
@@ -1263,8 +1246,9 @@ mod tests {
     ///   for it, or not drawn because its tokens are kept.
     /// - In unified layout, a line drawn as removed shows what was removed: it is removed
     ///   throughout, or a token on it is marked removed. Drawn with nothing marked, a removed line
-    ///   looks unchanged, as if it were still there. In side by side, such a line is followed by
-    ///   the line it became, drawn as added, which the renderer draws beside it.
+    ///   looks unchanged, as if it were still there. In side by side, where the new version's lines
+    ///   are drawn beside it, such a line has nothing removed from it: its tokens are among the new
+    ///   version's lines in the hunk.
     #[test]
     fn what_the_view_shows_is_true() {
         let cases = FIXTURES
@@ -1300,12 +1284,9 @@ mod tests {
             let mut drawn_new: Vec<usize> = vec![];
             let mut drawn_removed: Vec<usize> = vec![];
             let mut next = [0, 0];
-            let rows: Vec<&str> = shown.text.split_terminator('\n').collect();
-            for (i, colored) in rows.iter().enumerate() {
-                let (numbers, colored) = split_line_record(colored);
-                if let Some(numbers) = numbers {
-                    next = numbers;
-                }
+            // Old lines drawn as removed with nothing marked.
+            let mut kept: Vec<usize> = vec![];
+            for colored in shown.text.split_terminator('\n') {
                 let line = uncolored(colored);
                 let line = line.trim_end_matches('\n');
                 if let Some(header) = line.strip_prefix("@@ -") {
@@ -1329,14 +1310,14 @@ mod tests {
                         let marked = !colored.starts_with('\x1b')
                             || colored.starts_with(&Paint::Minus.sgr())
                             || colored.contains(&Paint::MinusEmph.sgr());
-                        let added_next = rows.get(i + 1).is_some_and(|row| {
-                            uncolored(split_line_record(row).1).starts_with('+')
-                        });
                         assert!(
-                            marked || (layout == Layout::SideBySide && added_next),
+                            marked || layout == Layout::SideBySide,
                             "{name}, {layout:?}: {line:?} is drawn as removed with nothing on it \
                              marked"
                         );
+                        if !marked {
+                            kept.push(next[OLD]);
+                        }
                         drawn_removed.push(next[OLD]);
                         next[OLD] += 1;
                     }
@@ -1375,10 +1356,9 @@ mod tests {
                     .clone()
                     .flat_map(|n| tokens(versions[NEW].lines[n - 1]))
                     .collect();
-                for line in old
-                    .clone()
-                    .filter(|o| removed.contains(o) && !drawn_removed.contains(o))
-                {
+                for line in old.clone().filter(|o| {
+                    removed.contains(o) && (!drawn_removed.contains(o) || kept.contains(o))
+                }) {
                     for token in tokens(versions[OLD].lines[line - 1]) {
                         assert!(
                             new_tokens.contains(&token),
@@ -1414,10 +1394,6 @@ mod tests {
             let text = uncolored(&shown.text);
             let mut next = [0, 0];
             for line in text.split_terminator('\n') {
-                let (numbers, line) = split_line_record(line);
-                if let Some(numbers) = numbers {
-                    next = numbers;
-                }
                 if let Some(header) = line.strip_prefix("@@ -") {
                     let (old, new) = header
                         .split_once(" @@")
@@ -1613,16 +1589,16 @@ mod tests {
  fn f() {
 -.    let ⟦x⟧ = add(
 +.    let ⟦y⟧ = add(a, b);
-[-6 +3] }
+@@ -6 +3 @@
+ }
 "
         );
     }
 
-    /// After old lines that are not drawn, the next line's line numbers are given by a record on
-    /// it, not by a new hunk: git's hunk stays one hunk, which delta draws side by side if it
-    /// removes and adds lines.
+    /// A hunk header after a line that is not drawn counts the lines of each version under it, as
+    /// delta, drawing a hunk side by side only if it removes and adds lines, reads that many.
     #[test]
-    fn old_lines_not_drawn_leave_gits_hunk_whole() {
+    fn a_hunk_after_a_line_not_drawn_counts_its_lines() {
         let shown = shown(&MORE_FIXTURES[11].1);
         assert_eq!(
             legible(&shown.text),
@@ -1630,16 +1606,36 @@ mod tests {
  fn f() {
 -.    let ⟦x⟧ = add(
 +.    let ⟦y⟧ = add(a, b);
-[-6 +3]-.    g(⟦x⟧);
+@@ -6,2 +3,2 @@
+-.    g(⟦x⟧);
 +.    g(⟦y⟧);
  }
 "
         );
     }
 
-    /// Where difftastic pairs the wrong lines, as here where it pairs a rewritten function with
-    /// the new function after it and so shows the rewritten one as new throughout, git's hunks are
-    /// shown; where it shows the change better, its own are.
+    /// In side by side, old lines joined into another line are drawn, as removed lines with
+    /// nothing marked, beside the line they were joined into: git's hunk stays one hunk, which
+    /// delta draws side by side.
+    #[test]
+    fn side_by_side_draws_lines_joined_into_one() {
+        let shown = shown_in(&MORE_FIXTURES[11].1, Layout::SideBySide);
+        assert_eq!(
+            legible(&shown.text),
+            "@@ -1,7 +1,4 @@
+ fn f() {
+-.    let ⟦x⟧ = add(
++.    let ⟦y⟧ = add(a, b);
+-.        a,
+-.        b,
+-.    );
+-.    g(⟦x⟧);
++.    g(⟦y⟧);
+ }
+"
+        );
+    }
+
     #[test]
     fn git_where_difftastic_marks_more_lines_changed() {
         let text = uncolored(&shown(&FIXTURES[5].1).text);
