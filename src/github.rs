@@ -79,7 +79,6 @@ impl Review {
             n => Some(format!("[{n} comments]")),
         }
     }
-
 }
 
 /// The side of a PR's diff a line is on: the old file's, for a removed line,

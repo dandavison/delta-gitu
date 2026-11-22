@@ -117,6 +117,10 @@ fn head_branch(ctx: &TestContext) -> String {
         .to_owned()
 }
 
+/// The first row of a comment by alice or bob, as [`thread`] makes them.
+const ALICE: &str = "alice [2 hours ago]";
+const BOB: &str = "bob [2 hours ago]";
+
 fn two_hours_ago() -> chrono::DateTime<chrono::FixedOffset> {
     (chrono::Utc::now() - chrono::Duration::hours(2)).fixed_offset()
 }
@@ -393,12 +397,9 @@ fn a_thread_is_shown_under_its_added_line() {
 
     ctx.update(&mut app, keys("OO"));
 
-    let after = lines_after(&ctx, "+new", 1);
-    assert!(
-        after[0].contains("alice: Why new?"),
-        "{}",
-        ctx.redact_buffer()
-    );
+    let after = lines_after(&ctx, "+new", 2);
+    assert!(after[1].contains("Why new?"), "{}", ctx.redact_buffer());
+    assert!(after[0].contains(ALICE), "{}", ctx.redact_buffer());
     assert!(
         !ctx.redact_buffer().contains("not the PR's head"),
         "{}",
@@ -420,12 +421,9 @@ fn a_thread_on_the_old_side_is_shown_under_its_removed_line() {
 
     ctx.update(&mut app, keys("OO"));
 
-    let after = lines_after(&ctx, "-old", 1);
-    assert!(
-        after[0].contains("alice: Why not old?"),
-        "{}",
-        ctx.redact_buffer()
-    );
+    let after = lines_after(&ctx, "-old", 2);
+    assert!(after[1].contains("Why not old?"), "{}", ctx.redact_buffer());
+    assert!(after[0].contains(ALICE), "{}", ctx.redact_buffer());
 }
 
 #[test]
@@ -442,14 +440,13 @@ fn replies_are_shown_under_the_first_comment() {
 
     ctx.update(&mut app, keys("OO"));
 
-    let after = lines_after(&ctx, "+new", 3);
-    assert!(
-        after[0].contains("alice: Why new?"),
-        "{}",
-        ctx.redact_buffer()
-    );
-    assert!(after[1].contains("bob: Because"), "{}", ctx.redact_buffer());
-    assert!(after[2].contains("reasons"), "{}", ctx.redact_buffer());
+    let after = lines_after(&ctx, "+new", 5);
+    let screen = ctx.redact_buffer();
+    assert!(after[0].contains(ALICE), "{screen}");
+    assert!(after[1].contains("Why new?"), "{screen}");
+    assert!(after[2].contains(BOB), "{screen}");
+    assert!(after[3].contains("Because"), "{screen}");
+    assert!(after[4].contains("reasons"), "{screen}");
 }
 
 #[test]
@@ -466,17 +463,17 @@ fn a_resolved_thread_starts_folded() {
 
     ctx.update(&mut app, keys("OO"));
 
-    let header = line_with(&ctx, "alice: Why new?");
+    let header = line_with(&ctx, ALICE);
     assert!(header.contains("resolved"), "{header}");
     assert!(
-        !ctx.redact_buffer().contains("bob: Because"),
+        !ctx.redact_buffer().contains("Because"),
         "{}",
         ctx.redact_buffer()
     );
 
     ctx.update(&mut app, keys("/alice<enter><tab>"));
     assert!(
-        ctx.redact_buffer().contains("bob: Because"),
+        ctx.redact_buffer().contains("Because"),
         "{}",
         ctx.redact_buffer()
     );
@@ -492,11 +489,7 @@ fn an_outdated_thread_is_shown_under_its_file() {
     ctx.update(&mut app, keys("OO"));
 
     let after = lines_after(&ctx, "lines.txt", 1);
-    assert!(
-        after[0].contains("alice: Why new?"),
-        "{}",
-        ctx.redact_buffer()
-    );
+    assert!(after[0].contains(ALICE), "{}", ctx.redact_buffer());
     assert!(after[0].contains("outdated"), "{}", ctx.redact_buffer());
 }
 
@@ -540,7 +533,7 @@ fn refresh_reads_the_threads_again() {
     ctx.update(&mut app, keys("gr"));
 
     assert!(
-        ctx.redact_buffer().contains("alice: Why new?"),
+        ctx.redact_buffer().contains(ALICE),
         "{}",
         ctx.redact_buffer()
     );
@@ -598,7 +591,7 @@ fn side_by_side_draws_a_new_side_thread_in_the_right_panel() {
 
     ctx.update(&mut app, keys("OO"));
 
-    assert_eq!(bar_column(&ctx, "alice: Why new?"), RIGHT_PANEL + 2);
+    assert_eq!(bar_column(&ctx, ALICE), RIGHT_PANEL + 2);
 }
 
 #[test]
@@ -616,7 +609,7 @@ fn side_by_side_draws_an_old_side_thread_in_the_left_panel() {
 
     ctx.update(&mut app, keys("OO"));
 
-    assert_eq!(bar_column(&ctx, "alice: Why not old?"), 1 + 2);
+    assert_eq!(bar_column(&ctx, ALICE), 1 + 2);
 }
 
 /// A comment longer than the room for it wraps, each row after the first
@@ -639,7 +632,7 @@ fn a_long_comment_wraps_within_its_panel() {
 
     ctx.update(&mut app, keys("OO"));
 
-    let first = line_with(&ctx, "alice: one");
+    let first = line_with(&ctx, "one two");
     let last = line_with(&ctx, "twelve");
     assert_ne!(first, last, "{}", ctx.redact_buffer());
     assert_eq!(bar_column(&ctx, "twelve"), RIGHT_PANEL + 2);
@@ -665,7 +658,7 @@ fn a_long_comment_wraps_under_the_bar() {
 
     ctx.update(&mut app, keys("OO"));
 
-    assert_ne!(line_with(&ctx, "alice: w1 "), line_with(&ctx, "w30"));
+    assert_ne!(line_with(&ctx, "w1 w2"), line_with(&ctx, "w30"));
     assert_eq!(bar_column(&ctx, "w30"), 1 + 2);
 }
 
@@ -714,22 +707,14 @@ fn comments_are_drawn_in_the_comment_styles() {
     ctx.update(&mut app, keys("OO"));
 
     use crate::style::{Color, Modifier};
-    assert_eq!(cell(&ctx, "alice: Why new?", '│').fg, Color::Blue);
-    assert_eq!(cell(&ctx, "alice: Why new?", 'W').fg, Color::Red);
-    let author = cell(&ctx, "alice: Why new?", 'a');
+    assert_eq!(cell(&ctx, ALICE, '│').fg, Color::Blue);
+    assert_eq!(cell(&ctx, "Why new?", 'W').fg, Color::Red);
+    let author = cell(&ctx, ALICE, 'a');
     assert_eq!(author.fg, Color::Green);
     assert!(author.modifier.contains(Modifier::BOLD));
-    assert_eq!(
-        cell(&ctx, "alice: Why new?", 'g').fg,
-        Color::Yellow,
-        "timestamp"
-    );
-    assert_eq!(
-        cell(&ctx, "alice: Why new?", 'u').fg,
-        Color::Blue,
-        "outdated"
-    );
-    assert_eq!(cell(&ctx, "bob: Because", 'B').fg, Color::Red);
+    assert_eq!(cell(&ctx, ALICE, 'g').fg, Color::Yellow, "timestamp");
+    assert_eq!(cell(&ctx, ALICE, 'd').fg, Color::Blue, "outdated");
+    assert_eq!(cell(&ctx, "Because", 'B').fg, Color::Red);
 }
 
 /// The comment options are delta's, so a delta feature can set them, and they
@@ -750,17 +735,11 @@ fn comment_styles_follow_the_features_in_force() {
     *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("alice", "Why new?")])];
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO"));
-    assert_ne!(
-        cell(&ctx, "alice: Why new?", 'W').fg,
-        crate::style::Color::Red
-    );
+    assert_ne!(cell(&ctx, "Why new?", 'W').fg, crate::style::Color::Red);
 
     ctx.update(&mut app, keys("e"));
 
-    assert_eq!(
-        cell(&ctx, "alice: Why new?", 'W').fg,
-        crate::style::Color::Red
-    );
+    assert_eq!(cell(&ctx, "Why new?", 'W').fg, crate::style::Color::Red);
 }
 
 #[test]
@@ -778,7 +757,7 @@ fn a_comment_style_that_is_not_a_style_is_reported() {
         screen.contains("comment-style") && screen.contains("notacolor"),
         "{screen}"
     );
-    assert!(screen.contains("alice: Why new?"), "{screen}");
+    assert!(screen.contains("Why new?"), "{screen}");
 }
 
 /// Two comments on the added line, drawn with `comment-decoration-style` set
@@ -812,11 +791,11 @@ fn a_box_decoration_draws_a_box_around_the_thread() {
     let ctx = with_decoration(setup_clone!(), "blue box", false);
 
     let screen = ctx.redact_buffer();
-    let top = line_before(&ctx, "alice: Why new?");
+    let top = line_before(&ctx, ALICE);
     assert!(top.contains('┌') && top.contains('┐'), "{screen}");
-    let header = line_with(&ctx, "alice: Why new?");
+    let header = line_with(&ctx, ALICE);
     assert_eq!(header.matches('│').count(), 2, "{screen}");
-    let bottom = &lines_after(&ctx, "bob: Because", 1)[0];
+    let bottom = &lines_after(&ctx, "Because", 1)[0];
     assert!(bottom.contains('└') && bottom.contains('┘'), "{screen}");
 }
 
@@ -825,7 +804,7 @@ fn a_bold_box_decoration_is_drawn_heavy() {
     let ctx = with_decoration(setup_clone!(), "bold box", false);
 
     assert!(
-        line_before(&ctx, "alice: Why new?").contains('┏'),
+        line_before(&ctx, ALICE).contains('┏'),
         "{}",
         ctx.redact_buffer()
     );
@@ -836,11 +815,8 @@ fn a_folded_boxed_thread_shows_its_first_row_alone() {
     let ctx = with_decoration(setup_clone!(), "box", true);
 
     let screen = ctx.redact_buffer();
-    assert!(
-        !line_before(&ctx, "alice: Why new?").contains('┌'),
-        "{screen}"
-    );
-    assert!(line_with(&ctx, "alice: Why new?").contains('│'), "{screen}");
+    assert!(!line_before(&ctx, ALICE).contains('┌'), "{screen}");
+    assert!(line_with(&ctx, ALICE).contains('│'), "{screen}");
     assert!(!screen.contains('└'), "{screen}");
 }
 
@@ -849,12 +825,9 @@ fn an_underline_decoration_draws_a_line_under_the_thread() {
     let ctx = with_decoration(setup_clone!(), "ul", false);
 
     let screen = ctx.redact_buffer();
-    let under = &lines_after(&ctx, "bob: Because", 1)[0];
+    let under = &lines_after(&ctx, "Because", 1)[0];
     assert!(under.contains("───"), "{screen}");
-    assert!(
-        !line_with(&ctx, "alice: Why new?").contains('│'),
-        "{screen}"
-    );
+    assert!(!line_with(&ctx, ALICE).contains('│'), "{screen}");
 }
 
 #[test]
@@ -862,7 +835,7 @@ fn an_overline_decoration_draws_a_line_over_the_thread() {
     let ctx = with_decoration(setup_clone!(), "ol", false);
 
     assert!(
-        line_before(&ctx, "alice: Why new?").contains("───"),
+        line_before(&ctx, ALICE).contains("───"),
         "{}",
         ctx.redact_buffer()
     );
@@ -878,7 +851,7 @@ fn a_comments_time_is_shown_as_how_long_ago() {
     ctx.update(&mut app, keys("OO"));
 
     assert!(
-        line_with(&ctx, "alice: Why new?").contains("2 hours ago"),
+        line_with(&ctx, ALICE).contains("2 hours ago"),
         "{}",
         ctx.redact_buffer()
     );
@@ -899,7 +872,7 @@ fn a_comments_time_is_shown_in_the_timestamp_format() {
         .format("%Y-%m-%d")
         .to_string();
     assert!(
-        line_with(&ctx, "alice: Why new?").contains(&date),
+        line_with(&ctx, "alice [").contains(&format!("[{date}]")),
         "{}",
         ctx.redact_buffer()
     );
@@ -1063,4 +1036,86 @@ fn a_files_comment_count_goes_after_its_name_in_the_diffstat() {
         ctx.redact_buffer()
     );
     assert_eq!(bar("big.txt"), bar("added.txt"), "{}", ctx.redact_buffer());
+}
+
+#[test]
+fn a_comments_author_and_time_head_its_text() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let header = line_with(&ctx, ALICE);
+    assert!(!header.contains("Why"), "{}", ctx.redact_buffer());
+    assert!(
+        lines_after(&ctx, ALICE, 1)[0].contains("Why new?"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+/// The cell at `column` of the screen's row that shows `text`.
+fn cell_at(ctx: &TestContext, text: &str, column: usize) -> crate::term::TestCell {
+    let crate::term::TermBackend::Test { buffer, .. } = &ctx.term else {
+        unreachable!();
+    };
+    let rows: Vec<_> = buffer.cells.chunks(buffer.width as usize).collect();
+    let row = rows
+        .iter()
+        .find(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+                .contains(text)
+        })
+        .unwrap_or_else(|| panic!("no row with {text}:\n{}", ctx.redact_buffer()));
+    row[column].clone()
+}
+
+/// A comment's background fills its rows to the edge of the room for it, so
+/// that a thread stands out as a block.
+#[test]
+fn a_comments_background_fills_its_rows() {
+    let mut ctx = setup_clone!();
+    with_options(&mut ctx, &[("comment-style", "normal blue")]);
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    use crate::style::Color;
+    assert_eq!(cell_at(&ctx, "Why new?", 70).bg, Color::Blue);
+    assert_eq!(cell_at(&ctx, ALICE, 70).bg, Color::Blue);
+    assert_eq!(cell(&ctx, ALICE, 'a').bg, Color::Blue, "the author");
+}
+
+/// Without a comment-style of the user's, comments have GitHub's background
+/// for them, for the light or dark background delta renders for.
+#[test]
+fn comments_have_a_background_by_default() {
+    let mut ctx = setup_clone!();
+    ctx.config().general.diff_renderer.color_mode = Some(crate::config::ColorMode::Light);
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("alice", "Why new?")])];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert_eq!(
+        cell(&ctx, "Why new?", 'W').bg,
+        crate::style::Color::Rgb(0xf6, 0xf8, 0xfa)
+    );
 }
