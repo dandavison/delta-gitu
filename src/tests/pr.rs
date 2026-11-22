@@ -25,6 +25,8 @@ struct FakeGitHub {
     asked_for: RefCell<Vec<Option<String>>>,
     fetched_base: RefCell<bool>,
     opened: RefCell<Vec<String>>,
+    /// The comments posted, as (where, body): a thread's id, or a path and line.
+    posted: RefCell<Vec<(String, String)>>,
 }
 
 impl GitHub for FakeGitHub {
@@ -59,6 +61,35 @@ impl GitHub for FakeGitHub {
 
     fn threads(&self, _pr: &Pr) -> Result<Vec<Thread>, Error> {
         Ok(self.threads.borrow().clone())
+    }
+
+    fn reply(&self, _pr: &Pr, thread_id: &str, body: &str) -> Result<(), Error> {
+        self.posted
+            .borrow_mut()
+            .push((thread_id.to_owned(), body.to_owned()));
+        let mut threads = self.threads.borrow_mut();
+        let thread = threads
+            .iter_mut()
+            .find(|thread| thread.id == thread_id)
+            .unwrap();
+        thread.comments.push(Comment {
+            author: "me".into(),
+            body: body.to_owned(),
+            url: format!("{PR_URL}#reply"),
+            created_at: two_hours_ago(),
+        });
+        Ok(())
+    }
+
+    fn comment(&self, _pr: &Pr, path: &str, line: (Side, u32), body: &str) -> Result<(), Error> {
+        self.posted
+            .borrow_mut()
+            .push((format!("{path}:{line:?}"), body.to_owned()));
+        self.threads.borrow_mut().push(Thread {
+            path: path.to_owned(),
+            ..thread("new", Some(line), false, &[("me", body)])
+        });
+        Ok(())
     }
 
     fn set_viewed(&self, _pr: &Pr, path: &str, viewed: bool) -> Result<(), Error> {
@@ -101,6 +132,7 @@ fn setup(ctx: &TestContext) -> Rc<FakeGitHub> {
         asked_for: RefCell::new(vec![]),
         fetched_base: RefCell::new(false),
         opened: RefCell::new(vec![]),
+        posted: RefCell::new(vec![]),
     })
 }
 
@@ -1356,4 +1388,87 @@ fn the_box_is_drawn_in_the_editor_styles() {
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO/new<enter>ihello"));
     assert_eq!(cell(&ctx, "hello", 'h').bg, crate::style::Color::Red);
+}
+
+#[test]
+fn alt_enter_posts_a_reply() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/alice<enter>isure<enter>thing"));
+
+    ctx.update(&mut app, keys("<alt+enter>"));
+
+    assert_eq!(
+        *github.posted.borrow(),
+        vec![("t1".to_owned(), "sure\nthing".to_owned())]
+    );
+    let screen = ctx.redact_buffer();
+    assert!(!screen.contains("Reply"), "the box is gone:\n{screen}");
+    assert!(screen.contains("me [2 hours ago]"), "{screen}");
+}
+
+#[test]
+fn ctrl_s_posts_a_new_comment_on_the_line() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ihello"));
+
+    ctx.update(&mut app, keys("<ctrl+s>"));
+
+    assert_eq!(
+        *github.posted.borrow(),
+        vec![("lines.txt:(New, 2)".to_owned(), "hello".to_owned())]
+    );
+    let screen = ctx.redact_buffer();
+    assert!(
+        !screen.contains("New comment"),
+        "the box is gone:\n{screen}"
+    );
+    assert!(screen.contains("me [2 hours ago]"), "{screen}");
+}
+
+/// A new comment's line is numbered against the PR's head on GitHub, so it is
+/// not posted from another commit; what was written is kept.
+#[test]
+fn a_new_comment_is_not_posted_while_head_is_not_the_prs() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let github = Rc::new(FakeGitHub {
+        head_oid: "0".repeat(40),
+        ..Rc::into_inner(github).unwrap()
+    });
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ihello"));
+
+    ctx.update(&mut app, keys("<alt+enter>"));
+
+    assert!(github.posted.borrow().is_empty());
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("hello"), "{screen}");
+    assert!(screen.contains("Cannot post"), "{screen}");
+}
+
+#[test]
+fn an_empty_comment_is_not_posted() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>i"));
+
+    ctx.update(&mut app, keys("<alt+enter>"));
+
+    assert!(github.posted.borrow().is_empty());
+    assert!(
+        ctx.redact_buffer().contains("Nothing to post"),
+        "{}",
+        ctx.redact_buffer()
+    );
 }

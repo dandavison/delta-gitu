@@ -174,6 +174,11 @@ pub(crate) trait GitHub {
     fn viewed(&self, pr: &Pr) -> Res<HashMap<String, ViewedState>>;
     /// The PR's review threads.
     fn threads(&self, pr: &Pr) -> Res<Vec<Thread>>;
+    /// Post `body` as a reply to the review thread `thread_id`.
+    fn reply(&self, pr: &Pr, thread_id: &str, body: &str) -> Res<()>;
+    /// Post `body` as a new review comment on `line` of the file at `path`, numbered as in the
+    /// PR's head commit on GitHub for the new side and its base for the old.
+    fn comment(&self, pr: &Pr, path: &str, line: (Side, u32), body: &str) -> Res<()>;
     /// Tick or untick the checkbox of the file at `path`.
     fn set_viewed(&self, pr: &Pr, path: &str, viewed: bool) -> Res<()>;
     /// Open `url` in the browser.
@@ -207,6 +212,12 @@ const THREADS_QUERY: &str = "query($id: ID!, $endCursor: String) {
         }
       }
     }
+  }
+}";
+
+const REPLY: &str = "mutation($thread: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) {
+    comment { id }
   }
 }";
 
@@ -312,6 +323,46 @@ impl GitHub for Gh {
         ])?;
         parse_threads(&output)
             .map_err(|e| Error::Gh(format!("Couldn't read gh's review threads: {e}")))
+    }
+
+    fn reply(&self, _pr: &Pr, thread_id: &str, body: &str) -> Res<()> {
+        self.run(&[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={REPLY}"),
+            "-f",
+            &format!("thread={thread_id}"),
+            "-f",
+            &format!("body={body}"),
+        ])?;
+        Ok(())
+    }
+
+    fn comment(&self, pr: &Pr, path: &str, line: (Side, u32), body: &str) -> Res<()> {
+        let slug =
+            repo_of(&pr.url).ok_or_else(|| Error::Gh(format!("Not a PR URL: {}", pr.url)))?;
+        let side = match line.0 {
+            Side::Old => "LEFT",
+            Side::New => "RIGHT",
+        };
+        self.run(&[
+            "api",
+            "--method",
+            "POST",
+            &format!("repos/{slug}/pulls/{}/comments", pr.number),
+            "-f",
+            &format!("body={body}"),
+            "-f",
+            &format!("commit_id={}", pr.head_oid),
+            "-f",
+            &format!("path={path}"),
+            "-F",
+            &format!("line={}", line.1),
+            "-f",
+            &format!("side={side}"),
+        ])?;
+        Ok(())
     }
 
     fn set_viewed(&self, pr: &Pr, path: &str, viewed: bool) -> Res<()> {
