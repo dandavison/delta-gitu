@@ -1030,7 +1030,7 @@ impl App {
         }
     }
 
-    pub fn confirm(&mut self, term: &mut Term, prompt: &'static str) -> Res<()> {
+    pub fn confirm(&mut self, term: &mut Term, prompt: impl Into<Cow<'static, str>>) -> Res<()> {
         self.hide_menu();
         self.state.prompt.set(prompt::PromptData {
             prompt_text: prompt.into(),

@@ -92,8 +92,26 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
         Some(base),
     )?
     .with_linked_pr(GitHubBackend { github, pr })?;
+    confirm_authors(app, term, &local)?;
     local.refresh()?;
     show_pr(app, term, Rc::new(local))
+}
+
+/// Ask the user to go on if the PR's commits are by more than one author, as they would be if
+/// its base were wrong.
+fn confirm_authors(app: &mut App, term: &mut Term, local: &LocalBackend) -> Res<()> {
+    let authors = local.commit_authors()?;
+    if authors.len() > 1 {
+        app.confirm(
+            term,
+            format!(
+                "The PR's commits are by {} authors: {}. Open it? [y/n]",
+                authors.len(),
+                authors.join(", ")
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 /// Review the current branch against `main` as a local PR.
@@ -105,6 +123,7 @@ impl OpTrait for PrLocal {
                 Rc::clone(&app.state.repo),
                 Rc::clone(&app.state.github),
             )?;
+            confirm_authors(app, term, &backend)?;
             show_pr(app, term, Rc::new(backend))
         }))
     }

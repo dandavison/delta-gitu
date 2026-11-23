@@ -101,10 +101,90 @@ impl LocalBackend {
             github,
             linked: None,
         };
+        pr.check_commits()?;
         if let Some(github_pr) = &github_pr {
             pr.check_against(github_pr).map_err(opening)?;
         }
         Ok(pr)
+    }
+
+    /// Refuse a PR with no commits to review, or whose branch is behind its remote's, so that
+    /// what is reviewed is the branch as it is.
+    fn check_commits(&self) -> Res<()> {
+        if self.commit_count()? == 0 {
+            return Err(no_pr(&format!(
+                "{} has no commits since {}",
+                self.head,
+                short_ref(&self.base_ref)
+            )));
+        }
+        let local = format!("refs/heads/{}", self.head);
+        let upstream = match self.repo.branch_upstream_name(&local) {
+            Ok(name) => name.as_str().map(str::to_owned).ok_or_else(|| {
+                Error::LocalPr(format!(
+                    "Couldn't read {}'s upstream: it is not UTF-8",
+                    self.head
+                ))
+            })?,
+            Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(Error::LocalPr(format!(
+                    "Couldn't read {}'s upstream: {e}",
+                    self.head
+                )));
+            }
+        };
+        let Some(upstream_commit) = ref_commit(&self.repo, &upstream)? else {
+            return Err(opening(Error::LocalPr(format!(
+                "{}'s upstream, {}, is not there. Fetch it, or unset it",
+                self.head,
+                short_ref(&upstream)
+            ))));
+        };
+        let behind = self.count_commits(upstream_commit, self.head_commit()?)?;
+        if behind > 0 {
+            let commits = if behind == 1 { "commit" } else { "commits" };
+            return Err(opening(Error::LocalPr(format!(
+                "{} has {behind} {commits} that {} doesn't. Pull, so that the PR is reviewed as \
+                 it is",
+                short_ref(&upstream),
+                self.head
+            ))));
+        }
+        Ok(())
+    }
+
+    /// The distinct authors of the PR's commits, by name, in the order of their first commit
+    /// from newest to oldest.
+    pub fn commit_authors(&self) -> Res<Vec<String>> {
+        let error = |e: git2::Error| Error::LocalPr(format!("Couldn't list the PR's commits: {e}"));
+        let mut walk = self.repo.revwalk().map_err(error)?;
+        walk.push(self.head_commit()?).map_err(error)?;
+        walk.hide(self.merge_base()?).map_err(error)?;
+        let mut authors: Vec<String> = vec![];
+        for oid in walk {
+            let commit = self.repo.find_commit(oid.map_err(error)?).map_err(error)?;
+            let author = commit.author();
+            let name = author.name().ok_or_else(|| {
+                Error::LocalPr(format!(
+                    "Couldn't read the author of commit {}: the name is not UTF-8",
+                    commit.id()
+                ))
+            })?;
+            if !authors.iter().any(|known| known == name) {
+                authors.push(name.to_owned());
+            }
+        }
+        Ok(authors)
+    }
+
+    /// How many commits `from` has that `since` doesn't.
+    fn count_commits(&self, from: Oid, since: Oid) -> Res<usize> {
+        let error = |e: git2::Error| Error::LocalPr(format!("Couldn't count commits: {e}"));
+        let mut walk = self.repo.revwalk().map_err(error)?;
+        walk.push(from).map_err(error)?;
+        walk.hide(since).map_err(error)?;
+        walk.try_fold(0, |n, oid| oid.map(|_| n + 1)).map_err(error)
     }
 
     /// Why the local PR is not the GitHub PR `github_pr`, if it isn't: one whose base is not GitHub's
@@ -139,11 +219,7 @@ impl LocalBackend {
 
     /// How many commits the PR has: those of its head since it branched from its base.
     pub fn commit_count(&self) -> Res<usize> {
-        let error = |e: git2::Error| Error::LocalPr(format!("Couldn't list the PR's commits: {e}"));
-        let mut walk = self.repo.revwalk().map_err(error)?;
-        walk.push(self.head_commit()?).map_err(error)?;
-        walk.hide(self.merge_base()?).map_err(error)?;
-        walk.try_fold(0, |n, oid| oid.map(|_| n + 1)).map_err(error)
+        self.count_commits(self.head_commit()?, self.merge_base()?)
     }
 
     /// The commit the base is at: on GitHub, for a local PR linked to a GitHub PR, and otherwise
