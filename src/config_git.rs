@@ -182,8 +182,58 @@ pub(crate) fn read(
     features: Option<&str>,
     defaults: &Figment,
 ) -> Res<Dict> {
-    let _ = (options, dir, features, settings(defaults));
-    Ok(Dict::new())
+    let settings = settings(defaults);
+    let (lists, singles): (Vec<&Setting>, Vec<&Setting>) = settings
+        .iter()
+        .partition(|setting| matches!(setting.kind, Kind::List | Kind::Table | Kind::Bindings));
+    let single_names: Vec<&str> = singles
+        .iter()
+        .map(|setting| setting.name.as_str())
+        .collect();
+    let list_names: Vec<&str> = lists.iter().map(|setting| setting.name.as_str()).collect();
+
+    let mut config = Dict::new();
+    let values = options.get(dir, features, &single_names);
+    for (setting, value) in singles.into_iter().zip(values) {
+        let Some(value) = value else {
+            continue;
+        };
+        let name = &setting.name;
+        let value = match setting.kind {
+            Kind::Bool => Value::from(parse_bool(&Some(value), name)?),
+            Kind::Int => Value::from(parse_int(&Some(value), name)?),
+            Kind::Style => Value::from(parse_style(&Some(value), name)?),
+            _ => Value::from(value),
+        };
+        insert(&mut config, &setting.path, value);
+    }
+    let values = options.get_all(dir, features, &list_names);
+    for (setting, values) in lists.into_iter().zip(values) {
+        if values.is_empty() {
+            continue;
+        }
+        match setting.kind {
+            Kind::Table => {
+                for value in values {
+                    let (entry, rest) = named(&value, &setting.name)?;
+                    let mut path = setting.path.clone();
+                    path.push(entry.to_owned());
+                    insert(&mut config, &path, Value::from(rest.to_owned()));
+                }
+            }
+            Kind::Bindings => {
+                for value in values {
+                    let (action, key) = named(&value, &setting.name)
+                        .map_err(|_| not_a_binding(&value, &setting.name))?;
+                    let path =
+                        binding_path(action).ok_or_else(|| not_a_binding(&value, &setting.name))?;
+                    push(&mut config, &path, Value::from(key.to_owned()));
+                }
+            }
+            _ => insert(&mut config, &setting.path, Value::from(values)),
+        }
+    }
+    Ok(config)
 }
 
 /// An item of a table or of the bindings: its name, and the rest after the space.
@@ -265,8 +315,11 @@ fn push(config: &mut Dict, path: &[String], value: Value) {
 
 /// Whether git config holds anything in the `[delta-tui]` sections gitu read before its
 /// settings moved to `[delta]`.
-pub(crate) fn has_old_section(_git_config: &git2::Config) -> Res<bool> {
-    Ok(false)
+pub(crate) fn has_old_section(git_config: &git2::Config) -> Res<bool> {
+    let mut entries = git_config
+        .entries(Some("^delta-tui\\."))
+        .map_err(Error::ReadGitConfig)?;
+    Ok(entries.next().is_some())
 }
 
 /// As git reads a boolean, where a key with no value is true.
