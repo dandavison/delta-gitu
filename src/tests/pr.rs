@@ -1126,6 +1126,8 @@ fn setup_folded_to_stat(ctx: &mut TestContext) -> Rc<FakeGitHub> {
         .viewed
         .borrow_mut()
         .insert("big.txt".to_owned(), ViewedState::Unviewed);
+    // big.txt's commit is the PR's third.
+    *github.commits.borrow_mut() = 3;
     Rc::new(FakeGitHub {
         head_oid: run(&ctx.dir, &["git", "rev-parse", "feature"])
             .trim()

@@ -119,8 +119,8 @@ pub(crate) fn post(local: &LocalBackend, github: Rc<dyn GitHub>) -> Res<Posted> 
     Ok(posted)
 }
 
-/// An error unless `pr` is into `local`'s base and at its head's commit, so that their lines
-/// match.
+/// An error unless `pr` is into `local`'s base and at its head's commit, with its base commit
+/// and its commits, so that their lines match.
 pub(crate) fn check_pr(local: &LocalBackend, pr: &GitHubPr) -> Res<()> {
     if pr.base_ref != local.base() {
         return Err(Error::Gh(format!(
@@ -141,7 +141,7 @@ pub(crate) fn check_pr(local: &LocalBackend, pr: &GitHubPr) -> Res<()> {
             short(&head)
         )));
     }
-    Ok(())
+    local.check_against(pr)
 }
 
 fn short(oid: &str) -> &str {

@@ -470,13 +470,16 @@ fn review_cli(dir: &std::path::Path, args: &[&str]) -> String {
     review_cli_with_input(dir, args, "").unwrap()
 }
 
-/// What `gitu review <args>` prints, run in `dir` with `input` on stdin.
+/// What `gitu review <args>` prints, run in `dir` with `input` on stdin, with a GitHub on which
+/// the branch has no PR.
 fn review_cli_with_input(
     dir: &std::path::Path,
     args: &[&str],
     input: &str,
 ) -> Result<String, crate::error::Error> {
-    review_cli_with_github(dir, args, input, Rc::new(FakeGitHub::new("", "")))
+    let github = FakeGitHub::new("", "");
+    *github.has_pr.borrow_mut() = false;
+    review_cli_with_github(dir, args, input, Rc::new(github))
 }
 
 /// What `gitu review <args>` prints, run in `dir` with `input` on stdin and `github` as GitHub.
@@ -803,12 +806,18 @@ fn review_comment_that_is_empty_is_an_error() {
     assert!(error.contains("Nothing to comment"), "{error}");
 }
 
-/// GitHub with a PR of `feature` into `main` whose head is where `feature` is now.
+/// GitHub with a PR of `feature` into `main` whose head is where `feature` is now, with its
+/// commits.
 fn github_at_head(ctx: &TestContext) -> Rc<FakeGitHub> {
-    Rc::new(FakeGitHub::new(
+    let github = FakeGitHub::new(
         run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
         run(&ctx.dir, &["git", "rev-parse", "feature"]).trim(),
-    ))
+    );
+    *github.commits.borrow_mut() = run(&ctx.dir, &["git", "rev-list", "--count", "main..feature"])
+        .trim()
+        .parse()
+        .unwrap();
+    Rc::new(github)
 }
 
 #[test]
@@ -877,7 +886,8 @@ fn review_post_refuses_when_githubs_head_is_not_the_branchs() {
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
     ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
-    let github = Rc::new(FakeGitHub::new("", &"0".repeat(40)));
+    let main = run(&ctx.dir, &["git", "rev-parse", "main"]);
+    let github = Rc::new(FakeGitHub::new(main.trim(), &"0".repeat(40)));
 
     let result = review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github));
 
@@ -932,7 +942,7 @@ fn the_base_is_the_github_prs_base() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     run(&ctx.dir, &["git", "branch", "release", "main"]);
-    let github = Rc::new(FakeGitHub::new("", ""));
+    let github = github_at_head(&ctx);
     *github.base_ref.borrow_mut() = "release".to_owned();
 
     let markdown = review_cli_with_github(&ctx.dir, &["show"], "", github).unwrap();
@@ -1145,7 +1155,7 @@ fn ol_with_main_and_origin_main_diverged_is_an_error() {
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("have diverged"), "{screen}");
-    assert!(!screen.contains("feature.txt"), "{screen}");
+    assert!(!screen.contains("added: feature.txt"), "{screen}");
 }
 
 /// When the branch has a PR on GitHub, the base must be where GitHub has it, so that the local
@@ -1163,7 +1173,7 @@ fn ol_with_a_base_not_where_github_has_it_is_an_error() {
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("GitHub's main is at"), "{screen}");
-    assert!(!screen.contains("feature.txt"), "{screen}");
+    assert!(!screen.contains("added: feature.txt"), "{screen}");
 }
 
 /// When the branch is where GitHub has the PR's head, the local PR has the GitHub PR's commits,
@@ -1183,7 +1193,7 @@ fn ol_with_a_commit_count_not_githubs_is_an_error() {
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("GitHub's PR has 26 commits"), "{screen}");
-    assert!(!screen.contains("feature.txt"), "{screen}");
+    assert!(!screen.contains("added: feature.txt"), "{screen}");
 }
 
 #[test]

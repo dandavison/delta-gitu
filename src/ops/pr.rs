@@ -91,7 +91,7 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
         None,
         Some(base),
     )?
-    .with_linked_pr(GitHubBackend { github, pr });
+    .with_linked_pr(GitHubBackend { github, pr })?;
     local.refresh()?;
     show_pr(app, term, Rc::new(local))
 }

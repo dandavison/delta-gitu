@@ -4,7 +4,7 @@
 
 use super::{
     ADDED_TO_DRAFT as ADDED, Backend, Comment, PendingReview, Side, Thread, ViewedState,
-    github::{GitHub, GitHubBackend, GitHubReviewState},
+    github::{GitHub, GitHubBackend, GitHubPr, GitHubReviewState},
     missing_commit,
 };
 use crate::{Res, error::Error};
@@ -23,6 +23,9 @@ pub(crate) struct LocalBackend {
     repo: Rc<Repository>,
     head: String,
     base: String,
+    /// The ref the PR is diffed against, when it is not linked to a GitHub PR: the branch `base`
+    /// or its remote's (see [`resolve_base`]).
+    base_ref: String,
     /// Who is reviewing: git's `user.name`, the author of every comment written here.
     reviewer: String,
     /// The agent writing as the reviewer, whose name labels the comments it writes.
@@ -46,7 +49,9 @@ impl LocalBackend {
     /// The branch `head` (by default, the current branch) as a local PR into the branch `base`,
     /// or, if none is given, into the base gh gives: the base of the branch's GitHub PR, or else
     /// the default branch of the repository gh would open a PR against. Without gh's answer, the
-    /// base must be given.
+    /// base must be given. The PR is diffed against `base` or its remote's branch (see
+    /// [`resolve_base`]). If gh gives a GitHub PR for the branch, the base must be at GitHub's
+    /// base, and the PR must have GitHub's commits (see [`LocalBackend::check_against`]).
     pub fn new(
         repo: Rc<Repository>,
         github: Rc<dyn GitHub>,
@@ -64,8 +69,8 @@ impl LocalBackend {
                 head_ref.shorthand().ok_or_else(not_on_branch)?.to_owned()
             }
         };
-        let base = match base {
-            Some(base) => base,
+        let (base, github_pr) = match base {
+            Some(base) => (base, None),
             None => base_from_github(github.as_ref(), &head).map_err(|e| {
                 Error::LocalPr(format!(
                     "Couldn't find the PR's base branch with gh: {e}. Give it with --base"
@@ -84,23 +89,70 @@ impl LocalBackend {
                 )
             })?;
         let store = Store::new(repo.commondir(), &head, &base, &reviewer);
-        Ok(Self {
+        let base_ref = resolve_base(&repo, &base)?;
+        let pr = Self {
             repo,
             head,
             base,
+            base_ref,
             reviewer,
             agent: None,
             store,
             github,
             linked: None,
-        })
+        };
+        if let Some(github_pr) = &github_pr {
+            pr.check_against(github_pr).map_err(opening)?;
+        }
+        Ok(pr)
     }
 
-    /// The commit the base branch is at: on GitHub, for a local PR linked to a GitHub PR, and
-    /// otherwise locally.
+    /// Why the local PR is not the GitHub PR `github_pr`, if it isn't: one whose base is not GitHub's
+    /// base, or, while the branch is where GitHub has the PR's head, whose commits are not as
+    /// many as GitHub says the PR has.
+    pub(crate) fn check_against(&self, github_pr: &GitHubPr) -> Res<()> {
+        let base = self.base_commit()?;
+        if base.to_string() != github_pr.base_oid {
+            return Err(Error::Gh(format!(
+                "GitHub's {} is at {}, but {} is at {}. Fetch, so that they agree",
+                self.base,
+                short(&github_pr.base_oid),
+                short_ref(&self.base_ref),
+                short(&base.to_string()),
+            )));
+        }
+        let head = self.head_commit()?;
+        if head.to_string() != github_pr.head_oid {
+            return Ok(());
+        }
+        let commits = self.commit_count()?;
+        if commits != github_pr.commits {
+            return Err(Error::Gh(format!(
+                "GitHub's PR has {} commits, but {} has {commits} since it branched from {}",
+                github_pr.commits,
+                self.head,
+                short_ref(&self.base_ref),
+            )));
+        }
+        Ok(())
+    }
+
+    /// How many commits the PR has: those of its head since it branched from its base.
+    pub fn commit_count(&self) -> Res<usize> {
+        let error = |e: git2::Error| Error::LocalPr(format!("Couldn't list the PR's commits: {e}"));
+        let mut walk = self.repo.revwalk().map_err(error)?;
+        walk.push(self.head_commit()?).map_err(error)?;
+        walk.hide(self.merge_base()?).map_err(error)?;
+        walk.try_fold(0, |n, oid| oid.map(|_| n + 1)).map_err(error)
+    }
+
+    /// The commit the base is at: on GitHub, for a local PR linked to a GitHub PR, and otherwise
+    /// locally.
     fn base_commit(&self) -> Res<Oid> {
         let Some(linked) = &self.linked else {
-            return self.branch_commit(&self.base);
+            return ref_commit(&self.repo, &self.base_ref)?.ok_or_else(|| {
+                Error::LocalPr(format!("Couldn't find the PR's base, {}", self.base_ref))
+            });
         };
         let pr = &linked.pr;
         Oid::from_str(&pr.base_oid)
@@ -521,12 +573,16 @@ impl LocalBackend {
         }))
     }
 
-    /// The same PR, linked to `github`'s PR, as `O O` opens it.
-    pub fn with_linked_pr(self, github: GitHubBackend) -> Self {
-        Self {
+    /// The same PR, linked to `github`'s PR, as `O O` opens it: refused if it is not that PR
+    /// (see [`LocalBackend::check_against`]).
+    pub fn with_linked_pr(self, github: GitHubBackend) -> Res<Self> {
+        let pr = github.pr.clone();
+        let linked = Self {
             linked: Some(github),
             ..self
-        }
+        };
+        linked.check_against(&pr).map_err(opening)?;
+        Ok(linked)
     }
 
     /// The branch's GitHub PR.
@@ -928,11 +984,77 @@ fn locate(anchor: &Anchor, lines: &[String]) -> Option<u32> {
 
 /// The base of `head`'s GitHub PR, or else the default branch of the repository gh would open a
 /// PR against.
-fn base_from_github(github: &dyn GitHub, head: &str) -> Res<String> {
+fn base_from_github(github: &dyn GitHub, head: &str) -> Res<(String, Option<GitHubPr>)> {
     match github.pr_for_branch(head)? {
-        Some(pr) => Ok(pr.base_ref),
-        None => github.default_branch(),
+        Some(pr) => Ok((pr.base_ref.clone(), Some(pr))),
+        None => Ok((github.default_branch()?, None)),
     }
+}
+
+/// The ref a local PR into the branch `base` is diffed against: `refs/heads/<base>`, or its
+/// upstream on its remote, whichever has the other's commits, since a local base branch is often
+/// behind its remote's. Either alone is it, if the other is not there. When each has commits the
+/// other lacks, which the PR is into can't be told, and that is an error, as is neither being
+/// there.
+fn resolve_base(repo: &Repository, base: &str) -> Res<String> {
+    let local = format!("refs/heads/{base}");
+    let error =
+        |e: git2::Error| Error::LocalPr(format!("Couldn't find the PR's base branch {base}: {e}"));
+    let upstream = match repo.branch_upstream_name(&local) {
+        Ok(name) => Some(
+            name.as_str()
+                .ok_or_else(|| {
+                    Error::LocalPr(format!("Couldn't read {base}'s upstream: it is not UTF-8"))
+                })?
+                .to_owned(),
+        ),
+        Err(e) if e.code() == git2::ErrorCode::NotFound => None,
+        Err(e) => return Err(error(e)),
+    };
+    let upstream = upstream.unwrap_or_else(|| format!("refs/remotes/origin/{base}"));
+    match (ref_commit(repo, &local)?, ref_commit(repo, &upstream)?) {
+        (None, None) => Err(Error::LocalPr(format!(
+            "Couldn't find the PR's base branch {base}: there is no {local} or {upstream}"
+        ))),
+        (Some(_), None) => Ok(local),
+        (None, Some(_)) => Ok(upstream),
+        (Some(l), Some(u)) if l == u || repo.graph_descendant_of(u, l).map_err(error)? => {
+            Ok(upstream)
+        }
+        (Some(l), Some(u)) if repo.graph_descendant_of(l, u).map_err(error)? => Ok(local),
+        (Some(_), Some(_)) => Err(Error::LocalPr(format!(
+            "Couldn't find the PR's base: {base} and {} have diverged, so which the PR is into \
+             can't be told. Bring one up to date with the other",
+            short_ref(&upstream)
+        ))),
+    }
+}
+
+/// The commit the ref `name` is at, or `None` if there is no such ref.
+fn ref_commit(repo: &Repository, name: &str) -> Res<Option<Oid>> {
+    let error = |e: git2::Error| Error::LocalPr(format!("Couldn't read {name}: {e}"));
+    match repo.find_reference(name) {
+        Ok(reference) => Ok(Some(reference.peel_to_commit().map_err(error)?.id())),
+        Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(e) => Err(error(e)),
+    }
+}
+
+/// `name` without `refs/heads/` or `refs/remotes/`, as git shows a branch.
+fn short_ref(name: &str) -> &str {
+    name.strip_prefix("refs/heads/")
+        .or_else(|| name.strip_prefix("refs/remotes/"))
+        .unwrap_or(name)
+}
+
+/// The first 7 characters of the commit id `oid`.
+fn short(oid: &str) -> &str {
+    &oid[..oid.len().min(7)]
+}
+
+/// `e`, a reason a PR can't be opened, as an error saying so.
+fn opening(e: Error) -> Error {
+    Error::Gh(format!("Couldn't open the PR: {e}"))
 }
 
 fn no_pr(why: &str) -> Error {
@@ -943,7 +1065,7 @@ impl Backend for LocalBackend {
     fn diff_range(&self) -> String {
         match &self.linked {
             Some(linked) => format!("{}...refs/heads/{}", linked.pr.base_oid, self.head),
-            None => format!("refs/heads/{}...refs/heads/{}", self.base, self.head),
+            None => format!("{}...refs/heads/{}", self.base_ref, self.head),
         }
     }
 
