@@ -3,7 +3,10 @@ use crate::{
     Res,
     app::{App, State},
     config::ConfirmDiscardOption,
-    git::diff::{DiffType, PatchMode},
+    git::{
+        self,
+        diff::{DiffType, PatchMode},
+    },
     item_data::{ItemData, Ref},
     term::Term,
 };
@@ -80,8 +83,8 @@ fn clean_file(file: PathBuf) -> Action {
     Rc::new(move |app, term| {
         confirm_discard(app, term)?;
 
-        let mut cmd = Command::new("git");
-        cmd.args(["clean", "--force"]);
+        let mut cmd = git::with_literal_paths();
+        cmd.args(["clean", "--force", "--"]);
         cmd.arg(&file);
 
         app.run_cmd(term, &[], cmd)

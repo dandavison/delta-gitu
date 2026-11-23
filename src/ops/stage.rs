@@ -2,7 +2,10 @@ use super::OpTrait;
 use crate::{
     Action,
     app::{App, State},
-    git::diff::{Diff, DiffType, PatchMode},
+    git::{
+        self,
+        diff::{Diff, DiffType, PatchMode},
+    },
     gitu_diff::Status,
     item_data::ItemData,
     term::Term,
@@ -71,8 +74,8 @@ fn stage_unstaged() -> Action {
 
 fn stage_untracked(untracked: Vec<std::path::PathBuf>) -> Action {
     Rc::new(move |app: &mut App, term: &mut Term| {
-        let mut cmd = Command::new("git");
-        cmd.arg("add");
+        let mut cmd = git::with_literal_paths();
+        cmd.args(["add", "--"]);
         cmd.args(untracked.clone());
 
         app.run_cmd(term, &[], cmd)
@@ -81,8 +84,8 @@ fn stage_untracked(untracked: Vec<std::path::PathBuf>) -> Action {
 
 fn stage_file(file: OsString) -> Action {
     Rc::new(move |app, term| {
-        let mut cmd = Command::new("git");
-        cmd.args(["add"]);
+        let mut cmd = git::with_literal_paths();
+        cmd.args(["add", "--"]);
         cmd.arg(&file);
 
         app.run_cmd(term, &[], cmd)

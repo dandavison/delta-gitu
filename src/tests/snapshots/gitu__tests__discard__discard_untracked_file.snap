@@ -20,6 +20,6 @@ expression: ctx.redact_buffer()
                                                                                 |
                                                                                 |
 ────────────────────────────────────────────────────────────────────────────────|
-$ git clean --force some-file                                                   |
+$ git clean --force -- some-file                                                |
 Removing some-file                                                              |
-styles_hash: e3099f276a7b46df
+styles_hash: 56cd5be96f391b80
