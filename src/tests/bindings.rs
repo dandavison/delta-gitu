@@ -77,11 +77,8 @@ fn an_unbound_operation_is_listed() {
 #[test]
 fn a_binding_set_in_git_config_gives_its_default() {
     let mut ctx = setup_clone!();
-    ctx.config().bindings = crate::config::configured(
-        "",
-        "[delta-tui \"bindings.root\"]\n\tmove-down = ctrl+pagedown\n",
-    )
-    .bindings;
+    ctx.config().bindings =
+        crate::config::configured("", "[delta]\n\tbind = root.move-down ctrl+pagedown\n").bindings;
     let mut app = ctx.init_app();
     ctx.update(&mut app, keys(BINDINGS));
     let rows = rows_of(&app, "move-down");
@@ -114,8 +111,7 @@ fn a_binding_set_in_the_config_file_gives_its_default() {
 fn a_merge_menu_binding_set_in_git_config_gives_its_default() {
     let mut ctx = setup_clone!();
     ctx.config().bindings =
-        crate::config::configured("", "[delta-tui \"bindings.merge-menu\"]\n\tmerge = x\n")
-            .bindings;
+        crate::config::configured("", "[delta]\n\tbind = merge-menu.merge x\n").bindings;
     let mut app = ctx.init_app();
     ctx.update(&mut app, keys(BINDINGS));
     let rows = rows_of(&app, "merge");

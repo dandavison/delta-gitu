@@ -249,7 +249,7 @@ pub(crate) struct Screen {
     /// another row, so a turn back starts from the row kept, not that one.
     page_turned: Option<(usize, usize)>,
     scroll: Scroll,
-    config: Arc<Config>,
+    pub(crate) config: Arc<Config>,
     /// The renderer features to rebuild with, as chosen in-session. Pushed down
     /// from the app so a screen always renders with the current selection.
     pub(crate) features: Rc<[String]>,
@@ -376,6 +376,7 @@ impl Screen {
             context: self.context.clone(),
             difftastic: self.difftastic,
             streaming: self.streaming,
+            config: Arc::clone(&self.config),
         }
     }
 
@@ -2066,6 +2067,7 @@ mod tests {
                 context: None,
                 difftastic: false,
                 streaming: false,
+                config: Default::default(),
             },
             Box::new(move |_params| {
                 Ok((0..item_count)
@@ -2094,6 +2096,7 @@ mod tests {
                 context: None,
                 difftastic: false,
                 streaming: false,
+                config: Default::default(),
             },
             Box::new(move |_params| {
                 Ok(spec
@@ -2278,6 +2281,7 @@ mod tests {
                 context: None,
                 difftastic: false,
                 streaming: false,
+                config: Default::default(),
             },
             Box::new(move |params: RenderParams| {
                 let rows = if params.features.iter().any(|f| f == rows_per_line) {

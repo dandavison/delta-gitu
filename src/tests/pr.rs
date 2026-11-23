@@ -160,8 +160,8 @@ fn two_hours_ago() -> chrono::DateTime<chrono::FixedOffset> {
 /// What delta's config sets the options gitu asks it for to, as
 /// `(name, value)`, whatever the features.
 fn with_options(ctx: &mut TestContext, options: &'static [(&'static str, &'static str)]) {
-    ctx.config().general.diff_renderer.options =
-        crate::config::RendererOptions::new(move |_, _, names| {
+    ctx.config().general.diff_renderer.options = crate::config::RendererOptions::new(
+        move |_, _, names| {
             names
                 .iter()
                 .map(|name| {
@@ -171,7 +171,9 @@ fn with_options(ctx: &mut TestContext, options: &'static [(&'static str, &'stati
                         .map(|(_, value)| (*value).to_owned())
                 })
                 .collect()
-        });
+        },
+        |_, _, names| vec![vec![]; names.len()],
+    );
 }
 
 /// A thread on `lines.txt`, its comments given as `(author, body)`, each made
@@ -291,10 +293,8 @@ fn a_base_commit_not_in_the_repository_is_fetched() {
     // main moves on on GitHub, after the repository last fetched it.
     let other = ctx.dir.parent().unwrap().join("other");
     let url = Url::from_file_path(&ctx.remote_dir).unwrap().to_string();
-    run(
-        ctx.dir.parent().unwrap(),
-        &["git", "clone", &url, other.to_str().unwrap()],
-    );
+    // Relative to where it runs: on Windows the absolute path has a `\\?\` prefix git cannot use.
+    run(ctx.dir.parent().unwrap(), &["git", "clone", &url, "other"]);
     commit(&other, "later.txt", "later\n");
     run(&other, &["git", "push", "origin", "main"]);
     let github = Rc::new(FakeGitHub {
@@ -755,14 +755,16 @@ fn comments_are_drawn_in_the_comment_styles() {
 fn comment_styles_follow_the_features_in_force() {
     let mut ctx = setup_clone!();
     ctx.config().general.diff_renderer.feature_keys = [("my-theme".into(), 'e')].into();
-    ctx.config().general.diff_renderer.options =
-        crate::config::RendererOptions::new(|_, features, names| {
+    ctx.config().general.diff_renderer.options = crate::config::RendererOptions::new(
+        |_, features, names| {
             let themed = features.is_some_and(|features| features.contains("my-theme"));
             names
                 .iter()
                 .map(|name| (themed && *name == "comment-style").then(|| "red".to_owned()))
                 .collect()
-        });
+        },
+        |_, _, names| vec![vec![]; names.len()],
+    );
     let github = setup(&ctx);
     *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("alice", "Why new?")])];
     let mut app = init_app(&mut ctx, &github);
@@ -1368,14 +1370,17 @@ fn a_paste_goes_into_the_box() {
 
 /// The box is drawn in comment-editor-style, which is comment-style unless set.
 #[test]
-fn the_box_is_drawn_in_the_editor_styles() {
+fn the_box_is_drawn_in_the_comment_styles_unless_editor_styles_are_set() {
     let mut ctx = setup_clone!();
     with_options(&mut ctx, &[("comment-style", "normal blue")]);
     let github = setup(&ctx);
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO/new<enter>ihello"));
     assert_eq!(cell(&ctx, "hello", 'h').bg, crate::style::Color::Blue);
+}
 
+#[test]
+fn the_box_is_drawn_in_the_editor_styles() {
     let mut ctx = setup_clone!();
     with_options(
         &mut ctx,

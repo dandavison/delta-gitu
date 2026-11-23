@@ -58,6 +58,8 @@ pub(crate) fn create(
         Arc::clone(&config),
         params,
         Box::new(move |params: RenderParams| {
+            // The config in force when the rows are built, which follows the features in force.
+            let config = Arc::clone(&params.config);
             let status = git::status(repo.workdir().ok_or(Error::NoRepoWorkdir)?)?;
             let untracked_files = status
                 .files

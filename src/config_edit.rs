@@ -1,23 +1,31 @@
 //! Changes gitu makes to the user's git config, through `git config` so that
 //! everything else in it stays as they wrote it and a linked file is written
 //! through the link.
+//!
+//! gitu's settings are in `[delta]` and in `[delta "feature"]` sections (see
+//! [`crate::config_git`]). A setting gitu writes goes in the section and file
+//! of its last entry, the one git reads last, or else in the file holding the
+//! `[delta]` section, or else in the global git config.
 
 use crate::{Res, config_git, error::Error};
 use std::{collections::BTreeMap, path::Path, process::Command};
 
-/// Make the feature keys in git config `keys`, all of them, since they replace
-/// those of gitu's config file and the default ones. They are written to the
-/// file that already holds feature keys or else the `delta-tui` section, or to
-/// the global git config if there is none. An entry that is unchanged stays as
-/// written.
-pub(crate) fn set_feature_keys(dir: &Path, keys: &BTreeMap<String, char>) -> Res<()> {
-    set_feature_keys_with(&git_in(dir), keys)
+/// Make the feature keys in git config go from `before` to `after`: a feature whose key changed
+/// loses its `feature-key` entries in every section, and gets one with its new key, if it has
+/// one. An entry for a feature whose key did not change stays as written, so a feature key
+/// kept in a feature not in force is left alone. With no feature keys in git config, all of
+/// `after` is written, since the keys in git config replace gitu's default ones.
+pub(crate) fn set_feature_keys(
+    dir: &Path,
+    before: &BTreeMap<String, char>,
+    after: &BTreeMap<String, char>,
+) -> Res<()> {
+    set_feature_keys_with(&git_in(dir), before, after)
 }
 
-/// Make the theme in git config `theme`, or unset it, in the file that already
-/// holds it or else the `delta-tui` section, or in the global git config if
-/// there is none. Unsetting it unsets it in that file only: a theme also set in
-/// a file git reads earlier then has its way.
+/// Make the theme in git config `theme`, or unset it, where its last entry is (see the module
+/// documentation). Unsetting it unsets that entry only: a theme also set in a file git reads
+/// earlier, or in another section, then has its way.
 pub(crate) fn set_theme(dir: &Path, theme: Option<&str>) -> Res<()> {
     set_theme_with(&git_in(dir), theme)
 }
@@ -30,48 +38,110 @@ fn git_in(dir: &Path) -> impl Fn() -> Command {
     }
 }
 
+/// An entry in git config: the file holding it, its full name and its value.
+struct Entry {
+    file: String,
+    name: String,
+    value: String,
+}
+
+/// Every entry of the setting `setting`, in `[delta]` or a feature's section, in the order git
+/// reads them.
+fn entries(git: &dyn Fn() -> Command, setting: &str) -> Res<Vec<Entry>> {
+    let regex = format!("^delta\\.(.+\\.)?{}$", setting.replace('.', "\\."));
+    let output = run(git().args(["config", "--show-origin", "--null", "--get-regexp", &regex]))?;
+    // Each entry is its origin, then its name and value.
+    let fields: Vec<&str> = output.split('\0').collect();
+    Ok(fields
+        .chunks(2)
+        .filter_map(|entry| {
+            let file = entry[0].strip_prefix("file:")?;
+            let (name, value) = entry
+                .get(1)?
+                .split_once('\n')
+                .unwrap_or((entry.get(1)?, ""));
+            Some(Entry {
+                file: file.to_owned(),
+                name: name.to_owned(),
+                value: value.to_owned(),
+            })
+        })
+        .collect())
+}
+
+/// Where to write `setting`: the `git config` arguments picking the file, and the full name.
+fn target(
+    git: &dyn Fn() -> Command,
+    existing: &[Entry],
+    setting: &str,
+) -> Res<(Vec<String>, String)> {
+    if let Some(last) = existing.last() {
+        return Ok((
+            vec!["--file".to_owned(), last.file.clone()],
+            last.name.clone(),
+        ));
+    }
+    let name = format!("delta.{setting}");
+    Ok(match origin(git, "^delta\\.[^.]+$")? {
+        Some(file) => (vec!["--file".to_owned(), file], name),
+        None => (vec!["--global".to_owned()], name),
+    })
+}
+
 fn set_theme_with(git: &dyn Fn() -> Command, theme: Option<&str>) -> Res<()> {
-    let name = config_git::THEME;
-    let file = file_for(git, &format!("^{}$", name.replace('.', "\\.")))?;
+    let existing = entries(git, config_git::THEME)?;
+    let (file, name) = target(git, &existing, config_git::THEME)?;
     match theme {
-        Some(theme) => run(git().arg("config").args(&file).args([name, theme]))?,
-        None => run(git().arg("config").args(&file).args(["--unset-all", name]))?,
+        Some(theme) => run(git().arg("config").args(&file).args([&name, theme]))?,
+        None => run(git().arg("config").args(&file).args(["--unset-all", &name]))?,
     };
     Ok(())
 }
 
-/// The `git config` arguments that pick the file to write a key matching
-/// `regex` to: the one that already holds such a key, or else the `delta-tui`
-/// section, or the global git config if there is none.
-fn file_for(git: &dyn Fn() -> Command, regex: &str) -> Res<Vec<String>> {
-    Ok(
-        match origin(git, regex)?.or(origin(git, &format!("^{}\\.", config_git::SECTION))?) {
-            Some(file) => vec!["--file".to_owned(), file],
-            None => vec!["--global".to_owned()],
-        },
-    )
-}
-
-fn set_feature_keys_with(git: &dyn Fn() -> Command, keys: &BTreeMap<String, char>) -> Res<()> {
-    let prefix = format!("{}.", config_git::FEATURE_KEYS_SECTION);
-    let regex = format!("^{}", prefix.replace('.', "\\."));
-    let file = file_for(git, &regex)?;
-
-    let held = entries(git, &file, &regex)?;
-    for (name, value) in &held {
-        let feature = &name[prefix.len()..];
-        if keys.get(feature).map(char::to_string).as_ref() != Some(value) {
+fn set_feature_keys_with(
+    git: &dyn Fn() -> Command,
+    before: &BTreeMap<String, char>,
+    after: &BTreeMap<String, char>,
+) -> Res<()> {
+    let changed: Vec<&String> = before
+        .keys()
+        .chain(after.keys())
+        .filter(|feature| before.get(*feature) != after.get(*feature))
+        .collect();
+    let existing = entries(git, config_git::FEATURE_KEY)?;
+    let (file, name) = target(git, &existing, config_git::FEATURE_KEY)?;
+    // With none in git config, the default keys are in force, and the keys written are all of
+    // them, since they replace the defaults.
+    let changed: Vec<&String> = if existing.is_empty() {
+        after.keys().collect()
+    } else {
+        changed
+    };
+    let feature_of = |entry: &Entry| entry.value.split_whitespace().next().map(str::to_owned);
+    for entry in &existing {
+        if feature_of(entry).is_some_and(|feature| changed.contains(&&feature)) {
             run(git()
-                .args(["config"])
-                .args(&file)
-                .args(["--unset-all", name]))?;
+                .args([
+                    "config",
+                    "--file",
+                    &entry.file,
+                    "--fixed-value",
+                    "--unset-all",
+                ])
+                .args([&entry.name, &entry.value]))?;
         }
     }
-    for (feature, key) in keys {
-        let name = format!("{prefix}{feature}");
-        let key = key.to_string();
-        if !held.contains(&(name.clone(), key.clone())) {
-            run(git().args(["config"]).args(&file).args([&name, &key]))?;
+    let mut added = vec![];
+    for feature in changed {
+        if let Some(key) = after.get(feature)
+            && !added.contains(&feature)
+        {
+            added.push(feature);
+            run(git().args(["config"]).args(&file).args([
+                "--add",
+                &name,
+                &format!("{feature} {key}"),
+            ]))?;
         }
     }
     Ok(())
@@ -90,19 +160,6 @@ fn origin(git: &dyn Fn() -> Command, regex: &str) -> Res<Option<String>> {
         .map(str::to_owned))
 }
 
-/// The names and values of the entries in `file` whose names match `regex`.
-fn entries(git: &dyn Fn() -> Command, file: &[String], regex: &str) -> Res<Vec<(String, String)>> {
-    let output = run(git()
-        .arg("config")
-        .args(file)
-        .args(["--null", "--get-regexp", regex]))?;
-    Ok(output
-        .split('\0')
-        .filter_map(|entry| entry.split_once('\n'))
-        .map(|(name, value)| (name.to_owned(), value.to_owned()))
-        .collect())
-}
-
 /// What `git` writes, where finding nothing (status 1) is no error.
 fn run(git: &mut Command) -> Res<String> {
     let output = git.output().map_err(|e| Error::EditConfig(e.to_string()))?;
@@ -117,7 +174,7 @@ fn run(git: &mut Command) -> Res<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::init_config_from;
+    use crate::config::configured_with;
     use std::{fs, path::PathBuf};
     use temp_dir::TempDir;
 
@@ -155,14 +212,14 @@ mod tests {
             git
         }
 
-        fn set_feature_keys(&self, keys: &BTreeMap<String, char>) {
-            set_feature_keys_with(&|| self.git(), keys).unwrap();
+        fn set_feature_keys(&self, before: &[(&str, char)], after: &[(&str, char)]) {
+            set_feature_keys_with(&|| self.git(), &keys(before), &keys(after)).unwrap();
         }
 
-        /// The feature keys gitu would read from git config file `name`.
-        fn feature_keys(&self, name: &str) -> Vec<(String, char)> {
-            let git_config = git2::Config::open(&self.path(name)).unwrap();
-            init_config_from(self.path("none.toml"), Some(&git_config))
+        /// The feature keys gitu would read from git config file `name`, with `features` in
+        /// force as `DELTA_FEATURES` gives them.
+        fn feature_keys_with(&self, name: &str, features: Option<&str>) -> Vec<(String, char)> {
+            configured_with("", &self.read(name), features)
                 .unwrap()
                 .general
                 .diff_renderer
@@ -171,18 +228,22 @@ mod tests {
                 .collect()
         }
 
+        fn feature_keys(&self, name: &str) -> Vec<(String, char)> {
+            self.feature_keys_with(name, None)
+        }
+
         fn read(&self, name: &str) -> String {
             fs::read_to_string(self.path(name)).unwrap()
         }
     }
 
-    /// With no delta-tui section anywhere, the keys go in the global config,
-    /// as `git config --global` would put them.
+    /// With no `[delta]` section anywhere, the keys go in the global config, as
+    /// `git config --global` would put them.
     #[test]
     fn keys_go_in_the_global_git_config_by_default() {
         let repo = Repo::new("");
 
-        repo.set_feature_keys(&keys(&[("side-by-side", 'e')]));
+        repo.set_feature_keys(&[], &[("side-by-side", 'e')]);
 
         assert_eq!(
             repo.feature_keys("global.gitconfig"),
@@ -190,26 +251,46 @@ mod tests {
         );
     }
 
-    /// Where the user keeps the TUI's config, often a file of its own included
+    /// Where the user keeps their delta config, often a file of its own included
     /// from their git config.
     #[test]
-    fn keys_go_in_the_file_holding_the_delta_tui_section() {
-        let repo = Repo::new("[include]\n\tpath = tui.gitconfig\n");
+    fn keys_go_in_the_file_holding_the_delta_section() {
+        let repo = Repo::new("[include]\n\tpath = delta.gitconfig\n");
         fs::write(
-            repo.path("tui.gitconfig"),
-            "[delta-tui]\n\tstart-folded = true\n",
+            repo.path("delta.gitconfig"),
+            "[delta]\n\tstart-folded = true\n",
         )
         .unwrap();
 
-        repo.set_feature_keys(&keys(&[("side-by-side", 'e')]));
+        repo.set_feature_keys(&[], &[("side-by-side", 'e')]);
 
         assert_eq!(
             repo.read("global.gitconfig"),
-            "[include]\n\tpath = tui.gitconfig\n"
+            "[include]\n\tpath = delta.gitconfig\n"
         );
         assert_eq!(
-            repo.feature_keys("tui.gitconfig"),
+            repo.feature_keys("delta.gitconfig"),
             [("side-by-side".into(), 'e')]
+        );
+    }
+
+    /// The feature keys a user keeps in a feature of their own stay there.
+    #[test]
+    fn keys_go_in_the_section_holding_feature_keys() {
+        let repo = Repo::new(
+            "[delta]\n\tfeatures = tui\n\
+             [delta \"tui\"]\n\tfeature-key = line-numbers w\n",
+        );
+
+        repo.set_feature_keys(
+            &[("line-numbers", 'w')],
+            &[("line-numbers", 'w'), ("side-by-side", 'e')],
+        );
+
+        let written = repo.read("global.gitconfig");
+        assert!(
+            written.ends_with("\tfeature-key = line-numbers w\n\tfeature-key = side-by-side e\n"),
+            "{written}"
         );
     }
 
@@ -217,14 +298,16 @@ mod tests {
     #[test]
     fn everything_else_in_the_file_is_kept_as_written() {
         let mine = "# My settings\n\
-                    [delta-tui]\n\
+                    [delta]\n\
                     \t# Offered by -.\n\
                     \tvisit-context-lines = true  # mine\n\
-                    [delta-tui \"general.diff-renderer.feature-keys\"]\n\
-                    \tline-numbers = w  # mine\n";
+                    \tfeature-key = line-numbers w  # mine\n";
         let repo = Repo::new(mine);
 
-        repo.set_feature_keys(&keys(&[("line-numbers", 'w'), ("side-by-side", 'e')]));
+        repo.set_feature_keys(
+            &[("line-numbers", 'w')],
+            &[("line-numbers", 'w'), ("side-by-side", 'e')],
+        );
 
         let written = repo.read("global.gitconfig");
         assert!(written.starts_with(mine), "{written}");
@@ -238,8 +321,11 @@ mod tests {
     fn a_feature_left_out_loses_its_key() {
         let repo = Repo::new("");
 
-        repo.set_feature_keys(&keys(&[("side-by-side", 'e'), ("line-numbers", 'w')]));
-        repo.set_feature_keys(&keys(&[("line-numbers", 'w')]));
+        repo.set_feature_keys(&[], &[("side-by-side", 'e'), ("line-numbers", 'w')]);
+        repo.set_feature_keys(
+            &[("side-by-side", 'e'), ("line-numbers", 'w')],
+            &[("line-numbers", 'w')],
+        );
 
         assert_eq!(
             repo.feature_keys("global.gitconfig"),
@@ -251,8 +337,11 @@ mod tests {
     fn a_key_moves_to_the_feature_it_is_set_for() {
         let repo = Repo::new("");
 
-        repo.set_feature_keys(&keys(&[("side-by-side", 'e'), ("line-numbers", 'w')]));
-        repo.set_feature_keys(&keys(&[("line-numbers", 'e')]));
+        repo.set_feature_keys(&[], &[("side-by-side", 'e'), ("line-numbers", 'w')]);
+        repo.set_feature_keys(
+            &[("side-by-side", 'e'), ("line-numbers", 'w')],
+            &[("line-numbers", 'e')],
+        );
 
         assert_eq!(
             repo.feature_keys("global.gitconfig"),
@@ -260,23 +349,43 @@ mod tests {
         );
     }
 
+    /// A feature key set in a feature that is not in force is not one gitu was showing, so a
+    /// change to the others leaves it alone.
+    #[test]
+    fn a_key_in_a_feature_not_in_force_is_kept() {
+        let repo = Repo::new(
+            "[delta]\n\tfeature-key = line-numbers w\n\
+             [delta \"other\"]\n\tfeature-key = side-by-side W\n",
+        );
+
+        repo.set_feature_keys(&[("line-numbers", 'w')], &[("line-numbers", 'Q')]);
+
+        assert_eq!(
+            repo.feature_keys_with("global.gitconfig", Some("+other")),
+            [("line-numbers".into(), 'Q'), ("side-by-side".into(), 'W')]
+        );
+    }
+
     /// A config kept in a dotfiles repo is often a link into it.
     #[cfg(unix)]
     #[test]
     fn a_linked_config_file_is_written_through_the_link() {
-        let repo = Repo::new("[include]\n\tpath = tui.gitconfig\n");
+        let repo = Repo::new("[include]\n\tpath = delta.gitconfig\n");
         fs::write(
             repo.path("dotfiles.gitconfig"),
-            "[delta-tui]\n\tstart-folded = true\n",
+            "[delta]\n\tstart-folded = true\n",
         )
         .unwrap();
-        std::os::unix::fs::symlink(repo.path("dotfiles.gitconfig"), repo.path("tui.gitconfig"))
-            .unwrap();
+        std::os::unix::fs::symlink(
+            repo.path("dotfiles.gitconfig"),
+            repo.path("delta.gitconfig"),
+        )
+        .unwrap();
 
-        repo.set_feature_keys(&keys(&[("side-by-side", 'e')]));
+        repo.set_feature_keys(&[], &[("side-by-side", 'e')]);
 
         assert!(
-            fs::symlink_metadata(repo.path("tui.gitconfig"))
+            fs::symlink_metadata(repo.path("delta.gitconfig"))
                 .unwrap()
                 .is_symlink()
         );

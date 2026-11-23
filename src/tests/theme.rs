@@ -9,9 +9,9 @@ fn with_themes(ctx: &TestContext) -> PathBuf {
         ("delta.theme-a.dark", "true"),
         ("delta.theme-b.light", "true"),
         ("delta.not-a-theme.syntax-theme", "Nord"),
-        // The repository's own git config holds the `delta-tui` section, so it
+        // The repository's own git config holds the `[delta]` section, so it
         // is where a theme chosen is written.
-        ("delta-tui.visit-context-lines", "true"),
+        ("delta.visit-context-lines", "true"),
     ] {
         run(&ctx.dir, &["git", "config", key, value]);
     }
@@ -20,9 +20,7 @@ fn with_themes(ctx: &TestContext) -> PathBuf {
 
 /// The theme gitu would read from the git config file at `path`.
 fn saved_theme(path: &Path) -> Option<String> {
-    let git_config = git2::Config::open(path).unwrap();
-    crate::config::init_config_from(PathBuf::from("/nonexistent/config.toml"), Some(&git_config))
-        .unwrap()
+    crate::config::configured("", &fs::read_to_string(path).unwrap())
         .general
         .diff_renderer
         .theme
@@ -126,7 +124,7 @@ fn a_theme_for_the_other_mode_stays_on_going_back_to_one_row() {
 }
 
 /// Enter keeps the theme, and saves it to the git config that holds the
-/// `delta-tui` section, beside what was already there.
+/// `[delta]` section, beside what was already there.
 #[test]
 fn enter_chooses_the_theme_and_saves_it() {
     let mut ctx = setup_clone!();
@@ -217,12 +215,7 @@ fn choosing_no_theme_unsets_the_saved_one() {
     let path = with_themes(&ctx);
     run(
         &ctx.dir,
-        &[
-            "git",
-            "config",
-            "delta-tui.general.diff-renderer.theme",
-            "theme-a",
-        ],
+        &["git", "config", "delta.diff-renderer-theme", "theme-a"],
     );
     ctx.config().general.diff_renderer.theme = Some("theme-a".into());
     let mut app = ctx.init_app();

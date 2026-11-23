@@ -41,6 +41,11 @@ pub struct Args {
     /// Config file to use
     #[clap(short, long)]
     pub config: Option<PathBuf>,
+
+    /// Print the settings in git config's old [delta-tui] sections as they go in [delta], and
+    /// exit. This option is temporary and will be removed.
+    #[clap(long, action)]
+    pub migrate_old_config: bool,
 }
 
 #[derive(Debug, Subcommand)]

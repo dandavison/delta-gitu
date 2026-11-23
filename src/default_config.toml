@@ -1,11 +1,15 @@
 # This file contains Gitu's default configuration.
 # It is possible to override settings with an equivalent file at:
 # `~/.config/gitu/config.toml`
-# and to override both in git config's `delta-tui` section, e.g.
-#   [delta-tui]
+# and to override both in git config, beside delta's own options in `[delta]`
+# or in a `[delta "feature"]` section, e.g.
+#   [delta]
 #       start-folded = true
-#   [delta-tui "style"]
-#       hunk-header = bold blue
+#       hash-style = bold blue
+# A setting's name there is its path here with dashes, less `general`
+# (`diff_renderer.theme` is `diff-renderer-theme`), and a style's ends in
+# `-style` (`menu.active_arg` is `menu-active-arg-style`). `hunk_header` cannot
+# be set there, since `hunk-header-style` is delta's.
 
 [general]
 always_show_help.enabled = false
@@ -68,13 +72,15 @@ diff_renderer.features = ["side-by-side", "line-numbers", "plus-minus-markers", 
 # and `views` below), by name. A key already bound at the top level is refused. Feature keys in your
 # config replace these, rather than adding to them. In the `renderer_features`
 # list, a letter sets the selected feature's or command's key, the same letter
-# again unsets it, and Gitu writes them all here.
+# again unsets it, and Gitu writes it to git config. In git config:
+#   [delta]
+#       feature-key = side-by-side S
 diff_renderer.feature_keys = { side-by-side = "S", line-numbers = "L", difftastic = "*" }
 
 # The theme overlaid on your delta configuration, after the features above, as
 # `renderer_themes` sets it. A theme is a feature defined in git config that
 # sets `dark` or `light`, as delta defines one. `renderer_themes` writes your
-# choice to git config's delta-tui section, not here.
+# choice to git config, as `diff-renderer-theme`, not here.
 # diff_renderer.theme = "my-theme"
 # delta's builtin features to offer as themes too, after those in git config,
 # e.g. ["diff-so-fancy"].
@@ -131,8 +137,8 @@ start_folded = false
 # screens are rebuilt when it exits. Its output is not shown; one that fails
 # says so, with its exit code.
 # In git config:
-#   [delta-tui "general.commands"]
-#       open-pr = gh pr view --web {commit}
+#   [delta]
+#       command = open-pr gh pr view --web {commit}
 commands = {}
 
 # git commands, by name, that a key from `diff_renderer.feature_keys` opens as
@@ -141,9 +147,9 @@ commands = {}
 # diff`, `git show` or `git log`, run again after each change as `:` runs an
 # edited command. `{command}` is a word of its own, standing for the words of
 # the git command shown, so that a view can change it. In git config:
-#   [delta-tui "general.views"]
-#       diff-since = git diff {commit}...
-#       word-diff = {command} --word-diff
+#   [delta]
+#       view = diff-since git diff {commit}...
+#       view = word-diff {command} --word-diff
 views = {}
 
 # An editor that alt+enter opens a file, hunk or line in, besides the one enter
@@ -225,6 +231,11 @@ blame.line_num = { mods = "DIM" }
 blame.code_line = { mods = "DIM" }
 
 [bindings]
+# In git config, one key an entry, which replace an action's default keys:
+#   [delta]
+#       bind = root.quit q
+#       bind = root.quit left
+#       bind = commit-menu.--all -A
 root.quit = ["q", "esc"]
 # Fold the file or hunk unfolded on this screen that the cursor is on or in.
 # Otherwise like quit, but on the first screen it does nothing rather than leave

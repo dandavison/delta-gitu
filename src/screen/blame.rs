@@ -24,6 +24,8 @@ pub(crate) fn create(
         Arc::clone(&config),
         params,
         Box::new(move |params: RenderParams| {
+            // The config in force when the rows are built, which follows the features in force.
+            let config = Arc::clone(&params.config);
             let commit_display = commit.as_deref().unwrap_or("HEAD").to_string();
             let blame_lines = git::blame(repo.as_ref(), &file_path, commit.as_deref())?;
             let (rendered, failed) =

@@ -7,6 +7,7 @@ mod cmd_log;
 pub mod config;
 mod config_edit;
 mod config_git;
+mod config_migrate;
 mod diff_renderer;
 mod difftastic;
 pub mod error;
@@ -97,6 +98,11 @@ pub type Res<T> = Result<T, Error>;
 
 /// Run gitu, returning the status to exit with.
 pub fn run(config: Arc<Config>, args: &cli::Args, term: &mut Term) -> Res<i32> {
+    // Before anything that reads the TUI's settings, which refuses an old [delta-tui] section.
+    if args.migrate_old_config {
+        config_migrate::print()?;
+        return Ok(0);
+    }
     needs_terminal(io::stdout().is_terminal())?;
     // Before anything slower, and before reading the input: the git process on
     // the other end of a pipe exits as soon as its output fits in the pipe, and
@@ -108,6 +114,7 @@ pub fn run(config: Arc<Config>, args: &cli::Args, term: &mut Term) -> Res<i32> {
 
     log::debug!("Opening repo");
     let repo = open_repo_from_env()?;
+    let config = Arc::new(config.resolved(repo.workdir().unwrap_or(repo.path()), None)?);
 
     let piped = paging
         .then(|| read_piped_input(git_argv, repo.workdir(), config.general.max_input_bytes))
