@@ -50,7 +50,7 @@ fn unstaged_file_is_listed() {
         write(ctx, name, "content\n");
         commit_all(ctx);
         write(ctx, name, "changed\n");
-        assert_lists(ctx, name);
+        assert_lists(ctx, &as_git_writes(ctx, name));
     });
 }
 
@@ -59,7 +59,7 @@ fn staged_file_is_listed() {
     for_each_name(function_name!(), |ctx, name| {
         write(ctx, name, "content\n");
         run(&ctx.dir, &["git", "add", "-A"]);
-        assert_lists(ctx, name);
+        assert_lists(ctx, &as_git_writes(ctx, name));
     });
 }
 
@@ -71,7 +71,7 @@ fn renamed_file_is_listed() {
         fs::remove_file(ctx.dir.join("old")).unwrap();
         write(ctx, name, "content\n");
         run(&ctx.dir, &["git", "add", "-A"]);
-        assert_lists(ctx, name);
+        assert_lists(ctx, &as_git_writes(ctx, name));
     });
 }
 
@@ -82,7 +82,7 @@ fn commit_lists_the_file() {
         commit_all(ctx);
         let mut app = ctx.init_app();
         ctx.update(&mut app, keys("ll<enter>"));
-        assert_shows(ctx, name);
+        assert_shows(ctx, &as_git_writes(ctx, name));
     });
 }
 
@@ -149,6 +149,7 @@ fn for_each_name(test_name: &str, test: impl Fn(&mut TestContext, &str)) {
     let failures: Vec<String> = NAMES
         .iter()
         .enumerate()
+        .filter(|(_, name)| !cfg!(windows) || windows_allows(name))
         .filter_map(|(i, name)| {
             let mut ctx = TestContext::setup_clone(&format!("{test_name}-{i}"));
             // Lists untracked files one by one, rather than their directory.
@@ -168,6 +169,16 @@ fn for_each_name(test_name: &str, test: impl Fn(&mut TestContext, &str)) {
         NAMES.len(),
         failures.join("\n")
     );
+}
+
+/// Whether Windows allows a file to have the name `name`: it uses `\` as a
+/// separator and does not allow `<>:"|?*`, control characters, or a name
+/// ending in a space or a dot.
+fn windows_allows(name: &str) -> bool {
+    !name
+        .chars()
+        .any(|c| "\\<>:\"|?*".contains(c) || c.is_control())
+        && !name.ends_with([' ', '.'])
 }
 
 fn panic_message(e: &(dyn std::any::Any + Send)) -> String {
@@ -236,17 +247,38 @@ fn status(ctx: &TestContext) -> Vec<String> {
     entries
 }
 
+/// `name` as git writes it in a diff, between the quotes if git quotes it.
+/// The renderer (delta) heads a file with its name in this form, unescaped
+/// only when git's `core.quotepath` is false.
+fn as_git_writes(ctx: &TestContext, name: &str) -> String {
+    let output = std::process::Command::new("git")
+        .args(["ls-files", "--", name])
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .current_dir(&ctx.dir)
+        .output()
+        .unwrap();
+    let listed = String::from_utf8(output.stdout).unwrap();
+    let listed = listed.strip_suffix('\n').unwrap();
+    listed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(listed)
+        .to_string()
+}
+
 fn assert_lists(ctx: &mut TestContext, name: &str) {
     ctx.init_app();
     assert_shows(ctx, name);
 }
 
 /// The screen shows `name`, unless it holds a character the terminal cannot
-/// show as itself.
+/// show as itself, and the renderer drew every file as one gitu knows.
 fn assert_shows(ctx: &TestContext, name: &str) {
+    let buffer = ctx.redact_buffer();
+    // The start of the row saying so, which wraps.
+    assert!(!buffer.contains("drew rows for"), "{buffer}");
     if name.chars().any(char::is_control) {
         return;
     }
-    let buffer = ctx.redact_buffer();
     assert!(buffer.contains(name), "{buffer}");
 }
