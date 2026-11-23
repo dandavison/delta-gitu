@@ -65,12 +65,28 @@ pub(crate) fn post(local: &LocalBackend, github: Rc<dyn GitHub>) -> Res<Posted> 
     check_pr(local, &pr).map_err(|e| Error::Gh(format!("Couldn't post: {e}")))?;
     let review = match (github.pending_review(&pr)?, &to_post.link) {
         (Some(pending), Some(link)) if pending == *link => pending,
-        (Some(_), _) => {
-            return Err(Error::Gh(
-                "Couldn't post: you have a pending review on GitHub that this draft review did \
-                 not start. Submit or delete it on GitHub first"
-                    .to_owned(),
-            ));
+        (Some(pending), _) => {
+            let comments = github
+                .reviews(&pr)?
+                .into_iter()
+                .find(|review| review.id == pending)
+                .map(|review| review.comments.len())
+                .ok_or_else(|| {
+                    Error::Gh(format!(
+                        "Couldn't post: GitHub says you have a pending review {pending}, but \
+                         doesn't list it among the PR's reviews"
+                    ))
+                })?;
+            let comments = match comments {
+                0 => "no comments".to_owned(),
+                1 => "1 comment".to_owned(),
+                n => format!("{n} comments"),
+            };
+            return Err(Error::Gh(format!(
+                "Couldn't post: you have a pending review on {}, with {comments}, that this \
+                 draft review did not start. Submit or delete it there first",
+                pr.url
+            )));
         }
         (None, _) => github.start_review(&pr)?,
     };

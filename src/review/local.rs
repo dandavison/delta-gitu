@@ -3,7 +3,7 @@
 //! the repository sees it (see [`Store`]).
 
 use super::{
-    ADDED_TO_DRAFT as ADDED, Backend, Comment, Side, Thread, ViewedState,
+    ADDED_TO_DRAFT as ADDED, Backend, Comment, PendingReview, Side, Thread, ViewedState,
     github::{GitHub, GitHubBackend, GitHubReviewState},
     missing_commit,
 };
@@ -965,6 +965,30 @@ impl Backend for LocalBackend {
 
     fn as_local(&self) -> Option<&LocalBackend> {
         Some(self)
+    }
+
+    fn pending_review(&self) -> Res<Option<PendingReview>> {
+        let file = self.store.read()?;
+        let Some(pending) = file
+            .reviews
+            .iter()
+            .find(|r| r.state == ReviewState::Pending && r.mine)
+        else {
+            return Ok(None);
+        };
+        let comments = file
+            .threads
+            .iter()
+            .flat_map(|t| &t.comments)
+            .filter(|c| c.review == pending.id)
+            .count();
+        let started_by_draft = file.reviews.iter().any(|r| {
+            r.state == ReviewState::Draft && r.github.is_some() && r.github == pending.github
+        });
+        Ok(Some(PendingReview {
+            comments,
+            started_by_draft,
+        }))
     }
 
     fn viewed(&self) -> Res<HashMap<String, ViewedState>> {

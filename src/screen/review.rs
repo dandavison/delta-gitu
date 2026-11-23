@@ -116,7 +116,15 @@ pub(crate) fn with_threads(
     if pr.backend.head_mismatch(repo) {
         out.push(warning_row());
     }
-    for error in not_in_diff(&threads, &pr.viewed.borrow()) {
+    if let Some(pending) = *pr.pending_review.borrow() {
+        let (text, style) = pending_review_row(pending, options, error_style);
+        out.push(Item {
+            unselectable: true,
+            rendered: Some(Rc::new(vec![(text, style)])),
+            ..Default::default()
+        });
+    }
+    for error in not_in_diff(&threads, &pr.viewed.borrow(), &files) {
         out.push(Item {
             unselectable: true,
             rendered: Some(Rc::new(vec![(error, error_style)])),
@@ -166,11 +174,47 @@ pub(crate) fn with_threads(
     out
 }
 
-/// What to say of the threads on files not in the PR's diff, `files`, one line for each file.
-fn not_in_diff(threads: &[Thread], files: &HashMap<String, review::ViewedState>) -> Vec<String> {
+/// What to say of the user's pending review on GitHub, which has no rows of its own when it has
+/// no comments, and in what style: an error's when it stops `O p`.
+fn pending_review_row(
+    pending: review::PendingReview,
+    options: &CommentOptions,
+    error_style: Style,
+) -> (String, Style) {
+    let comments = match pending.comments {
+        0 => "no comments".to_owned(),
+        1 => "1 comment".to_owned(),
+        n => format!("{n} comments"),
+    };
+    if pending.started_by_draft {
+        (
+            format!(
+                "You have a pending review on GitHub, with {comments}, which only you can see \
+                 until you submit it there. O p adds to it"
+            ),
+            options.count,
+        )
+    } else {
+        (
+            format!(
+                "You have a pending review on GitHub, with {comments}. O p won't post until you \
+                 submit or delete it on GitHub"
+            ),
+            error_style,
+        )
+    }
+}
+
+/// What to say of the threads on files neither in the PR on GitHub, `pr_files`, nor among the
+/// rows, `rows`, one line for each file.
+fn not_in_diff(
+    threads: &[Thread],
+    pr_files: &HashMap<String, review::ViewedState>,
+    rows: &HashMap<String, usize>,
+) -> Vec<String> {
     let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
     for thread in threads {
-        if !files.contains_key(&thread.path) {
+        if !pr_files.contains_key(&thread.path) && !rows.contains_key(&thread.path) {
             *counts.entry(thread.path.as_str()).or_default() += 1;
         }
     }

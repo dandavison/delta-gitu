@@ -389,6 +389,7 @@ impl App {
                     ));
                 };
                 *pr.threads.borrow_mut() = crate::review::Backend::threads(local)?;
+                *pr.pending_review.borrow_mut() = crate::review::Backend::pending_review(local)?;
             }
         }
         Ok(())

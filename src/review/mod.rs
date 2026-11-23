@@ -68,6 +68,10 @@ pub(crate) trait Backend {
     fn as_local(&self) -> Option<&local::LocalBackend> {
         None
     }
+    /// The user's pending review on GitHub, as last fetched, if they have one.
+    fn pending_review(&self) -> Res<Option<PendingReview>> {
+        Ok(None)
+    }
     /// The page showing the file at `path` in the PR's diff, at `line` when given, or `None`
     /// when the backend has no pages.
     fn file_url(&self, path: &str, line: Option<(Side, u32)>) -> Option<String>;
@@ -130,10 +134,20 @@ pub(crate) struct Comment {
 
 /// A PR opened for review on a screen, with the checkbox state of each of its files, by path, and
 /// its review threads.
+/// The user's pending review on GitHub: only they can see its comments until they submit it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingReview {
+    pub comments: usize,
+    /// Whether posting the draft review started it, so that posting again adds to it. Posting
+    /// refuses while the user has a pending review it didn't start.
+    pub started_by_draft: bool,
+}
+
 pub(crate) struct OpenPr {
     pub backend: Rc<dyn Backend>,
     pub viewed: RefCell<HashMap<String, ViewedState>>,
     pub threads: RefCell<Vec<Thread>>,
+    pub pending_review: RefCell<Option<PendingReview>>,
     /// The options comments were last drawn with, and the features in force they were asked
     /// with, as `DELTA_FEATURES` gives them; `None` until they are first asked for, and once the
     /// PR is read again, so that a change to delta's config counts.
@@ -179,10 +193,18 @@ impl OpenPr {
         Ok(Self {
             viewed: RefCell::new(backend.viewed()?),
             threads: RefCell::new(backend.threads()?),
+            pending_review: RefCell::new(backend.pending_review()?),
             options: RefCell::new(None),
             editor: RefCell::new(None),
             backend,
         })
+    }
+
+    /// Read the threads, and the user's pending review on GitHub, from the backend again.
+    pub fn reread_threads(&self) -> Res<()> {
+        *self.threads.borrow_mut() = self.backend.threads()?;
+        *self.pending_review.borrow_mut() = self.backend.pending_review()?;
+        Ok(())
     }
 
     /// The checkbox drawn before the file at `path`: blank for a file the backend does not have

@@ -1743,7 +1743,8 @@ fn op_refuses_while_you_have_a_pending_review_it_did_not_start() {
     assert!(github.posted.borrow().is_empty());
     let screen = ctx.redact_buffer();
     assert!(
-        screen.contains("Couldn't post: you have a pending review on GitHub"),
+        screen
+            .contains("Couldn't post: you have a pending review on https://github.com/o/r/pull/7"),
         "{screen}"
     );
 }

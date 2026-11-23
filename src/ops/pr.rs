@@ -187,7 +187,7 @@ pub(crate) fn reread_pr(app: &mut App) -> Res<()> {
     if let Some(pr) = app.screen().pr.clone() {
         pr.backend.refresh()?;
         *pr.viewed.borrow_mut() = pr.backend.viewed()?;
-        *pr.threads.borrow_mut() = pr.backend.threads()?;
+        pr.reread_threads()?;
         *pr.options.borrow_mut() = None;
     }
     Ok(())
@@ -458,7 +458,7 @@ pub(crate) fn delete_comment(thread_id: String, comment_id: String) -> Action {
         }
         app.confirm(term, "Really delete the comment? [y/n]")?;
         let message = pr.backend.delete_comment(&thread_id, &comment_id)?;
-        *pr.threads.borrow_mut() = pr.backend.threads()?;
+        pr.reread_threads()?;
         app.screen_mut().redecorate();
         app.display_info(message);
         Ok(())
@@ -554,7 +554,7 @@ fn post_comment(app: &mut App) -> Res<()> {
         } => pr.backend.edit_comment(thread_id, comment_id, &body)?,
     };
     *pr.editor.borrow_mut() = None;
-    *pr.threads.borrow_mut() = pr.backend.threads()?;
+    pr.reread_threads()?;
     app.screen_mut().redecorate();
     app.display_info(message);
     Ok(())
