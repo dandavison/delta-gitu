@@ -50,6 +50,8 @@ pub(super) struct FakeGitHub {
     pub(super) refuses_threads: RefCell<bool>,
     /// The ids of comments that are in no review GitHub lists.
     pub(super) unreviewed: RefCell<Vec<String>>,
+    /// How many commits GitHub says the PR has: by default, the 2 that `setup`'s `feature` has.
+    pub(super) commits: RefCell<usize>,
 }
 
 impl GitHub for FakeGitHub {
@@ -62,6 +64,7 @@ impl GitHub for FakeGitHub {
             base_ref: self.base_ref.borrow().clone(),
             base_oid: self.base_oid.clone(),
             head_oid: self.head_oid.clone(),
+            commits: *self.commits.borrow(),
         })
     }
 
@@ -282,6 +285,7 @@ impl FakeGitHub {
             fails: RefCell::new(false),
             refuses_threads: RefCell::new(false),
             unreviewed: RefCell::new(vec![]),
+            commits: RefCell::new(2),
         }
     }
 }

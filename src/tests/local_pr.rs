@@ -1099,6 +1099,93 @@ fn posting_refused_for_a_pending_review_says_where_it_is_and_what_it_has() {
     assert!(error.contains("with no comments"), "{error}");
 }
 
+/// A repository whose `main` is behind `origin/main`, with `feature` branched from
+/// `origin/main` and pushed: `main` lacks `upstream.txt`, which is on `origin/main`, and
+/// `feature` adds `feature.txt`.
+fn setup_stale_main(ctx: &mut TestContext) {
+    ctx.debug = false;
+    commit(&ctx.dir, "upstream.txt", "upstream\n");
+    run(&ctx.dir, &["git", "push", "origin", "main"]);
+    run(&ctx.dir, &["git", "reset", "--hard", "HEAD~1"]);
+    run(
+        &ctx.dir,
+        &["git", "checkout", "-b", "feature", "origin/main"],
+    );
+    commit(&ctx.dir, "feature.txt", "feature\n");
+    run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
+}
+
+/// The PR's base is where its base branch is on the remote when the local branch is behind it,
+/// as it often is: the PR's diff has only the branch's own changes.
+#[test]
+fn ol_with_main_behind_origin_main_diffs_against_origin_main() {
+    let mut ctx = setup_clone!();
+    setup_stale_main(&mut ctx);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("feature.txt"), "{screen}");
+    assert!(!screen.contains("upstream.txt"), "{screen}");
+}
+
+/// When the local base branch and the remote's have each moved on, which the PR is into can't
+/// be told, so opening it is an error.
+#[test]
+fn ol_with_main_and_origin_main_diverged_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup_stale_main(&mut ctx);
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    commit(&ctx.dir, "local-only.txt", "local\n");
+    run(&ctx.dir, &["git", "checkout", "feature"]);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("have diverged"), "{screen}");
+    assert!(!screen.contains("feature.txt"), "{screen}");
+}
+
+/// When the branch has a PR on GitHub, the base must be where GitHub has it, so that the local
+/// PR's diff is the GitHub PR's.
+#[test]
+fn ol_with_a_base_not_where_github_has_it_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup_stale_main(&mut ctx);
+    let stale = run(&ctx.dir, &["git", "rev-parse", "main"]);
+    let feature = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::new(FakeGitHub::new(stale.trim(), feature.trim()));
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("GitHub's main is at"), "{screen}");
+    assert!(!screen.contains("feature.txt"), "{screen}");
+}
+
+/// When the branch is where GitHub has the PR's head, the local PR has the GitHub PR's commits,
+/// as many as GitHub says.
+#[test]
+fn ol_with_a_commit_count_not_githubs_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup_stale_main(&mut ctx);
+    let base = run(&ctx.dir, &["git", "rev-parse", "origin/main"]);
+    let feature = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    let github = FakeGitHub::new(base.trim(), feature.trim());
+    *github.commits.borrow_mut() = 26;
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::new(github);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("GitHub's PR has 26 commits"), "{screen}");
+    assert!(!screen.contains("feature.txt"), "{screen}");
+}
+
 #[test]
 fn ol_without_gits_user_name_says_to_set_it() {
     let mut ctx = setup_clone!();

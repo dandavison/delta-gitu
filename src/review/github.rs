@@ -24,6 +24,8 @@ pub(crate) struct GitHubPr {
     /// The commit the PR's branch is at on GitHub, which the lines of its
     /// review threads are numbered against.
     pub head_oid: String,
+    /// How many commits GitHub says the PR has.
+    pub commits: usize,
 }
 
 /// The URL of the file at `path` in the PR's diff on GitHub, at `line` when
@@ -265,6 +267,10 @@ const UNMARK_VIEWED: &str = "mutation($id: ID!, $path: String!) {
 
 /// Where, in GitHub's reply to each mutation, is what it did: the new review's, thread's or
 /// comment's id, or the mutation's payload.
+const PR_COMMIT_COUNT: &str = "query($id: ID!) {
+  node(id: $id) { ... on PullRequest { commits { totalCount } } }
+}";
+const COMMIT_COUNT: &str = "/data/node/commits/totalCount";
 const STARTED_REVIEW: &str = "/data/addPullRequestReview/pullRequestReview/id";
 const ADDED_THREAD: &str = "/data/addPullRequestReviewThread/thread/comments/nodes/0/id";
 const ADDED_REPLY: &str = "/data/addPullRequestReviewComment/comment/id";
@@ -364,7 +370,16 @@ impl GitHub for Gh {
         args.extend(["--json", "id,number,url,baseRefName,baseRefOid,headRefOid"]);
         let view: View = serde_json::from_str(&self.run(&args)?)
             .map_err(|e| Error::Gh(format!("Couldn't read gh's description of the PR: {e}")))?;
+        let output = self.graphql(PR_COMMIT_COUNT, &[("id", &view.id)], &[], None)?;
+        let commits = required(&output, COMMIT_COUNT, "count the PR's commits")?;
+        let commits = commits.as_u64().ok_or_else(|| {
+            Error::Gh(format!(
+                "Couldn't count the PR's commits: GitHub replied with {commits} where a number \
+                 should be"
+            ))
+        })? as usize;
         Ok(GitHubPr {
+            commits,
             id: view.id,
             number: view.number,
             url: view.url,

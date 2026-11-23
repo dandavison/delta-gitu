@@ -142,6 +142,10 @@ impl GitHub for User {
             base_ref: "main".into(),
             base_oid: oid("main"),
             head_oid: oid("feature"),
+            commits: run(&remote, &["git", "rev-list", "--count", "main..feature"])
+                .trim()
+                .parse()
+                .unwrap(),
         })
     }
 
