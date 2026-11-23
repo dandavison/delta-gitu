@@ -367,11 +367,11 @@ impl<'a> Parser<'a> {
         }
 
         if self.consume("--- ").is_ok() {
-            old_file = self.diff_header_path(Self::newline_or_eof)?;
-            self.newline_or_eof()?;
+            old_file = self.diff_header_path(Self::file_line_end)?;
+            self.file_line_end()?;
             self.consume("+++ ")?;
-            new_file = self.diff_header_path(Self::newline_or_eof)?;
-            self.newline_or_eof()?;
+            new_file = self.diff_header_path(Self::file_line_end)?;
+            self.file_line_end()?;
         }
 
         Ok(DiffHeader {
@@ -404,14 +404,20 @@ impl<'a> Parser<'a> {
         // e.g.
         // "a/file-1.txt" "b/file-1.txt" -> whitespace delimiter
         // a/file-1.txt b/file-1.txt     -> whitespace delimiter, followed by a prefix ("b/")
+        // a/file-1.txt "b/file-\t.txt"  -> whitespace delimiter, followed by a quote
         // file-1.txt file-1.txt         -> whitespace delimiter
         let delim: ParseFn<Range<usize>> = if self.peek("\"") {
             Self::ascii_whitespace
         } else if self.peek_fn(Self::diff_header_path_prefix) {
             |p: &mut Parser<'_>| {
                 let start = p.cursor;
-                p.ascii_whitespace()
-                    .and_then(|_| p.diff_header_path_prefix())?;
+                p.ascii_whitespace().and_then(|_| {
+                    if p.peek("\"") {
+                        Ok(p.cursor..p.cursor)
+                    } else {
+                        p.diff_header_path_prefix()
+                    }
+                })?;
                 Ok(start..p.cursor)
             }
         } else {
@@ -676,6 +682,16 @@ impl<'a> Parser<'a> {
                 expected: "<newline or eof>",
             }]
         })
+    }
+
+    /// The end of a `---` or `+++` line, where git puts a tab after a path
+    /// that contains a space.
+    fn file_line_end(&mut self) -> ThinResult<Range<usize>> {
+        log::trace!("Parser::file_line_end\n{:?}", self);
+        let start = self.cursor;
+        self.consume("\t").ok();
+        self.newline_or_eof().inspect_err(|_| self.cursor = start)?;
+        Ok(start..self.cursor)
     }
 
     fn newline(&mut self) -> ThinResult<Range<usize>> {
