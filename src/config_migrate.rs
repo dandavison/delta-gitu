@@ -66,8 +66,28 @@ pub(crate) fn entries(git: &dyn Fn() -> Command) -> Res<Vec<Entry>> {
 
 /// `entries` as they go in `[delta]`: for each file holding some, a `[delta]` section to replace
 /// its `[delta-tui]` sections with.
-pub(crate) fn migrated(_entries: &[Entry]) -> String {
-    String::new()
+pub(crate) fn migrated(entries: &[Entry]) -> String {
+    let mut files: Vec<&str> = vec![];
+    for entry in entries {
+        if !files.contains(&entry.file.as_str()) {
+            files.push(&entry.file);
+        }
+    }
+    let mut out = String::from(
+        "# The TUI's settings in git config's [delta-tui] sections, as they go in [delta].\n\
+         # delta --tui does not start while a [delta-tui] section is in git config.\n",
+    );
+    for file in files {
+        out.push_str(&format!(
+            "\n# In {file}, replace the [delta-tui] sections with:\n[delta]\n"
+        ));
+        for entry in entries.iter().filter(|entry| entry.file == file) {
+            out.push_str("    ");
+            out.push_str(&line(&entry.name, entry.value.as_deref()));
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// The line in `[delta]` for the old entry `name` with `value`.
