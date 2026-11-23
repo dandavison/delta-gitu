@@ -766,6 +766,7 @@ fn set_feature_key(app: &mut App, feature: &str, key: char) {
         Some(key)
     };
 
+    let before = app.state.feature_keys.clone();
     app.state
         .feature_keys
         .retain(|name, held| name != feature && Some(*held) != key);
@@ -777,7 +778,7 @@ fn set_feature_key(app: &mut App, feature: &str, key: char) {
         return;
     }
     let dir = app.state.repo.workdir().unwrap_or(app.state.repo.path());
-    if let Err(e) = crate::config_edit::set_feature_keys(dir, &app.state.feature_keys) {
+    if let Err(e) = crate::config_edit::set_feature_keys(dir, &before, &app.state.feature_keys) {
         app.display_error(e.to_string());
     }
 }

@@ -15,13 +15,16 @@ use figment::{
 };
 use serde::Deserialize;
 
-const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
+pub(crate) const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
 
 pub struct Config {
     pub general: GeneralConfig,
     pub style: StyleConfig,
     pub bindings: Bindings,
     pub picker_bindings: PickerBindings,
+    /// gitu's config file, which [`Config::resolved`] puts git config over, over gitu's
+    /// defaults.
+    pub(crate) file: Figment,
 }
 
 #[derive(Default, Deserialize)]
@@ -238,32 +241,56 @@ pub struct DiffRendererConfig {
 }
 
 /// Asks the renderer what its config sets options to, in the repository at a path, with features
-/// in force as `DELTA_FEATURES` gives them, for each of several option names.
+/// in force as `DELTA_FEATURES` gives them, for each of several option names: the value of an
+/// option, or every item of a list, which takes those of the renderer's own section and of
+/// every feature in force, lowest precedence first.
 #[derive(Clone, Default)]
-pub struct RendererOptions(Option<Arc<AskOptions>>);
+pub struct RendererOptions {
+    values: Option<Arc<AskOptions>>,
+    lists: Option<Arc<AskLists>>,
+}
 
 type AskOptions = dyn Fn(&Path, Option<&str>, &[&str]) -> Vec<Option<String>> + Send + Sync;
+type AskLists = dyn Fn(&Path, Option<&str>, &[&str]) -> Vec<Vec<String>> + Send + Sync;
 
 impl RendererOptions {
     pub fn new(
-        ask: impl Fn(&Path, Option<&str>, &[&str]) -> Vec<Option<String>> + Send + Sync + 'static,
+        values: impl Fn(&Path, Option<&str>, &[&str]) -> Vec<Option<String>> + Send + Sync + 'static,
+        lists: impl Fn(&Path, Option<&str>, &[&str]) -> Vec<Vec<String>> + Send + Sync + 'static,
     ) -> Self {
-        Self(Some(Arc::new(ask)))
+        Self {
+            values: Some(Arc::new(values)),
+            lists: Some(Arc::new(lists)),
+        }
     }
 
     /// The value of each of `names`, `None` for one not set, or for all of them when the
     /// renderer has not said how to ask.
     pub fn get(&self, dir: &Path, features: Option<&str>, names: &[&str]) -> Vec<Option<String>> {
-        match &self.0 {
+        match &self.values {
             Some(ask) => ask(dir, features, names),
             None => vec![None; names.len()],
         }
+    }
+
+    /// The items of each of `names`, lowest precedence first: none when the renderer has not
+    /// said how to ask.
+    pub fn get_all(&self, dir: &Path, features: Option<&str>, names: &[&str]) -> Vec<Vec<String>> {
+        match &self.lists {
+            Some(ask) => ask(dir, features, names),
+            None => vec![vec![]; names.len()],
+        }
+    }
+
+    /// Whether the renderer has said how to ask.
+    pub fn is_set(&self) -> bool {
+        self.values.is_some()
     }
 }
 
 impl std::fmt::Debug for RendererOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.0.is_some() {
+        f.write_str(if self.is_set() {
             "RendererOptions(..)"
         } else {
             "RendererOptions(none)"
@@ -540,34 +567,64 @@ fn parse_picker_keys(
         .collect()
 }
 
+/// gitu's config file at `path`, or at its default place, over gitu's defaults. Settings in git
+/// config are put over these by [`Config::resolved`], once the renderer has said how to ask for
+/// them.
 pub fn init_config(path: Option<PathBuf>) -> Res<Config> {
-    let git_config = git2::Repository::open_from_env()
-        .and_then(|repo| repo.config())
-        .or_else(|_| git2::Config::open_default())
-        .ok();
-    init_config_from(path.unwrap_or_else(config_path), git_config.as_ref())
+    init_config_from(path.unwrap_or_else(config_path))
 }
 
-/// The config in the gitu config file at `config_path`, under what `git_config`
-/// holds in its `delta-tui` section.
-pub(crate) fn init_config_from(
-    config_path: PathBuf,
-    git_config: Option<&git2::Config>,
-) -> Res<Config> {
+/// The config in the gitu config file at `config_path`, over gitu's defaults.
+pub(crate) fn init_config_from(config_path: PathBuf) -> Res<Config> {
     if config_path.exists() {
         log::info!("Loading config file at {config_path:?}");
     } else {
         log::info!("No config file at {config_path:?}");
     }
+    build(Figment::from(Toml::file(&config_path)), Figment::new())
+}
 
+/// The names of the settings gitu takes from git config, which are delta options delta does
+/// not use itself.
+pub fn delta_option_names() -> Vec<String> {
+    config_git::names()
+}
+
+impl Config {
+    /// This config with the settings in the renderer's git config in the repository at `dir` put
+    /// over it, as the renderer resolves them with `features` in force (as `DELTA_FEATURES`
+    /// gives them, or with `None` as the renderer's environment does). What the renderer has
+    /// told gitu, such as how to ask it, is kept. Git config's old `[delta-tui]` sections are an
+    /// error, rather than being silently ignored.
+    pub fn resolved(&self, dir: &Path, features: Option<&str>) -> Res<Config> {
+        let renderer = &self.general.diff_renderer;
+        if let Some(Some(git_config)) = renderer.git_config.open(dir)
+            && config_git::has_old_section(&git_config)?
+        {
+            return Err(Error::Config(Box::new(figment::Error::from(
+                "git config's [delta-tui] sections are no longer read: their settings go in \
+                 [delta] or a [delta \"feature\"] section. \
+                 See https://dandavison.github.io/delta/tui.html"
+                    .to_owned(),
+            ))));
+        }
+        let defaults = Figment::from(Toml::string(DEFAULT_CONFIG));
+        let git = config_git::read(&renderer.options, dir, features, &defaults)?;
+        let mut config = build(self.file.clone(), Figment::from(Serialized::defaults(git)))?;
+        let resolved = &mut config.general.diff_renderer;
+        resolved.command = renderer.command.clone();
+        resolved.color_mode = renderer.color_mode;
+        resolved.enabled_features = renderer.enabled_features.clone();
+        resolved.git_config = renderer.git_config.clone();
+        resolved.options = renderer.options.clone();
+        Ok(config)
+    }
+}
+
+/// gitu's defaults, with `file`, gitu's config file, over them, and `git`, the settings in git
+/// config, over that.
+fn build(file: Figment, git: Figment) -> Res<Config> {
     let defaults = Figment::from(Toml::string(DEFAULT_CONFIG));
-    let file = Figment::from(Toml::file(&config_path));
-    let git = match git_config {
-        Some(git_config) => Figment::from(Serialized::defaults(config_git::read(
-            git_config, &defaults,
-        )?)),
-        None => Figment::new(),
-    };
     let default_bindings: BindingsConfig = defaults
         .extract_inner("bindings")
         .map_err(Box::new)
@@ -577,18 +634,19 @@ pub(crate) fn init_config_from(
         style,
         bindings: bindings_config,
     } = defaults
+        .clone()
         .merge(file.clone())
         .merge(git.clone())
         .extract()
         .map_err(Box::new)
         .map_err(Error::Config)?;
+    let users = |path: &str| git.contains(path) || file.contains(path);
     if let Some(feature_keys) = users_feature_keys(&git)?.or(users_feature_keys(&file)?) {
         general.diff_renderer.feature_keys = feature_keys;
     }
-    let bindings =
-        Bindings::try_from(bindings_config.menus)?.set_by_user(&default_bindings.menus, |path| {
-            let path = format!("bindings.{path}");
-            git.contains(&path) || file.contains(&path)
+    let bindings = Bindings::try_from(bindings_config.menus)?
+        .set_by_user(&default_bindings.menus, |path| {
+            users(&format!("bindings.{path}"))
         });
     let picker_bindings = PickerBindings::try_from(bindings_config.picker)?;
     check_feature_keys(&general.diff_renderer.feature_keys, &bindings)?;
@@ -598,6 +656,7 @@ pub(crate) fn init_config_from(
         style,
         bindings,
         picker_bindings,
+        file,
     })
 }
 
@@ -670,34 +729,105 @@ pub(crate) fn init_test_config() -> Res<Config> {
         style,
         bindings: Bindings::try_from(bindings_config.menus).unwrap(),
         picker_bindings: PickerBindings::try_from(bindings_config.picker).unwrap(),
+        file: Figment::new(),
     })
 }
 
-/// The config read from a gitu config file holding `toml` and git config
-/// holding `gitconfig`.
+/// delta's options in the git config at `path`, as delta resolves them, simplified: the features
+/// in force are those `[delta] features` lists, then those `DELTA_FEATURES` turns on (`+name`)
+/// less those it turns off (`-name`). A value in `[delta]` beats a feature's, and a later
+/// feature's an earlier one's; a list takes the items of each feature in turn, then of
+/// `[delta]`.
 #[cfg(test)]
-pub(crate) fn configured(toml: &str, gitconfig: &str) -> Config {
+pub(crate) fn options_in(path: PathBuf) -> RendererOptions {
+    fn sections(git_config: &git2::Config, overlay: Option<&str>) -> Vec<String> {
+        let listed = git_config.get_string("delta.features").unwrap_or_default();
+        let mut features: Vec<String> = listed.split_whitespace().map(String::from).collect();
+        let overlay = overlay.unwrap_or_default();
+        for word in overlay.trim_start_matches('+').split_whitespace() {
+            match word.strip_prefix('-') {
+                Some(off) => features.retain(|feature| feature != off),
+                None => features.push(word.to_owned()),
+            }
+        }
+        features
+            .iter()
+            .map(|feature| format!("delta.{feature}"))
+            .chain(["delta".to_owned()])
+            .collect()
+    }
+    fn all(git_config: &git2::Config, key: &str) -> Vec<String> {
+        let mut values = vec![];
+        if let Ok(mut entries) = git_config.multivar(key, None) {
+            while let Some(Ok(entry)) = entries.next() {
+                values.extend(entry.value().map(String::from));
+            }
+        }
+        values
+    }
+    let lists_path = path.clone();
+    RendererOptions::new(
+        move |_, overlay, names| {
+            let git_config = git2::Config::open(&path).unwrap();
+            let sections = sections(&git_config, overlay);
+            names
+                .iter()
+                .map(|name| {
+                    sections
+                        .iter()
+                        .rev()
+                        .find_map(|section| all(&git_config, &format!("{section}.{name}")).pop())
+                })
+                .collect()
+        },
+        move |_, overlay, names| {
+            let git_config = git2::Config::open(&lists_path).unwrap();
+            let sections = sections(&git_config, overlay);
+            names
+                .iter()
+                .map(|name| {
+                    sections
+                        .iter()
+                        .flat_map(|section| all(&git_config, &format!("{section}.{name}")))
+                        .collect()
+                })
+                .collect()
+        },
+    )
+}
+
+/// The config read from a gitu config file holding `toml` and git config holding `gitconfig`,
+/// with `features` in force as `DELTA_FEATURES` gives them.
+#[cfg(test)]
+pub(crate) fn configured_with(toml: &str, gitconfig: &str, features: Option<&str>) -> Res<Config> {
     let dir = temp_dir::TempDir::new().unwrap();
     let toml_path = dir.path().join("config.toml");
     std::fs::write(&toml_path, toml).unwrap();
     let git_path = dir.path().join("gitconfig");
     std::fs::write(&git_path, gitconfig).unwrap();
-    let git_config = git2::Config::open(&git_path).unwrap();
-    init_config_from(toml_path, Some(&git_config)).unwrap()
+    let mut config = init_config_from(toml_path)?;
+    config.general.diff_renderer.options = options_in(git_path.clone());
+    config.general.diff_renderer.git_config =
+        RendererGitConfig::new(move |_| git2::Config::open(&git_path).ok());
+    config.resolved(dir.path(), features)
+}
+
+/// The config read from a gitu config file holding `toml` and git config holding `gitconfig`.
+#[cfg(test)]
+pub(crate) fn configured(toml: &str, gitconfig: &str) -> Config {
+    configured_with(toml, gitconfig, None).unwrap()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
 
     use crate::style::{Color, Modifier};
     use figment::{
         Figment,
         providers::{Format, Toml},
     };
-    use temp_dir::TempDir;
 
-    use super::{DEFAULT_CONFIG, FigmentConfig, configured, init_config_from};
+    use super::{DEFAULT_CONFIG, FigmentConfig, configured, configured_with};
 
     #[test]
     fn config_merges() {
@@ -717,11 +847,7 @@ mod tests {
     }
 
     fn config_error(gitconfig: &str) -> String {
-        let dir = TempDir::new().unwrap();
-        let git_path = dir.path().join("gitconfig");
-        fs::write(&git_path, gitconfig).unwrap();
-        let git_config = git2::Config::open(&git_path).unwrap();
-        match init_config_from(dir.path().join("config.toml"), Some(&git_config)) {
+        match configured_with("", gitconfig, None) {
             Ok(_) => panic!("{gitconfig} was accepted"),
             Err(e) => e.to_string(),
         }
@@ -731,17 +857,22 @@ mod tests {
     #[test]
     fn a_binding_that_is_not_a_key_says_so() {
         assert_eq!(
-            config_error("[delta-tui \"bindings.root\"]\n\tquit = ctrl+\n"),
-            "Fix these key bindings in git config's delta-tui section or gitu's config file:\n\
+            config_error("[delta]\n\tbind = root.quit ctrl+\n"),
+            "Fix these key bindings in git config or gitu's config file:\n\
              - root.quit = ctrl+ (not a key)"
         );
+    }
+
+    #[test]
+    fn a_binding_that_is_not_a_menu_action_and_a_key_says_so() {
+        assert!(config_error("[delta]\n\tbind = quit\n").contains("root.quit"));
     }
 
     #[test]
     fn git_config_sets_general_settings() {
         let config = configured(
             "",
-            "[delta-tui]\n\
+            "[delta]\n\
              \tstart-folded = true\n\
              \tfile-header = stat\n\
              \tstash-list-limit = 3\n",
@@ -756,8 +887,8 @@ mod tests {
     fn git_config_values_are_read_as_git_reads_them() {
         let config = configured(
             "",
-            "[delta-tui]\n\
-             \tstart-folded\n\
+            "[delta]\n\
+             \tstart-folded = yes\n\
              \tvisit-context-lines = no\n\
              \tmax-input-bytes = 4m\n",
         );
@@ -771,7 +902,7 @@ mod tests {
     fn git_config_lists_are_repeated_keys() {
         let config = configured(
             "",
-            "[delta-tui]\n\
+            "[delta]\n\
              \tlog-args = --stat\n\
              \tlog-args = --pretty=format:%h %s\n\
              \tshow-args = --stat\n",
@@ -784,24 +915,27 @@ mod tests {
     fn git_config_overrides_the_gitu_config_file() {
         let config = configured(
             "[general]\nstart_folded = true\nstash_list_limit = 3\n",
-            "[delta-tui]\n\tstart-folded = false\n",
+            "[delta]\n\tstart-folded = false\n",
         );
         assert!(!config.general.start_folded);
         assert_eq!(config.general.stash_list_limit, 3);
     }
 
+    /// A nested setting's name is its path, joined with dashes.
     #[test]
-    fn git_config_subsections_reach_nested_settings() {
+    fn nested_settings_are_named_by_their_path() {
         let config = configured(
             "",
-            "[delta-tui \"general.diff-renderer\"]\n\
-             \tfeatures = side-by-side\n\
-             \tfeatures = my-*\n",
+            "[delta]\n\
+             \tdiff-renderer-features = side-by-side\n\
+             \tdiff-renderer-features = my-*\n\
+             \tconfirm-quit-enabled = true\n",
         );
         assert_eq!(
             config.general.diff_renderer.features,
             ["side-by-side", "my-*"]
         );
+        assert!(config.general.confirm_quit.enabled);
     }
 
     /// Builtin themes are a list, one key per item, as other lists are.
@@ -809,7 +943,7 @@ mod tests {
     fn git_config_lists_builtin_themes() {
         let config = configured(
             "",
-            "[delta-tui \"general.diff-renderer\"]\n\tbuiltin-themes = diff-so-fancy\n",
+            "[delta]\n\tdiff-renderer-builtin-themes = diff-so-fancy\n",
         );
         assert_eq!(
             config.general.diff_renderer.builtin_themes,
@@ -817,15 +951,11 @@ mod tests {
         );
     }
 
-    /// A feature key is keyed by the feature's own name, dashes and all, and
-    /// as in the gitu config file they replace the default ones.
+    /// A feature key is the feature's own name, dashes and all, then the key, and as in the gitu
+    /// config file they replace the default ones.
     #[test]
     fn git_config_sets_feature_keys_by_feature_name() {
-        let config = configured(
-            "",
-            "[delta-tui \"general.diff-renderer.feature-keys\"]\n\
-             \tmy-feature = e\n",
-        );
+        let config = configured("", "[delta]\n\tfeature-key = my-feature e\n");
         assert_eq!(
             config
                 .general
@@ -837,13 +967,12 @@ mod tests {
         );
     }
 
-    /// A command is keyed by its own name, dashes and all, as a feature key is.
+    /// A command is its own name, dashes and all, then the command.
     #[test]
     fn git_config_sets_commands_by_name() {
         let config = configured(
             "",
-            "[delta-tui \"general.commands\"]\n\
-             \topen-pr = gh pr view --web {commit}\n",
+            "[delta]\n\tcommand = open-pr gh pr view --web {commit}\n",
         );
         assert_eq!(
             config.general.commands.into_iter().collect::<Vec<_>>(),
@@ -854,14 +983,10 @@ mod tests {
         );
     }
 
-    /// A view is keyed by its own name, dashes and all, as a command is.
+    /// A view is its own name, dashes and all, then the git command, as a command is.
     #[test]
     fn git_config_sets_views_by_name() {
-        let config = configured(
-            "",
-            "[delta-tui \"general.views\"]\n\
-             \tdiff-since = git diff {commit}...\n",
-        );
+        let config = configured("", "[delta]\n\tview = diff-since git diff {commit}...\n");
         assert_eq!(
             config.general.views.into_iter().collect::<Vec<_>>(),
             [("diff-since".to_string(), "git diff {commit}...".to_string())]
@@ -872,12 +997,26 @@ mod tests {
     fn git_config_sets_bindings() {
         let config = configured(
             "",
-            "[delta-tui \"bindings.root\"]\n\
-             \tquit = x\n\
-             \tquit = esc\n",
+            "[delta]\n\
+             \tbind = root.quit x\n\
+             \tbind = root.quit esc\n",
         );
         assert!(config.bindings.binds_at_top_level('x'));
         assert!(!config.bindings.binds_at_top_level('q'));
+    }
+
+    /// A menu argument's binding keeps its dashes, as its name is its command line's.
+    #[test]
+    fn git_config_binds_a_menu_argument() {
+        let config = configured("", "[delta]\n\tbind = commit-menu.--all -x\n");
+        let menu = crate::menu::PendingMenu::init(crate::menu::Menu::Commit);
+        let raw: Vec<&str> = config
+            .bindings
+            .arg_list(&menu)
+            .filter(|binding| binding.op == crate::ops::Op::ToggleArg("--all".into()))
+            .map(|binding| binding.raw.as_str())
+            .collect();
+        assert_eq!(raw, ["-x"]);
     }
 
     /// A style is written as delta writes one: attributes, then a foreground
@@ -886,46 +1025,111 @@ mod tests {
     fn git_config_styles_are_delta_styles() {
         let config = configured(
             "",
-            "[delta-tui \"style\"]\n\
-             \thunk-header = bold italic \"#ff0000\" 237\n\
-             \tfile-header = ul\n\
-             \tsection-header = normal blue\n",
+            "[delta]\n\
+             \tfile-header-style = bold italic \"#ff0000\" 237\n\
+             \tsection-header-style = normal blue\n\
+             \thash-style = ul\n",
         );
         let style = &config.style;
-        assert_eq!(style.hunk_header.fg, Some(Color::Rgb(255, 0, 0)));
-        assert_eq!(style.hunk_header.bg, Some(Color::Indexed(237)));
+        assert_eq!(style.file_header.fg, Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(style.file_header.bg, Some(Color::Indexed(237)));
         assert_eq!(
-            style.hunk_header.mods,
+            style.file_header.mods,
             Some(Modifier::BOLD | Modifier::ITALIC)
         );
-        assert_eq!(style.file_header.fg, None);
-        assert_eq!(style.file_header.mods, Some(Modifier::UNDERLINED));
         assert_eq!(style.section_header.fg, None);
         assert_eq!(style.section_header.bg, Some(Color::Blue));
+        assert_eq!(style.hash.fg, None);
+        assert_eq!(style.hash.mods, Some(Modifier::UNDERLINED));
+    }
+
+    /// delta's `hunk-header-style` is delta's, which gitu's hunk header style is not.
+    #[test]
+    fn deltas_hunk_header_style_is_not_gitus() {
+        let config = configured(
+            "",
+            "[delta]\n\thunk-header-style = file line-number syntax\n",
+        );
+        assert_eq!(config.style.hunk_header.fg, Some(Color::Blue));
     }
 
     #[test]
     fn a_git_config_style_keeps_its_symbol() {
-        let config = configured("", "[delta-tui \"style\"]\n\tcursor = red\n");
+        let config = configured("", "[delta]\n\tcursor-style = red\n");
         assert_eq!(config.style.cursor.symbol, '▌');
         assert_eq!(config.style.cursor.fg, Some(Color::Red));
     }
 
     #[test]
     fn a_git_config_style_inside_a_group_of_styles() {
-        let config = configured("", "[delta-tui \"style.menu\"]\n\tkey = green\n");
+        let config = configured("", "[delta]\n\tmenu-key-style = green\n");
         assert_eq!(config.style.menu.key.fg, Some(Color::Green));
     }
 
     #[test]
     fn a_bad_git_config_value_is_an_error_naming_the_key() {
+        assert!(config_error("[delta]\n\tstart-folded = maybe\n").contains("start-folded"));
         assert!(
-            config_error("[delta-tui]\n\tstart-folded = maybe\n")
-                .contains("delta-tui.start-folded")
+            config_error("[delta]\n\tfile-header-style = bold sky\n").contains("file-header-style")
         );
+    }
+
+    /// The settings are delta's options, so a delta feature in force sets them.
+    #[test]
+    fn a_feature_in_force_sets_a_setting() {
+        let gitconfig = "[delta]\n\tfeatures = tui\n[delta \"tui\"]\n\tstart-folded = true\n";
+        assert!(configured("", gitconfig).general.start_folded);
+        let off = "[delta \"tui\"]\n\tstart-folded = true\n";
+        assert!(!configured("", off).general.start_folded);
         assert!(
-            config_error("[delta-tui \"style\"]\n\thunk-header = bold sky\n")
-                .contains("delta-tui.style.hunk-header")
+            configured_with("", off, Some("+tui"))
+                .unwrap()
+                .general
+                .start_folded
         );
+    }
+
+    /// As for delta's own options, `[delta]` beats a feature.
+    #[test]
+    fn the_delta_section_beats_a_feature() {
+        let config = configured(
+            "",
+            "[delta]\n\tfeatures = tui\n\tstash-list-limit = 3\n\
+             [delta \"tui\"]\n\tstash-list-limit = 5\n",
+        );
+        assert_eq!(config.general.stash_list_limit, 3);
+    }
+
+    /// A list takes the items of `[delta]` and of each feature in force. Of two commands of the
+    /// same name, `[delta]`'s wins.
+    #[test]
+    fn a_list_takes_the_items_of_every_section_in_force() {
+        let config = configured(
+            "",
+            "[delta]\n\tfeatures = tui\n\
+             \tcommand = a delta-a\n\tcommand = both delta-both\n\
+             \tbind = root.quit x\n\
+             [delta \"tui\"]\n\
+             \tcommand = b tui-b\n\tcommand = both tui-both\n\
+             \tbind = root.quit y\n",
+        );
+        assert_eq!(
+            config.general.commands.into_iter().collect::<Vec<_>>(),
+            [
+                ("a".to_string(), "delta-a".to_string()),
+                ("b".to_string(), "tui-b".to_string()),
+                ("both".to_string(), "delta-both".to_string()),
+            ]
+        );
+        assert!(config.bindings.binds_at_top_level('x'));
+        assert!(config.bindings.binds_at_top_level('y'));
+    }
+
+    /// Settings in the old `[delta-tui]` sections are not silently ignored.
+    #[test]
+    fn a_delta_tui_section_is_an_error() {
+        let error = config_error("[delta-tui]\n\tstart-folded = true\n");
+        assert!(error.contains("[delta-tui]"), "{error}");
+        assert!(error.contains("[delta]"), "{error}");
     }
 }

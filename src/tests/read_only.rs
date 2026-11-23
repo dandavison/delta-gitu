@@ -1,6 +1,5 @@
 use super::*;
 use crate::config::ReadOnly;
-use std::path::PathBuf;
 
 fn read_only(ctx: &mut TestContext) {
     ctx.config().general.read_only = ReadOnly::On;
@@ -129,11 +128,11 @@ fn a_theme_chosen_is_not_saved() {
     let mut ctx = setup_clone!();
     read_only(&mut ctx);
     run(&ctx.dir, &["git", "config", "delta.theme-a.dark", "true"]);
-    // The repository's own git config holds the `delta-tui` section, so it is
+    // The repository's own git config holds the `[delta]` section, so it is
     // where a theme chosen would be written.
     run(
         &ctx.dir,
-        &["git", "config", "delta-tui.visit-context-lines", "true"],
+        &["git", "config", "delta.visit-context-lines", "true"],
     );
     let path = ctx.dir.join(".git/config");
     let before = fs::read_to_string(&path).unwrap();
@@ -159,20 +158,12 @@ fn a_command_typed_is_not_saved_to_the_history() {
 /// `read-only` in git config is a boolean, or `auto`.
 #[test]
 fn read_only_is_read_from_git_config() {
-    let dir = temp_dir::TempDir::new().unwrap();
-    let path = dir.path().join("gitconfig");
     for (value, expected) in [
         ("true", ReadOnly::On),
         ("off", ReadOnly::Off),
         ("auto", ReadOnly::Auto),
     ] {
-        fs::write(&path, format!("[delta-tui]\n\tread-only = {value}\n")).unwrap();
-        let git_config = git2::Config::open(&path).unwrap();
-        let config = crate::config::init_config_from(
-            PathBuf::from("/nonexistent/config.toml"),
-            Some(&git_config),
-        )
-        .unwrap();
+        let config = crate::config::configured("", &format!("[delta]\n\tread-only = {value}\n"));
         assert_eq!(config.general.read_only, expected, "{value}");
     }
 }

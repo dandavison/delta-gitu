@@ -160,8 +160,8 @@ fn two_hours_ago() -> chrono::DateTime<chrono::FixedOffset> {
 /// What delta's config sets the options gitu asks it for to, as
 /// `(name, value)`, whatever the features.
 fn with_options(ctx: &mut TestContext, options: &'static [(&'static str, &'static str)]) {
-    ctx.config().general.diff_renderer.options =
-        crate::config::RendererOptions::new(move |_, _, names| {
+    ctx.config().general.diff_renderer.options = crate::config::RendererOptions::new(
+        move |_, _, names| {
             names
                 .iter()
                 .map(|name| {
@@ -171,7 +171,9 @@ fn with_options(ctx: &mut TestContext, options: &'static [(&'static str, &'stati
                         .map(|(_, value)| (*value).to_owned())
                 })
                 .collect()
-        });
+        },
+        |_, _, names| vec![vec![]; names.len()],
+    );
 }
 
 /// A thread on `lines.txt`, its comments given as `(author, body)`, each made
@@ -755,14 +757,16 @@ fn comments_are_drawn_in_the_comment_styles() {
 fn comment_styles_follow_the_features_in_force() {
     let mut ctx = setup_clone!();
     ctx.config().general.diff_renderer.feature_keys = [("my-theme".into(), 'e')].into();
-    ctx.config().general.diff_renderer.options =
-        crate::config::RendererOptions::new(|_, features, names| {
+    ctx.config().general.diff_renderer.options = crate::config::RendererOptions::new(
+        |_, features, names| {
             let themed = features.is_some_and(|features| features.contains("my-theme"));
             names
                 .iter()
                 .map(|name| (themed && *name == "comment-style").then(|| "red".to_owned()))
                 .collect()
-        });
+        },
+        |_, _, names| vec![vec![]; names.len()],
+    );
     let github = setup(&ctx);
     *github.threads.borrow_mut() = vec![thread("t1", None, false, &[("alice", "Why new?")])];
     let mut app = init_app(&mut ctx, &github);

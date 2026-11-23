@@ -116,9 +116,8 @@ impl Display for Error {
                 f.write_fmt(format_args!("Couldn't save to the config file: {e}"))
             }
             Error::Bindings { bad_key_bindings } => {
-                let mut error_string = String::from(
-                    "Fix these key bindings in git config's delta-tui section or gitu's config file:",
-                );
+                let mut error_string =
+                    String::from("Fix these key bindings in git config or gitu's config file:");
                 for item in bad_key_bindings {
                     error_string.push_str(&format!("\n{item}"));
                 }

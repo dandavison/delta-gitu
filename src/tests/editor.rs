@@ -182,21 +182,19 @@ fn with_feature_key(ctx: &mut TestContext, feature: &str, key: char) {
     ctx.config().general.diff_renderer.feature_keys = [(feature.into(), key)].into();
 }
 
-/// The repository's own git config, given a `delta-tui` section so that it is
+/// The repository's own git config, given a `[delta]` section so that it is
 /// where a key set from the list is written.
 fn repo_git_config(ctx: &TestContext) -> PathBuf {
     run(
         &ctx.dir,
-        &["git", "config", "delta-tui.visit-context-lines", "true"],
+        &["git", "config", "delta.visit-context-lines", "true"],
     );
     ctx.dir.join(".git/config")
 }
 
 /// The feature keys gitu would read from the git config file at `path`.
 fn saved_feature_keys(path: &Path) -> Vec<(String, char)> {
-    let git_config = git2::Config::open(path).unwrap();
-    crate::config::init_config_from(PathBuf::from("/nonexistent/config.toml"), Some(&git_config))
-        .unwrap()
+    crate::config::configured("", &fs::read_to_string(path).unwrap())
         .general
         .diff_renderer
         .feature_keys
@@ -382,16 +380,9 @@ fn the_help_menu_sets_feature_keys_apart_from_submenus() {
 fn a_configured_feature_key_that_is_already_bound_is_a_config_error() {
     let dir = temp_dir::TempDir::new().unwrap();
     let path = dir.path().join("gitconfig");
-    fs::write(
-        &path,
-        "[delta-tui \"general.diff-renderer.feature-keys\"]\n\tside-by-side = s\n",
-    )
-    .unwrap();
-    let git_config = git2::Config::open(&path).unwrap();
+    fs::write(&path, "[delta]\n\tfeature-key = side-by-side s\n").unwrap();
 
-    assert!(
-        crate::config::init_config_from(dir.path().join("config.toml"), Some(&git_config)).is_err()
-    );
+    assert!(crate::config::configured_with("", &fs::read_to_string(&path).unwrap(), None).is_err());
 }
 
 /// The list is moved through, not searched: letters are keys.
@@ -512,11 +503,7 @@ fn the_default_features_have_keys_by_default() {
 fn a_users_feature_keys_replace_the_default_ones() {
     let dir = temp_dir::TempDir::new().unwrap();
     let path = dir.path().join("gitconfig");
-    fs::write(
-        &path,
-        "[delta-tui \"general.diff-renderer.feature-keys\"]\n\tside-by-side = e\n",
-    )
-    .unwrap();
+    fs::write(&path, "[delta]\n\tfeature-key = side-by-side e\n").unwrap();
 
     assert_eq!(saved_feature_keys(&path), [("side-by-side".into(), 'e')]);
 }

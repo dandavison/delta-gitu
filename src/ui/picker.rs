@@ -268,6 +268,7 @@ mod tests {
             style: StyleConfig::default(),
             bindings: BTreeMap::new().try_into().unwrap(),
             picker_bindings: PickerBindingsConfig::default().try_into().unwrap(),
+            file: figment::Figment::new(),
         }
     }
 

@@ -108,6 +108,7 @@ pub fn run(config: Arc<Config>, args: &cli::Args, term: &mut Term) -> Res<i32> {
 
     log::debug!("Opening repo");
     let repo = open_repo_from_env()?;
+    let config = Arc::new(config.resolved(repo.workdir().unwrap_or(repo.path()), None)?);
 
     let piped = paging
         .then(|| read_piped_input(git_argv, repo.workdir(), config.general.max_input_bytes))
