@@ -931,15 +931,15 @@ pub(super) fn annotating_renderer() -> Vec<String> {
         !/^[-+ ]/&&substr($0,1,1)!=bs{hunk=0}
         header&&/^(@@|diff |(commit|▸) [0-9a-f]+)/{file_header()}
         /^(commit|▸) [0-9a-f]+/{printf "%s;C;;;%s%s%s\n",osc,$2,st,raw;next}
-        /^diff --git "/{file=$0;sub(/^diff --git "a\/.*" "b\//,"",file);sub(/"$/,"",file);label=file;suffix="";header=1;next}
-        /^diff --git /{file=$0;sub(/^diff --git a\/.* b\//,"",file);label=file;suffix="";header=1;next}
+        /^diff --git .*"$/{file=$0;sub(/^.* "b\//,"",file);sub(/"$/,"",file);label=file;suffix="";header=1;next}
+        /^diff --git /{file=substr($0,12);n=length(file);if(n%2&&substr(file,(n+1)/2,1)==" ")file=substr(file,(n+3)/2);else sub(/^.* b\//,"b/",file);sub(/^b\//,"",file);label=file;suffix="";header=1;next}
         /^diff --cc /{file=substr($0,11);label=file;suffix="";header=1;next}
         /^new file mode /{label="added: " file}
         /^deleted file mode /{label="removed: " file}
         /^rename from /{from=substr($0,13)}
-        /^rename to /{label="renamed: " from " ⟶   " file}
+        /^rename to /{file=substr($0,11);sub(/^"/,"",file);sub(/"$/,"",file);label="renamed: " from " ⟶   " file}
         /^copy from /{from=substr($0,11)}
-        /^copy to /{label="copied: " from " ⟶   " file}
+        /^copy to /{file=substr($0,9);sub(/^"/,"",file);sub(/"$/,"",file);label="copied: " from " ⟶   " file}
         /^old mode /{oldmode=$3}
         /^new mode /{suffix=oldmode=="100644"&&$3=="100755"?" (mode +x)":oldmode=="100755"&&$3=="100644"?" (mode -x)":" (mode " oldmode " ⟶   " $3 ")"}
         /^Binary files /{suffix=" (binary file)"}

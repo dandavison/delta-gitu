@@ -539,9 +539,17 @@ fn parse_blame_porcelain(text: &str) -> Vec<BlameLine> {
     result
 }
 
-pub(crate) fn restore_index(file: &Path) -> Command {
+/// A git command that takes the paths after its `--` as file names, not as
+/// globs or pathspec magic.
+pub(crate) fn with_literal_paths() -> Command {
     let mut cmd = Command::new("git");
-    cmd.args(["restore", "--staged"]);
+    cmd.env("GIT_LITERAL_PATHSPECS", "1");
+    cmd
+}
+
+pub(crate) fn restore_index(file: &Path) -> Command {
+    let mut cmd = with_literal_paths();
+    cmd.args(["restore", "--staged", "--"]);
     cmd.arg(file);
     cmd
 }

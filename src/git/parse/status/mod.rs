@@ -3,7 +3,7 @@ use std::{error::Error, str::FromStr};
 use nom::{
     IResult, Parser as _,
     branch::alt,
-    bytes::complete::{escaped, is_not, tag, take_until, take_while1},
+    bytes::complete::{escaped, is_not, tag, take_while1},
     character::complete::{anychar, char, digit1, line_ending, space1},
     combinator::{map, map_res, opt, recognize, verify},
     multi::many0,
@@ -107,11 +107,15 @@ fn parse_branch_status(input: &str) -> IResult<&str, BranchStatus> {
 
 fn parse_branch(input: &str) -> IResult<&str, &str> {
     // Parse branch name - take until we hit "...", space, or newline
-    alt((
-        take_until("..."),
-        take_while1(|c: char| c != ' ' && c != '\n' && c != '\r'),
-    ))
-    .parse(input)
+    let (_, token) = take_while1(|c: char| c != ' ' && c != '\n' && c != '\r').parse(input)?;
+    let len = token.find("...").unwrap_or(token.len());
+    if len == 0 {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::TakeUntil,
+        )));
+    }
+    Ok((&input[len..], &input[..len]))
 }
 
 fn parse_ahead_behind(input: &str) -> IResult<&str, (u32, u32)> {
@@ -351,6 +355,18 @@ mod tests {
             result.branch_status.remote,
             Some("origin/feature.v1.2".to_string())
         );
+    }
+
+    #[test]
+    fn branch_without_remote_and_path_containing_three_dots() {
+        let input =
+            "## main\nA  src/pages/[...lang]/index.astro\nA  src/pages/[...lang]/talk.astro\n";
+        let result = Status::from_str(input).unwrap();
+        assert_eq!(result.branch_status.local, Some("main".to_string()));
+        assert_eq!(result.branch_status.remote, None);
+        assert_eq!(result.files.len(), 2);
+        assert_eq!(result.files[0].path, "src/pages/[...lang]/index.astro");
+        assert_eq!(result.files[1].path, "src/pages/[...lang]/talk.astro");
     }
 
     #[test]

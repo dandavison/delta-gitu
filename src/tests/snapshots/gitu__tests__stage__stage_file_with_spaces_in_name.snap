@@ -1,6 +1,5 @@
 ---
 source: src/tests/stage.rs
-assertion_line: 213
 expression: ctx.redact_buffer()
 ---
  Branch: main                                                                   |
@@ -22,5 +21,5 @@ expression: ctx.redact_buffer()
                                                                                 |
                                                                                 |
 ────────────────────────────────────────────────────────────────────────────────|
-$ git add 'file with space.txt'                                                 |
-styles_hash: ce593dcc33e06c77
+$ git add -- 'file with space.txt'                                              |
+styles_hash: 595a3c3fcd4eaa27
