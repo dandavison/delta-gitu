@@ -1196,6 +1196,94 @@ fn ol_with_a_commit_count_not_githubs_is_an_error() {
     assert!(!screen.contains("added: feature.txt"), "{screen}");
 }
 
+/// `setup`, with a commit on `feature` by another author.
+fn setup_two_authors(ctx: &mut TestContext) {
+    setup(ctx);
+    fs::write(ctx.dir.join("other.txt"), "other\n").unwrap();
+    run(&ctx.dir, &["git", "add", "other.txt"]);
+    run(
+        &ctx.dir,
+        &[
+            "git",
+            "commit",
+            "-m",
+            "add other.txt",
+            "--author",
+            "Other Person <other@example.com>",
+        ],
+    );
+}
+
+/// A PR whose commits are by more than one author may have a wrong base, so its authors are
+/// listed, and it is opened only when the user says to go on.
+#[test]
+fn ol_with_commits_by_several_authors_asks_before_opening() {
+    let mut ctx = setup_clone!();
+    setup_two_authors(&mut ctx);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let prompt = ctx.prompt_line();
+    assert!(prompt.contains("Author Name"), "{prompt}");
+    assert!(prompt.contains("Other Person"), "{prompt}");
+
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Oln"));
+    assert!(
+        !ctx.redact_buffer().contains("added: other.txt"),
+        "{}",
+        ctx.redact_buffer()
+    );
+
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("Oly"));
+    assert!(
+        ctx.redact_buffer().contains("added: other.txt"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+/// A branch behind its remote's would be reviewed as it was, not as it is, so opening its PR
+/// is an error.
+#[test]
+fn ol_on_a_branch_behind_its_remote_branch_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
+    commit(&ctx.dir, "more.txt", "more\n");
+    run(&ctx.dir, &["git", "push"]);
+    run(&ctx.dir, &["git", "reset", "--hard", "HEAD~1"]);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("origin/feature has 1 commit that feature doesn't"),
+        "{screen}"
+    );
+    assert!(!screen.contains("added: added.txt"), "{screen}");
+}
+
+/// A branch with no commits since its base, as once it is merged, has nothing to review.
+#[test]
+fn ol_on_a_branch_with_no_commits_since_its_base_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "checkout", "-b", "empty", "main"]);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("No PR to review: empty has no commits since main"),
+        "{screen}"
+    );
+}
+
 #[test]
 fn ol_without_gits_user_name_says_to_set_it() {
     let mut ctx = setup_clone!();
