@@ -17,18 +17,19 @@ pub(crate) fn create(
     // rendered rows are fetched once per width rather than on every reorder.
     let cache: RefCell<Option<(u16, CommitRows)>> = RefCell::new(None);
     let revs = todo.borrow().revs();
-    let screen_config = Arc::clone(&config);
 
     let mut screen = Screen::new(
         config,
         params,
         Box::new(move |params: RenderParams| {
+            // The config in force when the rows are built, which follows the features in force.
+            let config = Arc::clone(&params.config);
             let mut cache = cache.borrow_mut();
             if cache
                 .as_ref()
                 .is_none_or(|(width, _)| *width != params.size.0)
             {
-                let rows = items::rendered_commit_rows(&screen_config, &repo, &params, &revs);
+                let rows = items::rendered_commit_rows(&config, &repo, &params, &revs);
                 *cache = Some((params.size.0, rows));
             }
 
@@ -38,14 +39,11 @@ pub(crate) fn create(
             let empty = HashMap::new();
             let (rows, failed) = match rows {
                 Ok(rows) => (rows, None),
-                Err(failed) => (
-                    &empty,
-                    Some(items::error_row(&screen_config, failed.clone())),
-                ),
+                Err(failed) => (&empty, Some(items::error_row(&config, failed.clone()))),
             };
             Ok(failed
                 .into_iter()
-                .chain(items::rebase_todo_items(&screen_config, &repo, &todo, rows))
+                .chain(items::rebase_todo_items(&config, &repo, &todo, rows))
                 .collect())
         }),
     )?;

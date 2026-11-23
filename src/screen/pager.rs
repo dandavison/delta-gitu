@@ -65,6 +65,8 @@ fn create_decorated(
         Arc::clone(&config),
         params,
         Box::new(move |params: RenderParams| {
+            // The config in force when the rows are built, which follows the features in force.
+            let config = Arc::clone(&params.config);
             if params.streaming {
                 source.first_items(&config, &repo, &params)
             } else {
@@ -658,6 +660,7 @@ mod tests {
                 context: None,
                 difftastic: false,
                 streaming: false,
+                config: Default::default(),
             },
             paged(patch, None),
         )
@@ -1050,6 +1053,7 @@ mod tests {
                 context: None,
                 difftastic: false,
                 streaming: false,
+                config: Default::default(),
             },
             paged(&run(&ctx.dir, &["git", "diff", "--stat"]), Some(argv)),
         )

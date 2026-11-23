@@ -584,6 +584,13 @@ pub(crate) fn init_config_from(config_path: PathBuf) -> Res<Config> {
     build(Figment::from(Toml::file(&config_path)), Figment::new())
 }
 
+/// gitu's defaults.
+impl Default for Config {
+    fn default() -> Self {
+        build(Figment::new(), Figment::new()).expect("gitu's defaults are a valid config")
+    }
+}
+
 /// The names of the settings gitu takes from git config, which are delta options delta does
 /// not use itself.
 pub fn delta_option_names() -> Vec<String> {

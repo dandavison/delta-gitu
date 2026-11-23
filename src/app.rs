@@ -78,6 +78,8 @@ pub(crate) struct State {
     pub context: Option<Rc<str>>,
     /// The keys that toggle renderer features, as configured and as set since.
     pub feature_keys: BTreeMap<String, char>,
+    /// The features `config` was resolved with, as `features` and `theme` overlay them.
+    config_features: Rc<[String]>,
     pub clipboard: Option<Clipboard>,
     /// Whether ops that write are hidden and refused, and nothing chosen
     /// in-session is saved ([`crate::config::ReadOnly`]).
@@ -126,6 +128,7 @@ impl App {
                 .iter()
                 .any(|feature| feature == crate::ops::editor::DIFFTASTIC),
             streaming: enable_async_cmds,
+            config: Arc::clone(&config),
         };
         let screens = match args.command {
             // A patch piped to gitu: git's output is already in hand, with the command it ran.
@@ -202,6 +205,7 @@ impl App {
                 picker: None,
                 picked_commit: None,
                 features: Rc::from([]),
+                config_features: Rc::from([]),
                 context: None,
                 clipboard,
                 read_only,
@@ -374,6 +378,7 @@ impl App {
     /// [`App::rerender_screens`] for the screen in view only, as a preview: the
     /// screens under it keep what they were rendered with.
     pub(crate) fn rerender_screen(&mut self) -> Res<()> {
+        self.follow_features();
         let features = self.overlay();
         let screen = self.state.screens.last_mut().unwrap();
         screen.features = features;
@@ -387,7 +392,35 @@ impl App {
         overlay(&self.state.features, self.state.theme.as_deref())
     }
 
+    /// Resolve the config again when the features in force are no longer those it was resolved
+    /// with, since a feature in delta's config can hold the TUI's settings. A config that fails
+    /// to resolve is reported, and the one in force kept. The feature keys become the new
+    /// config's: in read-only mode, where keys set in-session are not saved, they are lost.
+    fn follow_features(&mut self) {
+        let features = self.overlay();
+        if *features == *self.state.config_features
+            || !self.state.config.general.diff_renderer.options.is_set()
+        {
+            return;
+        }
+        self.state.config_features = Rc::clone(&features);
+        let dir = self.state.repo.workdir().unwrap_or(self.state.repo.path());
+        let overlay = crate::diff_renderer::feature_overlay(&features);
+        match self.state.config.resolved(dir, overlay.as_deref()) {
+            Ok(config) => {
+                let config = Arc::new(config);
+                self.state.feature_keys = config.general.diff_renderer.feature_keys.clone();
+                for screen in &mut self.state.screens {
+                    screen.config = Arc::clone(&config);
+                }
+                self.state.config = config;
+            }
+            Err(error) => self.display_error(error.to_string()),
+        }
+    }
+
     fn rebuild_screens(&mut self, rebuild: impl Fn(&mut Screen) -> Res<()>) -> Res<()> {
+        self.follow_features();
         let features = self.overlay();
         let difftastic = self.state.difftastic();
         for screen in &mut self.state.screens {
@@ -652,6 +685,7 @@ impl App {
             context: self.state.context.clone(),
             difftastic: self.state.difftastic(),
             streaming: self.state.enable_async_cmds,
+            config: Arc::clone(&self.state.config),
         }
     }
 

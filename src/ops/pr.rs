@@ -83,7 +83,6 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
     });
 
     let (threads_review, repo) = (Rc::clone(&review), Rc::clone(&app.state.repo));
-    let config = Arc::clone(&app.state.config);
     let (width, height) = term.size().map_err(Error::Term)?;
     let mut screen = screen::pager::live_decorated(
         Arc::clone(&app.state.config),
@@ -95,8 +94,9 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
             format!("{}...HEAD", review.pr.base_oid),
         ],
         Rc::new(move |params, items| {
+            let config = &params.config;
             let dir = repo.workdir().unwrap_or(repo.path());
-            let options = comment_options(&threads_review, &config, dir, &params.features);
+            let options = comment_options(&threads_review, config, dir, &params.features);
             let layout = screen::review::Layout {
                 width: params.width(),
                 side_by_side: options.side_by_side,

@@ -20,6 +20,7 @@ use std::iter;
 use std::ops::Range;
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 pub type ItemId = u64;
@@ -44,6 +45,9 @@ pub(crate) struct RenderParams {
     /// Whether rows may be shown before they are all drawn, the rest following
     /// when they are. Off in tests, which want a screen all there at once.
     pub streaming: bool,
+    /// The config in force, which follows the features in force, since delta's config can set
+    /// the TUI's settings in a feature.
+    pub config: Arc<Config>,
 }
 
 impl RenderParams {
