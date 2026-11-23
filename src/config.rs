@@ -796,6 +796,24 @@ pub(crate) fn options_in(path: PathBuf) -> RendererOptions {
     )
 }
 
+/// `config` told, as delta tells gitu, about the git config at `path`: what it sets delta's
+/// options to (see [`options_in`]), how to open it, and the features it enables.
+#[cfg(test)]
+pub(crate) fn told_about(config: &mut Config, path: PathBuf) {
+    let renderer = &mut config.general.diff_renderer;
+    renderer.options = options_in(path.clone());
+    let enabled = path.clone();
+    renderer.enabled_features = EnabledFeatures::new(move |_| {
+        git2::Config::open(&enabled)
+            .and_then(|git_config| git_config.get_string("delta.features"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(String::from)
+            .collect()
+    });
+    renderer.git_config = RendererGitConfig::new(move |_| git2::Config::open(&path).ok());
+}
+
 /// The config read from a gitu config file holding `toml` and git config holding `gitconfig`,
 /// with `features` in force as `DELTA_FEATURES` gives them.
 #[cfg(test)]
@@ -806,9 +824,7 @@ pub(crate) fn configured_with(toml: &str, gitconfig: &str, features: Option<&str
     let git_path = dir.path().join("gitconfig");
     std::fs::write(&git_path, gitconfig).unwrap();
     let mut config = init_config_from(toml_path)?;
-    config.general.diff_renderer.options = options_in(git_path.clone());
-    config.general.diff_renderer.git_config =
-        RendererGitConfig::new(move |_| git2::Config::open(&git_path).ok());
+    told_about(&mut config, git_path);
     config.resolved(dir.path(), features)
 }
 

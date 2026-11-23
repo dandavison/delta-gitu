@@ -22,6 +22,7 @@ mod branch;
 mod cherry_pick;
 mod command;
 mod commit;
+mod delta_config;
 mod difftastic;
 mod discard;
 mod editor;
