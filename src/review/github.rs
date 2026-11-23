@@ -273,25 +273,35 @@ const DELETED_COMMENT: &str = "/data/deletePullRequestReviewComment";
 const MARKED_VIEWED: &str = "/data/markFileAsViewed";
 const UNMARKED_VIEWED: &str = "/data/unmarkFileAsViewed";
 
-/// The value at `pointer` in GitHub's JSON `response` to a mutation. `what` says what the
-/// mutation was to do, for an error.
+/// The value at `pointer` in GitHub's JSON `response` to a mutation, which must be there and not
+/// null: GitHub can reply with a null payload, and no error, when it has done nothing, as
+/// `addPullRequestReviewThread` does for a line it can't place in the PR's diff. `what` says what
+/// the mutation was to do, for the error, which has GitHub's reply.
 fn required(response: &str, pointer: &str, what: &str) -> Res<serde_json::Value> {
     let json: serde_json::Value = serde_json::from_str(response).map_err(|e| {
         Error::Gh(format!(
             "Couldn't {what}: GitHub's reply is not JSON ({e}): {response}"
         ))
     })?;
-    Ok(json
-        .pointer(pointer)
+    json.pointer(pointer)
+        .filter(|value| !value.is_null())
         .cloned()
-        .unwrap_or(serde_json::Value::Null))
+        .ok_or_else(|| {
+            Error::Gh(format!(
+                "Couldn't {what}: GitHub did nothing, and replied {}",
+                response.trim_end()
+            ))
+        })
 }
 
-/// The id at `pointer` in GitHub's JSON `response` to a mutation, as [`required`] finds it.
+/// The id at `pointer` in GitHub's JSON `response` to a mutation, as [`required`] requires it.
 fn required_id(response: &str, pointer: &str, what: &str) -> Res<String> {
     match required(response, pointer, what)? {
         serde_json::Value::String(id) => Ok(id),
-        other => Ok(other.to_string()),
+        other => Err(Error::Gh(format!(
+            "Couldn't {what}: GitHub replied with {other} where an id should be: {}",
+            response.trim_end()
+        ))),
     }
 }
 
