@@ -48,6 +48,8 @@ pub(super) struct FakeGitHub {
     pub(super) fails: RefCell<bool>,
     /// Whether GitHub refuses to add threads, as for a line it can't place in the PR's diff.
     pub(super) refuses_threads: RefCell<bool>,
+    /// The ids of comments that are in no review GitHub lists.
+    pub(super) unreviewed: RefCell<Vec<String>>,
 }
 
 impl GitHub for FakeGitHub {
@@ -83,6 +85,7 @@ impl GitHub for FakeGitHub {
                 .iter()
                 .flat_map(|t| &t.comments)
                 .filter(|c| c.draft == draft)
+                .filter(|c| !self.unreviewed.borrow().contains(&c.id))
                 .map(|c| c.id.clone())
                 .collect()
         };
@@ -278,6 +281,7 @@ impl FakeGitHub {
             default_branch: RefCell::new("main".to_owned()),
             fails: RefCell::new(false),
             refuses_threads: RefCell::new(false),
+            unreviewed: RefCell::new(vec![]),
         }
     }
 }

@@ -1003,6 +1003,58 @@ fn fetching_a_thread_whose_commit_is_not_in_the_repository_is_an_error() {
     assert!(error.contains("is not in the repository"), "{error}");
 }
 
+/// Every comment GitHub gives is in one of the reviews it lists. One that is not would be lost
+/// from the local copy, so fetching it is an error.
+#[test]
+fn fetching_a_comment_in_no_review_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    *github.threads.borrow_mut() = vec![super::pr::thread(
+        "t1",
+        Some((crate::review::Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    *github.unreviewed.borrow_mut() = vec!["t1_0".to_owned()];
+
+    let result = review_cli_with_github(&ctx.dir, &["fetch"], "", github);
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("t1_0"), "{error}");
+    assert!(error.contains("in no review"), "{error}");
+}
+
+/// A thread on a file that is not in the PR's diff has nowhere to be shown, so the screen says
+/// it is not shown.
+#[test]
+fn a_thread_on_a_file_not_in_the_diff_is_said_not_to_be_shown() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    review_cli_with_input(
+        &ctx.dir,
+        &["comment", "--path", "added.txt", "--line", "1"],
+        "hello",
+    )
+    .unwrap();
+    let mut file = review_file(&ctx);
+    file["threads"][0]["anchor"]["path"] = "elsewhere.txt".into();
+    fs::write(
+        review_file_path(&ctx),
+        serde_json::to_string_pretty(&file).unwrap(),
+    )
+    .unwrap();
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("1 thread on elsewhere.txt is not shown"),
+        "{screen}"
+    );
+}
+
 #[test]
 fn ol_without_gits_user_name_says_to_set_it() {
     let mut ctx = setup_clone!();
