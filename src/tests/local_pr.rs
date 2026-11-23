@@ -832,6 +832,27 @@ fn review_post_pushes_the_branch_and_creates_a_draft_pr_when_there_is_none() {
     assert_eq!(github.posted.borrow().len(), 1);
 }
 
+/// A thread GitHub doesn't add is not posted: `O p` says so, and the comment stays a draft.
+#[test]
+fn op_says_so_when_github_does_not_add_a_thread_and_keeps_it_a_draft() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    *github.refuses_threads.borrow_mut() = true;
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+
+    ctx.update(&mut app, keys("Opy"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Couldn't add the thread"), "{screen}");
+    assert!(!screen.contains("Posted"), "{screen}");
+    let file = review_file(&ctx);
+    assert_eq!(file["threads"][0]["comments"][0]["body"], "hello", "{file}");
+    assert_eq!(file["reviews"][0]["state"], "draft", "{file}");
+}
+
 #[test]
 fn review_post_pushes_new_commits_to_an_existing_pr() {
     let mut ctx = setup_clone!();

@@ -263,6 +263,38 @@ const UNMARK_VIEWED: &str = "mutation($id: ID!, $path: String!) {
   unmarkFileAsViewed(input: {pullRequestId: $id, path: $path}) { clientMutationId }
 }";
 
+/// Where, in GitHub's reply to each mutation, is what it did: the new review's, thread's or
+/// comment's id, or the mutation's payload.
+const STARTED_REVIEW: &str = "/data/addPullRequestReview/pullRequestReview/id";
+const ADDED_THREAD: &str = "/data/addPullRequestReviewThread/thread/comments/nodes/0/id";
+const ADDED_REPLY: &str = "/data/addPullRequestReviewComment/comment/id";
+const EDITED_COMMENT: &str = "/data/updatePullRequestReviewComment/pullRequestReviewComment/id";
+const DELETED_COMMENT: &str = "/data/deletePullRequestReviewComment";
+const MARKED_VIEWED: &str = "/data/markFileAsViewed";
+const UNMARKED_VIEWED: &str = "/data/unmarkFileAsViewed";
+
+/// The value at `pointer` in GitHub's JSON `response` to a mutation. `what` says what the
+/// mutation was to do, for an error.
+fn required(response: &str, pointer: &str, what: &str) -> Res<serde_json::Value> {
+    let json: serde_json::Value = serde_json::from_str(response).map_err(|e| {
+        Error::Gh(format!(
+            "Couldn't {what}: GitHub's reply is not JSON ({e}): {response}"
+        ))
+    })?;
+    Ok(json
+        .pointer(pointer)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
+}
+
+/// The id at `pointer` in GitHub's JSON `response` to a mutation, as [`required`] finds it.
+fn required_id(response: &str, pointer: &str, what: &str) -> Res<String> {
+    match required(response, pointer, what)? {
+        serde_json::Value::String(id) => Ok(id),
+        other => Ok(other.to_string()),
+    }
+}
+
 impl Gh {
     /// Run the GraphQL `query` with the string variables `strings` and the typed variables
     /// `typed` (such as numbers), printing what `jq`, if given, picks out of the result.
@@ -391,13 +423,8 @@ impl GitHub for Gh {
     }
 
     fn start_review(&self, pr: &GitHubPr) -> Res<String> {
-        let output = self.graphql(
-            START_REVIEW,
-            &[("id", &pr.id)],
-            &[],
-            Some(".data.addPullRequestReview.pullRequestReview.id"),
-        )?;
-        Ok(output.trim().to_owned())
+        let output = self.graphql(START_REVIEW, &[("id", &pr.id)], &[], None)?;
+        required_id(&output, STARTED_REVIEW, "start a pending review")
     }
 
     fn add_thread(
@@ -420,9 +447,13 @@ impl GitHub for Gh {
                 ("body", body),
             ],
             &[("line", &line.1.to_string())],
-            Some(".data.addPullRequestReviewThread.thread.comments.nodes[0].id"),
+            None,
         )?;
-        Ok(output.trim().to_owned())
+        required_id(
+            &output,
+            ADDED_THREAD,
+            &format!("add the thread on {path}:{}", line.1),
+        )
     }
 
     fn default_branch(&self) -> Res<String> {
@@ -463,29 +494,33 @@ impl GitHub for Gh {
                 ("body", body),
             ],
             &[],
-            Some(".data.addPullRequestReviewComment.comment.id"),
+            None,
         )?;
-        Ok(output.trim().to_owned())
+        required_id(&output, ADDED_REPLY, "add the reply")
     }
 
     fn edit_comment(&self, comment_id: &str, body: &str) -> Res<()> {
-        self.graphql(
+        let output = self.graphql(
             EDIT_COMMENT,
             &[("id", comment_id), ("body", body)],
             &[],
             None,
         )?;
-        Ok(())
+        required_id(&output, EDITED_COMMENT, "edit the comment").map(|_| ())
     }
 
     fn delete_comment(&self, comment_id: &str) -> Res<()> {
-        self.graphql(DELETE_COMMENT, &[("id", comment_id)], &[], None)?;
-        Ok(())
+        let output = self.graphql(DELETE_COMMENT, &[("id", comment_id)], &[], None)?;
+        required(&output, DELETED_COMMENT, "delete the comment").map(|_| ())
     }
 
     fn set_viewed(&self, pr: &GitHubPr, path: &str, viewed: bool) -> Res<()> {
-        let mutation = if viewed { MARK_VIEWED } else { UNMARK_VIEWED };
-        self.run(&[
+        let (mutation, payload) = if viewed {
+            (MARK_VIEWED, MARKED_VIEWED)
+        } else {
+            (UNMARK_VIEWED, UNMARKED_VIEWED)
+        };
+        let output = self.run(&[
             "api",
             "graphql",
             "-f",
@@ -495,7 +530,7 @@ impl GitHub for Gh {
             "-f",
             &format!("path={path}"),
         ])?;
-        Ok(())
+        required(&output, payload, &format!("set {path}'s Viewed checkbox")).map(|_| ())
     }
 
     fn open(&self, url: &str) -> Res<()> {
@@ -696,6 +731,47 @@ fn parse_viewed(output: &str) -> Result<HashMap<String, ViewedState>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GitHub replies with a thread of null, and no error, when it adds no thread, as for a line
+    /// it can't place in the PR's diff.
+    #[test]
+    fn a_thread_github_did_not_add_is_an_error() {
+        let reply = r#"{"data":{"addPullRequestReviewThread":{"thread":null}}}"#;
+
+        let error = required_id(reply, ADDED_THREAD, "add the thread on a.rs:3")
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("Couldn't add the thread on a.rs:3"),
+            "{error}"
+        );
+        assert!(error.contains(r#""thread":null"#), "{error}");
+    }
+
+    #[test]
+    fn a_reply_github_did_not_add_is_an_error() {
+        let reply = r#"{"data":{"addPullRequestReviewComment":{"comment":null}}}"#;
+
+        assert!(required_id(reply, ADDED_REPLY, "add the reply").is_err());
+    }
+
+    #[test]
+    fn a_deletion_github_did_not_make_is_an_error() {
+        let reply = r#"{"data":{"deletePullRequestReviewComment":null}}"#;
+
+        assert!(required(reply, DELETED_COMMENT, "delete the comment").is_err());
+    }
+
+    #[test]
+    fn the_id_of_a_thread_github_added_is_its_first_comments() {
+        let reply = r#"{"data":{"addPullRequestReviewThread":{"thread":{"comments":{"nodes":[{"id":"PRRC_1"}]}}}}}"#;
+
+        assert_eq!(
+            required_id(reply, ADDED_THREAD, "add the thread").unwrap(),
+            "PRRC_1"
+        );
+    }
 
     #[test]
     fn parse_threads_reads_every_page() {

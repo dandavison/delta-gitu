@@ -46,6 +46,8 @@ pub(super) struct FakeGitHub {
     pub(super) default_branch: RefCell<String>,
     /// Whether gh fails, as without the network.
     pub(super) fails: RefCell<bool>,
+    /// Whether GitHub refuses to add threads, as for a line it can't place in the PR's diff.
+    pub(super) refuses_threads: RefCell<bool>,
 }
 
 impl GitHub for FakeGitHub {
@@ -151,6 +153,12 @@ impl GitHub for FakeGitHub {
         line: (Side, u32),
         body: &str,
     ) -> Result<String, Error> {
+        if *self.refuses_threads.borrow() {
+            return Err(Error::Gh(format!(
+                "Couldn't add the thread on {path}:{}: GitHub did nothing",
+                line.1
+            )));
+        }
         self.posted
             .borrow_mut()
             .push((format!("{review_id} {path}:{line:?}"), body.to_owned()));
@@ -269,6 +277,7 @@ impl FakeGitHub {
             created: RefCell::new(vec![]),
             default_branch: RefCell::new("main".to_owned()),
             fails: RefCell::new(false),
+            refuses_threads: RefCell::new(false),
         }
     }
 }
