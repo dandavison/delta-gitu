@@ -272,14 +272,15 @@ mod tests {
         );
     }
 
+    /// The output is the config alone: one `[delta]` section, whichever files the entries are in.
     #[test]
-    fn each_file_gets_a_delta_section_of_its_own() {
+    fn the_output_is_one_delta_section() {
         let mut other = entry("delta-tui.stash-list-limit", "0");
         other.file = "/home/me/tui.gitconfig".to_owned();
-        let migrated = migrated(&[entry("delta-tui.start-folded", "true"), other]);
-        assert_eq!(migrated.matches("[delta]\n").count(), 2, "{migrated}");
-        assert!(migrated.contains("In /home/me/.gitconfig"), "{migrated}");
-        assert!(migrated.contains("In /home/me/tui.gitconfig"), "{migrated}");
+        assert_eq!(
+            migrated(&[entry("delta-tui.start-folded", "true"), other]),
+            "[delta]\n    start-folded = true\n    stash-list-limit = 0\n"
+        );
     }
 
     /// An old config read from git config and migrated is read as it was meant.
