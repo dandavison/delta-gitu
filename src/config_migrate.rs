@@ -5,17 +5,16 @@
 use crate::{Res, error::Error};
 use std::process::Command;
 
-/// An entry in an old `[delta-tui]` section: the file holding it, its full name and its value,
-/// `None` for a key with no `=`.
+/// An entry in an old `[delta-tui]` section: its full name and its value, `None` for a key with
+/// no `=`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Entry {
-    pub file: String,
     pub name: String,
     pub value: Option<String>,
 }
 
-/// Print the settings in git config's `[delta-tui]` sections as they go in `[delta]`, file by
-/// file. With none, say so on stderr.
+/// Print the settings in git config's `[delta-tui]` sections as a `[delta]` section. With none,
+/// say so on stderr.
 pub(crate) fn print() -> Res<()> {
     let entries = entries(&|| Command::new("git"))?;
     if entries.is_empty() {
@@ -29,13 +28,7 @@ pub(crate) fn print() -> Res<()> {
 /// The entries of the `[delta-tui]` sections in git config, in the order git reads them.
 pub(crate) fn entries(git: &dyn Fn() -> Command) -> Res<Vec<Entry>> {
     let output = git()
-        .args([
-            "config",
-            "--show-origin",
-            "--null",
-            "--get-regexp",
-            "^delta-tui\\.",
-        ])
+        .args(["config", "--null", "--get-regexp", "^delta-tui\\."])
         .output()
         .map_err(|e| Error::EditConfig(e.to_string()))?;
     // Finding nothing is status 1.
@@ -45,47 +38,30 @@ pub(crate) fn entries(git: &dyn Fn() -> Command) -> Res<Vec<Entry>> {
         ));
     }
     let output = String::from_utf8_lossy(&output.stdout);
-    // Each entry is its origin, then its name and, after a newline, its value.
-    let fields: Vec<&str> = output.split('\0').collect();
-    Ok(fields
-        .chunks(2)
-        .filter_map(|entry| {
-            let file = entry[0].strip_prefix("file:").unwrap_or(entry[0]);
-            let (name, value) = match entry.get(1)?.split_once('\n') {
-                Some((name, value)) => (name, Some(value.to_owned())),
-                None => (*entry.get(1)?, None),
-            };
-            Some(Entry {
-                file: file.to_owned(),
+    // Each entry is its name and, after a newline, its value.
+    Ok(output
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| match entry.split_once('\n') {
+            Some((name, value)) => Entry {
                 name: name.to_owned(),
-                value,
-            })
+                value: Some(value.to_owned()),
+            },
+            None => Entry {
+                name: entry.to_owned(),
+                value: None,
+            },
         })
         .collect())
 }
 
-/// `entries` as they go in `[delta]`: for each file holding some, a `[delta]` section to replace
-/// its `[delta-tui]` sections with.
+/// `entries` as a `[delta]` section, whichever files they are in.
 pub(crate) fn migrated(entries: &[Entry]) -> String {
-    let mut files: Vec<&str> = vec![];
+    let mut out = String::from("[delta]\n");
     for entry in entries {
-        if !files.contains(&entry.file.as_str()) {
-            files.push(&entry.file);
-        }
-    }
-    let mut out = String::from(
-        "# The TUI's settings in git config's [delta-tui] sections, as they go in [delta].\n\
-         # delta --tui does not start while a [delta-tui] section is in git config.\n",
-    );
-    for file in files {
-        out.push_str(&format!(
-            "\n# In {file}, replace the [delta-tui] sections with:\n[delta]\n"
-        ));
-        for entry in entries.iter().filter(|entry| entry.file == file) {
-            out.push_str("    ");
-            out.push_str(&line(&entry.name, entry.value.as_deref()));
-            out.push('\n');
-        }
+        out.push_str("    ");
+        out.push_str(&line(&entry.name, entry.value.as_deref()));
+        out.push('\n');
     }
     out
 }
@@ -171,7 +147,6 @@ mod tests {
 
     fn entry(name: &str, value: &str) -> Entry {
         Entry {
-            file: "/home/me/.gitconfig".to_owned(),
             name: name.to_owned(),
             value: Some(value.to_owned()),
         }
@@ -272,13 +247,14 @@ mod tests {
         );
     }
 
-    /// The output is the config alone: one `[delta]` section, whichever files the entries are in.
+    /// The output is the config alone: one `[delta]` section.
     #[test]
     fn the_output_is_one_delta_section() {
-        let mut other = entry("delta-tui.stash-list-limit", "0");
-        other.file = "/home/me/tui.gitconfig".to_owned();
         assert_eq!(
-            migrated(&[entry("delta-tui.start-folded", "true"), other]),
+            migrated(&[
+                entry("delta-tui.start-folded", "true"),
+                entry("delta-tui.stash-list-limit", "0"),
+            ]),
             "[delta]\n    start-folded = true\n    stash-list-limit = 0\n"
         );
     }
