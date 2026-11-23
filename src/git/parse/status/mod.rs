@@ -354,6 +354,18 @@ mod tests {
     }
 
     #[test]
+    fn branch_without_remote_and_path_containing_three_dots() {
+        let input =
+            "## main\nA  src/pages/[...lang]/index.astro\nA  src/pages/[...lang]/talk.astro\n";
+        let result = Status::from_str(input).unwrap();
+        assert_eq!(result.branch_status.local, Some("main".to_string()));
+        assert_eq!(result.branch_status.remote, None);
+        assert_eq!(result.files.len(), 2);
+        assert_eq!(result.files[0].path, "src/pages/[...lang]/index.astro");
+        assert_eq!(result.files[1].path, "src/pages/[...lang]/talk.astro");
+    }
+
+    #[test]
     fn branch_with_slashes() {
         let input = "## feature/cool-stuff...origin/feature/cool-stuff\n";
         let result = Status::from_str(input).unwrap();
