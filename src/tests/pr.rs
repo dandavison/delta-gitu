@@ -293,10 +293,8 @@ fn a_base_commit_not_in_the_repository_is_fetched() {
     // main moves on on GitHub, after the repository last fetched it.
     let other = ctx.dir.parent().unwrap().join("other");
     let url = Url::from_file_path(&ctx.remote_dir).unwrap().to_string();
-    run(
-        ctx.dir.parent().unwrap(),
-        &["git", "clone", &url, other.to_str().unwrap()],
-    );
+    // Relative to where it runs: on Windows the absolute path has a `\\?\` prefix git cannot use.
+    run(ctx.dir.parent().unwrap(), &["git", "clone", &url, "other"]);
     commit(&other, "later.txt", "later\n");
     run(&other, &["git", "push", "origin", "main"]);
     let github = Rc::new(FakeGitHub {
@@ -1372,14 +1370,17 @@ fn a_paste_goes_into_the_box() {
 
 /// The box is drawn in comment-editor-style, which is comment-style unless set.
 #[test]
-fn the_box_is_drawn_in_the_editor_styles() {
+fn the_box_is_drawn_in_the_comment_styles_unless_editor_styles_are_set() {
     let mut ctx = setup_clone!();
     with_options(&mut ctx, &[("comment-style", "normal blue")]);
     let github = setup(&ctx);
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO/new<enter>ihello"));
     assert_eq!(cell(&ctx, "hello", 'h').bg, crate::style::Color::Blue);
+}
 
+#[test]
+fn the_box_is_drawn_in_the_editor_styles() {
     let mut ctx = setup_clone!();
     with_options(
         &mut ctx,
