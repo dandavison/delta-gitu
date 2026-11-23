@@ -33,17 +33,20 @@ impl Posted {
     }
 }
 
-/// The command that pushes `head`, in `repo`, to its remote (`origin` if it has none), setting it as the
-/// branch's upstream.
-pub(crate) fn push_command(repo: &Repository, head: &str) -> Command {
-    let remote = repo
-        .config()
-        .and_then(|config| config.get_string(&format!("branch.{head}.remote")))
-        .unwrap_or_else(|_| "origin".to_owned());
+/// The command that pushes `head`, in `repo`, to its remote (`origin` if it has none), setting it
+/// as the branch's upstream.
+pub(crate) fn push_command(repo: &Repository, head: &str) -> Res<Command> {
+    let key = format!("branch.{head}.remote");
+    let error = |e: git2::Error| Error::LocalPr(format!("Couldn't read git's {key}: {e}"));
+    let remote = match repo.config().map_err(error)?.get_string(&key) {
+        Ok(remote) => remote,
+        Err(e) if e.code() == git2::ErrorCode::NotFound => "origin".to_owned(),
+        Err(e) => return Err(error(e)),
+    };
     let mut cmd = Command::new("git");
     cmd.args(["push", "--set-upstream", &remote, head]);
     cmd.current_dir(repo.workdir().unwrap_or(repo.path()));
-    cmd
+    Ok(cmd)
 }
 
 /// Post the user's draft review of `local`'s PR, an agent's comments in it included, as their

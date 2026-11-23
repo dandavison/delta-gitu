@@ -21,6 +21,7 @@ use std::{rc::Rc, sync::Arc};
 /// the cursor is not run, nor one whose prompt is cancelled or left empty.
 pub(crate) fn run(app: &mut App, term: &mut Term, name: &str) -> Res<()> {
     let Some(template) = app.state.config.general.commands.get(name) else {
+        app.display_error(format!("{name}: there is no command of that name"));
         return Ok(());
     };
     let mut template = template.clone();
@@ -52,6 +53,7 @@ pub(crate) fn run(app: &mut App, term: &mut Term, name: &str) -> Res<()> {
 /// cancelled or left empty.
 pub(crate) fn open_view(app: &mut App, term: &mut Term, name: &str) -> Res<()> {
     let Some(template) = app.state.config.general.views.get(name) else {
+        app.display_error(format!("{name}: there is no view of that name"));
         return Ok(());
     };
     let Ok(words) = shell_words::split(template) else {

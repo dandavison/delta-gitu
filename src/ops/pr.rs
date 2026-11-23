@@ -138,7 +138,7 @@ impl OpTrait for PrPost {
                 term,
                 "Push the branch and post its draft comments to GitHub? [y/n]",
             )?;
-            let push = review::post::push_command(&app.state.repo, local.head());
+            let push = review::post::push_command(&app.state.repo, local.head())?;
             app.run_cmd(term, &[], push)?;
             let posted = review::post::post(local, Rc::clone(&app.state.github))?;
             reread_pr(app)?;

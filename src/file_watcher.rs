@@ -4,37 +4,68 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
 
 pub struct FileWatcher {
     pending_updates: Arc<AtomicBool>,
+    /// What went wrong in the watcher's thread, for the user to be told: until they are, the
+    /// screens may not show changes made elsewhere.
+    errors: Arc<Mutex<Vec<String>>>,
 }
 
 impl FileWatcher {
     pub fn new(repo: &Repository) -> Res<Self> {
         let pending_updates = Arc::new(AtomicBool::new(false));
         let pending_updates_w = pending_updates.clone();
+        let errors = Arc::new(Mutex::new(vec![]));
+        let errors_w = Arc::clone(&errors);
         let git_dir = repo.path().to_path_buf();
         let workdir = repo.workdir().expect("Bare repos unhandled").to_path_buf();
 
         std::thread::spawn(move || {
-            if let Err(e) = watch(&git_dir, &workdir, pending_updates_w) {
-                log::error!("File watcher error: {:?}", e)
+            if let Err(e) = watch(&git_dir, &workdir, pending_updates_w, Arc::clone(&errors_w)) {
+                report(&errors_w, format!("File watcher stopped: {e}"));
             }
         });
 
-        Ok(Self { pending_updates })
+        Ok(Self {
+            pending_updates,
+            errors,
+        })
     }
 
     pub fn pending_updates(&self) -> bool {
         self.pending_updates.swap(false, Ordering::Relaxed)
     }
+
+    /// What has gone wrong since last asked.
+    pub fn take_errors(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .errors
+                .lock()
+                .expect("no watcher thread panics holding it"),
+        )
+    }
 }
 
-fn watch(git_dir: &Path, workdir: &Path, pending_updates_w: Arc<AtomicBool>) -> Res<()> {
+fn report(errors: &Mutex<Vec<String>>, error: String) {
+    log::error!("{error}");
+    errors
+        .lock()
+        .expect("no watcher thread panics holding it")
+        .push(error);
+}
+
+fn watch(
+    git_dir: &Path,
+    workdir: &Path,
+    pending_updates_w: Arc<AtomicBool>,
+    errors: Arc<Mutex<Vec<String>>>,
+) -> Res<()> {
     let repo = Repository::open(git_dir).map_err(Error::OpenRepo)?;
     repo.set_workdir(workdir, false).map_err(Error::OpenRepo)?;
     let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -48,21 +79,38 @@ fn watch(git_dir: &Path, workdir: &Path, pending_updates_w: Arc<AtomicBool>) -> 
         (!git_dirs.common_dir.starts_with(&workdir)).then(|| git_dirs.common_dir.clone());
 
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-        if let Ok(event) = res {
-            if !is_changed(&event) {
+        let event = match res {
+            Ok(event) => event,
+            Err(e) => {
+                report(&errors, format!("File watcher error: {e}"));
                 return;
             }
+        };
+        if !is_changed(&event) {
+            return;
+        }
 
-            for path in event.paths {
-                let relevant = match git_dirs.is_relevant(&path) {
-                    Some(relevant) => relevant,
-                    None => !repo.status_should_ignore(&path).unwrap_or(false),
-                };
-                if relevant {
-                    log::info!("File changed: {:?} ({:?})", path, event.kind);
-                    pending_updates_w.store(true, Ordering::Relaxed);
-                    break;
-                }
+        for path in event.paths {
+            let relevant = match git_dirs.is_relevant(&path) {
+                Some(relevant) => relevant,
+                None => match repo.status_should_ignore(&path) {
+                    Ok(ignored) => !ignored,
+                    Err(e) => {
+                        report(
+                            &errors,
+                            format!(
+                                "File watcher couldn't tell whether git ignores {}: {e}",
+                                path.display()
+                            ),
+                        );
+                        true
+                    }
+                },
+            };
+            if relevant {
+                log::info!("File changed: {:?} ({:?})", path, event.kind);
+                pending_updates_w.store(true, Ordering::Relaxed);
+                break;
             }
         }
     })

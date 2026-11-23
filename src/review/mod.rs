@@ -267,7 +267,7 @@ pub(crate) mod cli {
         match command {
             ReviewCommand::Post { head, base } => {
                 let pr = pr_by(repo, Rc::clone(&github), head, base, &None)?;
-                let output = super::post::push_command(pr.repo(), pr.head())
+                let output = super::post::push_command(pr.repo(), pr.head())?
                     .output()
                     .map_err(|e| Error::LocalPr(format!("Couldn't run git push: {e}")))?;
                 if !output.status.success() {

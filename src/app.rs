@@ -277,6 +277,15 @@ impl App {
 
         self.rerender_at_terminal_width(term)?;
 
+        let watcher_errors = self
+            .state
+            .file_watcher
+            .as_ref()
+            .map(FileWatcher::take_errors)
+            .unwrap_or_default();
+        for error in watcher_errors {
+            self.display_error(error);
+        }
         if let Some(file_watcher) = &mut self.state.file_watcher
             && file_watcher.pending_updates()
         {

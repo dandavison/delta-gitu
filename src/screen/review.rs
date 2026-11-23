@@ -16,10 +16,11 @@ use std::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// `items`, a PR's diff, under a warning when HEAD is not the commit the PR's lines are
-/// numbered against, and with each of the PR's threads under the line it is on. A thread whose line is not among the rows, as GitHub has it outdated
-/// or as its line is outside the diff's hunks, goes under its file's header. A
-/// thread on a file not among the rows is not shown. While the renderer is
-/// still drawing, a thread on a line not yet drawn shows under its file's
+/// numbered against, and with each of the PR's threads under the line it is on. A thread whose
+/// line is not among the rows, as GitHub has it outdated or as its line is outside the diff's
+/// hunks, goes under its file's header. A thread on a file not among the rows is not shown, and a
+/// row at the top says so for one on a file not in the PR's diff, which can never be shown.
+/// While the renderer is still drawing, a thread on a line not yet drawn shows under its file's
 /// header until the line is. Comments are wrapped to the width of the panel
 /// of the side their line is on (see [`Layout`]).
 pub(crate) fn with_threads(
@@ -115,6 +116,13 @@ pub(crate) fn with_threads(
     if pr.backend.head_mismatch(repo) {
         out.push(warning_row());
     }
+    for error in not_in_diff(&threads, &pr.viewed.borrow()) {
+        out.push(Item {
+            unselectable: true,
+            rendered: Some(Rc::new(vec![(error, error_style)])),
+            ..Default::default()
+        });
+    }
     for (i, item) in items.into_iter().enumerate() {
         let threads = under.remove(&i).unwrap_or_default();
         // Under a file's header a thread is a level down; under a line, beside it.
@@ -156,6 +164,27 @@ pub(crate) fn with_threads(
         }
     }
     out
+}
+
+/// What to say of the threads on files not in the PR's diff, `files`, one line for each file.
+fn not_in_diff(threads: &[Thread], files: &HashMap<String, review::ViewedState>) -> Vec<String> {
+    let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
+    for thread in threads {
+        if !files.contains_key(&thread.path) {
+            *counts.entry(thread.path.as_str()).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(path, n)| {
+            let (threads, are) = if n == 1 {
+                ("thread", "is")
+            } else {
+                ("threads", "are")
+            };
+            format!("{n} {threads} on {path} {are} not shown: the file is not in the PR's diff")
+        })
+        .collect()
 }
 
 /// `items` with each file's comment count: at the end of the names' column of its line of the

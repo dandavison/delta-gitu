@@ -1094,6 +1094,11 @@ fn setup_folded_to_stat(ctx: &mut TestContext) -> Rc<FakeGitHub> {
     let lines = (1..=200).map(|i| format!("{i}\n")).collect::<String>();
     commit(&ctx.dir, "big.txt", &lines);
     run(&ctx.dir, &["git", "checkout", "main"]);
+    // As on GitHub, every file of the PR has a Viewed state.
+    github
+        .viewed
+        .borrow_mut()
+        .insert("big.txt".to_owned(), ViewedState::Unviewed);
     Rc::new(FakeGitHub {
         head_oid: run(&ctx.dir, &["git", "rev-parse", "feature"])
             .trim()

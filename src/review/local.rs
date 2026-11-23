@@ -11,7 +11,7 @@ use crate::{Res, error::Error};
 use git2::{Oid, Repository};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
     rc::Rc,
@@ -129,19 +129,24 @@ impl LocalBackend {
 
     /// The lines of the file at `path` in `commit`, none if it has no such file.
     fn file_lines(&self, commit: Oid, path: &str) -> Res<Vec<String>> {
-        let blob = self
+        let error = |e: git2::Error| {
+            Error::LocalPr(format!("Couldn't read {path} in commit {commit}: {e}"))
+        };
+        let tree = self
             .repo
             .find_commit(commit)
             .and_then(|commit| commit.tree())
-            .and_then(|tree| tree.get_path(Path::new(path)))
-            .and_then(|entry| self.repo.find_blob(entry.id()));
-        Ok(match blob {
-            Ok(blob) => String::from_utf8_lossy(blob.content())
-                .lines()
-                .map(str::to_owned)
-                .collect(),
-            Err(_) => vec![],
-        })
+            .map_err(error)?;
+        let entry = match tree.get_path(Path::new(path)) {
+            Ok(entry) => entry,
+            Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(vec![]),
+            Err(e) => return Err(error(e)),
+        };
+        let blob = self.repo.find_blob(entry.id()).map_err(error)?;
+        Ok(String::from_utf8_lossy(blob.content())
+            .lines()
+            .map(str::to_owned)
+            .collect())
     }
 
     /// Where a comment on `line` of the file at `path` is, with the line and the lines around
@@ -372,6 +377,24 @@ impl LocalBackend {
             };
             anchors.insert(thread.id.clone(), anchor);
         }
+        // A comment in none of the reviews GitHub listed would be lost from the copy.
+        let reviewed: HashSet<&str> = reviews
+            .iter()
+            .flat_map(|review| &review.comments)
+            .map(String::as_str)
+            .collect();
+        let in_no_review: Vec<String> = threads
+            .iter()
+            .flat_map(|thread| thread.comments.iter().map(move |c| (thread, c)))
+            .filter(|(_, c)| !reviewed.contains(c.id.as_str()))
+            .map(|(thread, c)| format!("{} on {}", c.id, thread.path))
+            .collect();
+        if !in_no_review.is_empty() {
+            return Err(Error::Gh(format!(
+                "Couldn't fetch: GitHub gave comments in no review it listed: {}",
+                in_no_review.join(", ")
+            )));
+        }
         let now = chrono::Local::now().fixed_offset();
         self.store.update(|file| {
             file.reviews.retain(|r| r.state == ReviewState::Draft);
@@ -404,17 +427,16 @@ impl LocalBackend {
                 let comments: Vec<StoredComment> = thread
                     .comments
                     .iter()
-                    .filter_map(|c| {
-                        Some(StoredComment {
-                            id: format!("github-{}", c.id),
-                            review: review_of.get(&c.id)?.clone(),
-                            author: c.author.clone(),
-                            agent: None,
-                            body: c.body.clone(),
-                            created_at: c.created_at,
-                            github: Some(c.id.clone()),
-                            url: c.url.clone(),
-                        })
+                    .map(|c| StoredComment {
+                        id: format!("github-{}", c.id),
+                        // Every comment's review was found above.
+                        review: review_of[&c.id].clone(),
+                        author: c.author.clone(),
+                        agent: None,
+                        body: c.body.clone(),
+                        created_at: c.created_at,
+                        github: Some(c.id.clone()),
+                        url: c.url.clone(),
                     })
                     .collect();
                 let Some(first) = thread.comments.first().map(|c| c.id.clone()) else {
@@ -714,24 +736,32 @@ impl LocalBackend {
             .repo
             .diff_tree_to_tree(Some(&old), Some(&new), None)
             .map_err(error)?;
-        Ok(diff
-            .deltas()
-            .filter_map(|delta| {
+        diff.deltas()
+            .map(|delta| {
                 let deleted = delta.status() == git2::Delta::Deleted;
                 let file = if deleted {
                     delta.old_file()
                 } else {
                     delta.new_file()
                 };
-                let path = file.path()?.to_string_lossy().into_owned();
+                let path = file
+                    .path()
+                    .ok_or_else(|| {
+                        Error::LocalPr(format!(
+                            "Couldn't diff the PR: a file {} has no path",
+                            file.id()
+                        ))
+                    })?
+                    .to_string_lossy()
+                    .into_owned();
                 let blob = if deleted {
                     String::new()
                 } else {
                     file.id().to_string()
                 };
-                Some((path, blob))
+                Ok((path, blob))
             })
-            .collect())
+            .collect()
     }
 }
 
@@ -961,7 +991,11 @@ impl Backend for LocalBackend {
         if let Some(linked) = &self.linked {
             return linked.set_viewed(path, viewed);
         }
-        let blob = self.files()?.remove(path).unwrap_or_default();
+        let blob = self.files()?.remove(path).ok_or_else(|| {
+            Error::LocalPr(format!(
+                "Couldn't set the Viewed checkbox: {path} is not a file of the PR"
+            ))
+        })?;
         self.store.update(|file| {
             let ticked = file.viewed.entry(self.reviewer.clone()).or_default();
             if viewed {
