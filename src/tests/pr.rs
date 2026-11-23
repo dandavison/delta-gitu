@@ -286,6 +286,29 @@ impl FakeGitHub {
     }
 }
 
+/// A thread on a file GitHub doesn't have in the PR, as one added by a commit not pushed, is
+/// shown under the file, and not said to be not shown.
+#[test]
+fn a_thread_on_a_file_not_pushed_is_shown_and_not_said_not_to_be() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    run(&ctx.dir, &["git", "checkout", "feature"]);
+    commit(&ctx.dir, "local.txt", "local\n");
+    *github.threads.borrow_mut() = vec![Thread {
+        path: "local.txt".into(),
+        ..thread("t1", None, false, &[("bob", "Hm")])
+    }];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+    let top = ctx.redact_buffer();
+    ctx.update(&mut app, keys("/local.txt<enter>"));
+
+    assert!(!top.contains("not shown"), "{top}");
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Hm"), "{screen}");
+}
+
 fn init_app(ctx: &mut TestContext, github: &Rc<FakeGitHub>) -> App {
     ctx.debug = false;
     let mut app = ctx.init_app();

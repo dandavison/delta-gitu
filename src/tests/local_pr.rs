@@ -1055,6 +1055,50 @@ fn a_thread_on_a_file_not_in_the_diff_is_said_not_to_be_shown() {
     );
 }
 
+/// A pending review on GitHub with no comments has no threads to show it by, but it stops `O p`,
+/// so the PR's screen says it is there, and that it stops `O p`.
+#[test]
+fn the_screen_shows_a_pending_review_on_github_with_no_comments() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    *github.pending.borrow_mut() = Some("R1".to_owned());
+    review_cli_with_github(&ctx.dir, &["fetch"], "", github).unwrap();
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("Ol"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("You have a pending review on GitHub, with no comments"),
+        "{screen}"
+    );
+    assert!(screen.contains("O p won't post until"), "{screen}");
+}
+
+/// Posting refused for a pending review on GitHub says where it is, and how many comments it
+/// has.
+#[test]
+fn posting_refused_for_a_pending_review_says_where_it_is_and_what_it_has() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    *github.pending.borrow_mut() = Some("R1".to_owned());
+    review_cli_with_input(
+        &ctx.dir,
+        &["comment", "--path", "lines.txt", "--line", "2"],
+        "hello",
+    )
+    .unwrap();
+
+    let error = review_cli_with_github(&ctx.dir, &["post"], "", github)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("https://github.com/o/r/pull/7"), "{error}");
+    assert!(error.contains("with no comments"), "{error}");
+}
+
 #[test]
 fn ol_without_gits_user_name_says_to_set_it() {
     let mut ctx = setup_clone!();
