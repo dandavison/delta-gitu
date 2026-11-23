@@ -1154,5 +1154,9 @@ mod tests {
         let error = config_error("[delta-tui]\n\tstart-folded = true\n");
         assert!(error.contains("[delta-tui]"), "{error}");
         assert!(error.contains("[delta]"), "{error}");
+        assert!(
+            error.contains("delta --tui --migrate-old-config"),
+            "{error}"
+        );
     }
 }
