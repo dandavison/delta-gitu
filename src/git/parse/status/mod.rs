@@ -3,7 +3,7 @@ use std::{error::Error, str::FromStr};
 use nom::{
     IResult, Parser as _,
     branch::alt,
-    bytes::complete::{escaped, is_not, tag, take_until, take_while1},
+    bytes::complete::{escaped, is_not, tag, take_while1},
     character::complete::{anychar, char, digit1, line_ending, space1},
     combinator::{map, map_res, opt, recognize, verify},
     multi::many0,
@@ -107,11 +107,15 @@ fn parse_branch_status(input: &str) -> IResult<&str, BranchStatus> {
 
 fn parse_branch(input: &str) -> IResult<&str, &str> {
     // Parse branch name - take until we hit "...", space, or newline
-    alt((
-        take_until("..."),
-        take_while1(|c: char| c != ' ' && c != '\n' && c != '\r'),
-    ))
-    .parse(input)
+    let (_, token) = take_while1(|c: char| c != ' ' && c != '\n' && c != '\r').parse(input)?;
+    let len = token.find("...").unwrap_or(token.len());
+    if len == 0 {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::TakeUntil,
+        )));
+    }
+    Ok((&input[len..], &input[..len]))
 }
 
 fn parse_ahead_behind(input: &str) -> IResult<&str, (u32, u32)> {
