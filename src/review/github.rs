@@ -851,6 +851,7 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
                             draft: comment.state.as_deref() == Some("PENDING"),
                             editable: comment.state.as_deref() == Some("PENDING"),
                             deletable: comment.state.as_deref() == Some("PENDING"),
+                            pending: comment.state.as_deref() == Some("PENDING"),
                             submitted: comment.state.as_deref() != Some("PENDING"),
                             local_only: false,
                             agent: None,

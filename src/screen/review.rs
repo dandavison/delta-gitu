@@ -285,7 +285,7 @@ fn warning_row() -> Item {
 
 /// The delta options gitu draws comments with. delta's config sets them, as it sets its own,
 /// so that a delta feature can.
-pub(crate) const OPTION_NAMES: [&str; 10] = [
+pub(crate) const OPTION_NAMES: [&str; 13] = [
     "comment-style",
     "comment-author-style",
     "comment-timestamp-style",
@@ -296,6 +296,9 @@ pub(crate) const OPTION_NAMES: [&str; 10] = [
     "comment-editor-decoration-style",
     "comment-submitted-style",
     "comment-link-style",
+    "comment-draft-style",
+    "comment-local-only-style",
+    "comment-pending-style",
 ];
 
 /// How comments are drawn, from the delta options in [`OPTION_NAMES`].
@@ -317,6 +320,13 @@ pub(crate) struct CommentOptions {
     pub editor_text: Style,
     /// What is drawn around a comment box, `decoration` unless set.
     pub editor_decoration: DecorationStyle,
+    /// What a local-only comment, which sync never posts, is drawn in over `text`, if set.
+    pub local_only: Option<Style>,
+    /// What a comment in the draft review, which sync posts, is drawn in over `text`, if set.
+    pub draft: Option<Style>,
+    /// What a comment in the user's pending review on GitHub, which only they see, is drawn in
+    /// over `text`, if set.
+    pub pending: Option<Style>,
     /// What a comment in a submitted review, which everyone can see, is drawn in over `text`,
     /// if set.
     pub submitted: Option<Style>,
@@ -366,9 +376,15 @@ impl CommentOptions {
         let editor_text = set_style(6, false).map_or(text, |parsed| parsed.style);
         let editor_decoration = set_style(7, true).unwrap_or(decoration);
         let submitted = set_style(8, false).map(|parsed| parsed.style);
+        let draft = set_style(10, false).map(|parsed| parsed.style);
+        let local_only = set_style(11, false).map(|parsed| parsed.style);
+        let pending = set_style(12, false).map(|parsed| parsed.style);
         CommentOptions {
             editor_text,
             editor_decoration,
+            local_only,
+            draft,
+            pending,
             submitted,
             link,
             text,
@@ -504,7 +520,9 @@ fn thread_rows(
         } else {
             vec![]
         };
-        if comment.draft {
+        if comment.pending {
+            notes.push("pending".to_owned());
+        } else if comment.draft {
             notes.push("draft".to_owned());
         }
         if comment.local_only {
@@ -773,10 +791,19 @@ fn comment_rows(
     width: usize,
     options: &CommentOptions,
 ) -> Vec<Row> {
-    let text = match options.submitted {
-        Some(submitted) if comment.submitted => options.text.patch(submitted),
-        _ => options.text,
+    // Where the comment is, from where only this repository has it to where everyone sees it.
+    let state = if comment.local_only {
+        options.local_only
+    } else if comment.pending {
+        options.pending
+    } else if comment.draft {
+        options.draft
+    } else if comment.submitted {
+        options.submitted
+    } else {
+        None
     };
+    let text = state.map_or(options.text, |state| options.text.patch(state));
     let padded = |mut row: Row| -> Row {
         let used: usize = row
             .iter()

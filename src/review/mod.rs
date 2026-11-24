@@ -167,6 +167,9 @@ pub(crate) struct Comment {
     pub local_only: bool,
     /// The reactions to it on GitHub, one for each emoji.
     pub reactions: Vec<Reaction>,
+    /// Whether the comment is in the user's pending review on GitHub, which only they see until
+    /// they submit it.
+    pub pending: bool,
     /// Whether the comment is in a submitted review, which everyone who can see the PR sees.
     pub submitted: bool,
     /// Whether `i` on it edits it, rather than replying: the user's own comment, local (in the

@@ -1886,6 +1886,8 @@ impl Backend for LocalBackend {
                         editable: (local(&comment.review) && comment.agent.is_none())
                             || mine(&comment.review),
                         deletable: local(&comment.review) || mine(&comment.review),
+                        pending: review_of(&comment.review)
+                            .is_some_and(|r| r.state == ReviewState::Pending),
                         submitted: submitted(&comment.review),
                     })
                     .collect(),

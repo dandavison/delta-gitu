@@ -233,6 +233,7 @@ impl GitHub for FakeGitHub {
             deletable: true,
             submitted: false,
             local_only: false,
+            pending: false,
             reactions: vec![],
             agent: None,
         });
@@ -452,6 +453,7 @@ pub(super) fn thread(
                 deletable: false,
                 submitted: true,
                 local_only: false,
+                pending: false,
                 reactions: vec![],
                 agent: None,
             })

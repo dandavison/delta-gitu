@@ -201,6 +201,7 @@ impl GitHub for User {
                             editable: *visible.get(id.as_str())?,
                             deletable: *visible.get(id.as_str())?,
                             // Shown to the user as a draft only while in their pending review.
+                            pending: *visible.get(id.as_str())?,
                             submitted: !*visible.get(id.as_str())?,
                             local_only: false,
                             reactions: vec![],
