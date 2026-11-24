@@ -1129,6 +1129,38 @@ fn a_comment_a_stopped_sync_was_posting_cant_be_changed_until_a_sync_finishes() 
     assert_eq!(github.posted.borrow().len(), 1);
 }
 
+/// A comment GitHub added though its reply was lost, and whose review I then submitted on GitHub,
+/// is not posted again by the next sync: it is found among my comments, though no longer pending.
+#[test]
+fn a_comment_whose_reply_was_lost_is_not_posted_twice_once_its_review_is_submitted() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    comment_with_base(&ctx, None);
+    *github.loses_replies.borrow_mut() = 1;
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap_err();
+    assert_eq!(github.posted.borrow().len(), 1);
+
+    // On GitHub, I submit the pending review.
+    for comment in github
+        .threads
+        .borrow_mut()
+        .iter_mut()
+        .flat_map(|t| &mut t.comments)
+    {
+        comment.draft = false;
+        comment.submitted = true;
+    }
+    *github.submitted_by_me.borrow_mut() = true;
+    *github.pending.borrow_mut() = None;
+
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+
+    assert_eq!(github.posted.borrow().len(), 1);
+    // Nor is a pending review started, which would be left with nothing in it.
+    assert_eq!(*github.reviews_started.borrow(), 1);
+}
+
 /// Of two identical draft comments on a line, one posted though its reply was lost, the other
 /// is still posted: only a comment from an attempt that didn't finish is looked for.
 #[test]
