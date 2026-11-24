@@ -135,6 +135,13 @@ pub(crate) struct Rules {
     pub lease: bool,
     /// Sync posts nothing while a draft reply's thread starts with a local-only comment.
     pub block_replies_to_local_threads: bool,
+    /// Whether an edit or delete of my comment on GitHub publishes is decided from GitHub as it
+    /// is now, rather than from the repository's copy, which may be from before the review was
+    /// submitted.
+    pub classify_on_github: bool,
+    /// An edit or delete of my comment on GitHub from a copy older than GitHub's comment is
+    /// refused, rather than overwriting what was changed there since.
+    pub refuse_stale_copies: bool,
 }
 
 impl Default for Rules {
@@ -143,6 +150,8 @@ impl Default for Rules {
             keep_first_comment: true,
             lease: true,
             block_replies_to_local_threads: true,
+            classify_on_github: true,
+            refuse_stale_copies: true,
         }
     }
 }
@@ -185,14 +194,28 @@ pub(crate) enum Action {
     /// A commit, pushed to the PR on GitHub, removes a thread's line from the diff, and moves the
     /// PR's head.
     ChangeCode { thread: Id },
-    /// Edit my own comment in a review on GitHub, from a repository whose copy has it. The edit
-    /// is made on GitHub, and the repository fetches again.
-    EditOnGitHub { repo: Repo, comment: Id },
+    /// Edit my own comment in a review on GitHub, from a repository whose copy has it, saying to
+    /// publish (`y` in the TUI, `--publish` on the command line) if `publish`. The edit is made on
+    /// GitHub, and the repository fetches again.
+    EditOnGitHub {
+        repo: Repo,
+        comment: Id,
+        publish: bool,
+    },
     /// Delete my own reply in a review on GitHub, as [`Action::EditOnGitHub`] edits it. A
     /// thread's first comment can't be deleted this way: anyone may have a draft reply to it in
     /// their repository, which no one else can see, and which would be left replying to
     /// nothing.
-    DeleteOnGitHub { repo: Repo, comment: Id },
+    DeleteOnGitHub {
+        repo: Repo,
+        comment: Id,
+        publish: bool,
+    },
+}
+
+/// How [`Action`]'s display says the user said to publish.
+fn publish_words(publish: bool) -> &'static str {
+    if publish { ", saying to publish" } else { "" }
 }
 
 /// How [`Action`]'s display says a comment is local-only.
@@ -216,6 +239,17 @@ impl Action {
             | Action::Dismiss { .. }
             | Action::ChangeCode { .. } => None,
         }
+    }
+}
+
+impl Action {
+    /// Whether the user said to publish: `y` in the TUI, or `--publish` on the command line.
+    pub fn says_to_publish(&self) -> bool {
+        matches!(
+            self,
+            Action::EditOnGitHub { publish: true, .. }
+                | Action::DeleteOnGitHub { publish: true, .. }
+        )
     }
 }
 
@@ -271,12 +305,24 @@ impl fmt::Display for Action {
             Action::BrowserComment { user } => write!(f, "{user:?} comments in the browser"),
             Action::Dismiss { review } => write!(f, "dismiss review {review}"),
             Action::ChangeCode { thread } => write!(f, "change the code under thread {thread}"),
-            Action::EditOnGitHub { repo, comment } => {
-                write!(f, "edit comment {comment} on GitHub from {repo:?}")
-            }
-            Action::DeleteOnGitHub { repo, comment } => {
-                write!(f, "delete comment {comment} on GitHub from {repo:?}")
-            }
+            Action::EditOnGitHub {
+                repo,
+                comment,
+                publish,
+            } => write!(
+                f,
+                "edit comment {comment} on GitHub from {repo:?}{}",
+                publish_words(*publish)
+            ),
+            Action::DeleteOnGitHub {
+                repo,
+                comment,
+                publish,
+            } => write!(
+                f,
+                "delete comment {comment} on GitHub from {repo:?}{}",
+                publish_words(*publish)
+            ),
         }
     }
 }
@@ -306,6 +352,9 @@ pub(crate) struct Model {
     /// Comments posted whose line was found in another head of the PR than its head when they
     /// were posted.
     pub posted_off_head: Vec<Id>,
+    /// My comments on GitHub edited or deleted from a copy older than GitHub's, overwriting what
+    /// was changed there since.
+    pub overwritten: Vec<Id>,
     next: Id,
 }
 
@@ -328,6 +377,7 @@ impl Default for Model {
             head: 0,
             local_posted: vec![],
             posted_off_head: vec![],
+            overwritten: vec![],
             next: 1,
         }
     }
@@ -409,16 +459,12 @@ impl Model {
             .collect()
     }
 
-    /// Whether `action` publishes: changes what users other than its own can see on GitHub, as
-    /// an edit or delete of the user's own comment in a review that is not pending does.
-    pub fn publishes(&self, action: &Action) -> bool {
-        match action {
-            Action::EditOnGitHub { comment, .. } | Action::DeleteOnGitHub { comment, .. } => self
-                .gh_reviews
-                .values()
-                .any(|r| r.comments.contains(comment) && r.state != ReviewState::Pending),
-            _ => false,
-        }
+    /// Whether others see the comment on GitHub `comment`: whether it is in a review that is not
+    /// pending, among `reviews`.
+    fn public_in(reviews: &BTreeMap<Id, GitHubReview>, comment: Id) -> bool {
+        reviews
+            .values()
+            .any(|r| r.comments.contains(&comment) && r.state != ReviewState::Pending)
     }
 
     /// What `user` sees on GitHub: the reviews visible to them, and each of their comments' edits
@@ -704,13 +750,37 @@ impl Model {
                 m.threads.get_mut(&thread).unwrap().placeable = false;
                 m.head += 1;
             }
-            Action::EditOnGitHub { repo, comment } | Action::DeleteOnGitHub { repo, comment } => {
+            Action::EditOnGitHub {
+                repo,
+                comment,
+                publish,
+            }
+            | Action::DeleteOnGitHub {
+                repo,
+                comment,
+                publish,
+            } => {
                 let user = repo.github_user();
                 if !self.copied_in(repo).contains(&comment) {
                     return None;
                 }
                 let c = self.gh_comments.get(&comment)?;
                 if c.author != user || c.deleted {
+                    return None;
+                }
+                if self.repos[&repo].copied_edits[&comment] != c.edits {
+                    if rules.refuse_stale_copies {
+                        return None;
+                    }
+                    m.overwritten.push(comment);
+                }
+                let public = if rules.classify_on_github {
+                    Self::public_in(&self.gh_reviews, comment)
+                } else {
+                    let copy = self.repos[&repo].copy.as_ref().unwrap();
+                    Self::public_in(copy, comment)
+                };
+                if public && !publish {
                     return None;
                 }
                 if let Action::EditOnGitHub { .. } = action {
@@ -774,8 +844,18 @@ impl Model {
             });
             out.push(Action::Fetch { repo });
             for comment in self.copied_in(repo) {
-                out.push(Action::EditOnGitHub { repo, comment });
-                out.push(Action::DeleteOnGitHub { repo, comment });
+                for publish in [false, true] {
+                    out.push(Action::EditOnGitHub {
+                        repo,
+                        comment,
+                        publish,
+                    });
+                    out.push(Action::DeleteOnGitHub {
+                        repo,
+                        comment,
+                        publish,
+                    });
+                }
             }
         }
         for user in [Person::Me, Person::Colleague] {
@@ -879,6 +959,11 @@ impl Model {
         for c in &self.local_posted {
             errors.push(format!("Local-only comment {c} was posted"));
         }
+        for g in &self.overwritten {
+            errors.push(format!(
+                "Comment {g} on GitHub was changed from a copy older than GitHub's"
+            ));
+        }
         for c in &self.posted_off_head {
             errors.push(format!(
                 "Comment {c} was posted on a line found in another head of the PR"
@@ -927,11 +1012,11 @@ impl Model {
         }
         if let Some(repo) = action.repo() {
             let user = repo.github_user();
-            // No publication: what others can see on GitHub changes only through an action that
-            // publishes.
+            // No publication: what others can see on GitHub changes only through an action the
+            // user said publishes.
             for other in [Person::Me, Person::Colleague] {
                 if other != user
-                    && !self.publishes(action)
+                    && !action.says_to_publish()
                     && self.seen_by(other) != after.seen_by(other)
                 {
                     errors.push(format!(
@@ -1080,6 +1165,26 @@ mod tests {
         };
         let (_, error) = violation(rules, 5, 3).expect("a violation");
         assert!(error.contains("in another head"), "{error}");
+    }
+
+    #[test]
+    fn without_classifying_on_github_a_comment_is_published_without_the_users_say_so() {
+        let rules = Rules {
+            classify_on_github: false,
+            ..Rules::default()
+        };
+        let (_, error) = violation(rules, 5, 3).expect("a violation");
+        assert!(error.contains("without publishing"), "{error}");
+    }
+
+    #[test]
+    fn without_refusing_stale_copies_a_change_made_on_github_is_overwritten() {
+        let rules = Rules {
+            refuse_stale_copies: false,
+            ..Rules::default()
+        };
+        let (_, error) = violation(rules, 5, 3).expect("a violation");
+        assert!(error.contains("from a copy older than GitHub's"), "{error}");
     }
 
     #[test]

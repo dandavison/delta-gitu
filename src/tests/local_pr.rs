@@ -1188,6 +1188,114 @@ fn review_edit_of_my_comment_in_a_submitted_review_needs_publish() {
     );
 }
 
+/// My comment was in my pending review when fetched, and I then submitted that review on
+/// GitHub. The comment is now public, so editing it without --publish must be refused.
+#[test]
+fn editing_my_comment_whose_review_was_submitted_on_github_since_the_fetch_needs_publish() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    let mut t = super::pr::thread(
+        "t1",
+        Some((crate::review::Side::New, 2)),
+        false,
+        &[("me", "Why new?")],
+    );
+    t.comments[0].draft = true;
+    t.comments[0].submitted = false;
+    *github.threads.borrow_mut() = vec![t];
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+
+    // On GitHub, I submit the pending review. delta has not fetched since.
+    github.threads.borrow_mut()[0].comments[0].draft = false;
+    github.threads.borrow_mut()[0].comments[0].submitted = true;
+    *github.submitted_by_me.borrow_mut() = true;
+    *github.pending.borrow_mut() = None;
+
+    let result = review_cli_with_github(
+        &ctx.dir,
+        &["edit", "github-t1_0"],
+        "Why new? really",
+        Rc::clone(&github),
+    );
+    assert!(
+        result.is_err() && github.edited.borrow().is_empty(),
+        "edited a now-public comment without --publish: {:?}",
+        github.edited.borrow()
+    );
+}
+
+/// I edited my pending comment on GitHub after delta last fetched. Editing it in delta
+/// from the stale copy must not silently overwrite the edit made on GitHub.
+#[test]
+fn editing_my_comment_from_a_copy_older_than_github_is_refused() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    let mut t = super::pr::thread(
+        "t1",
+        Some((crate::review::Side::New, 2)),
+        false,
+        &[("me", "Why new?")],
+    );
+    t.comments[0].draft = true;
+    t.comments[0].submitted = false;
+    *github.threads.borrow_mut() = vec![t];
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+
+    // On GitHub, I edit the comment. delta has not fetched since.
+    github.threads.borrow_mut()[0].comments[0].body = "Why new? (edited on GitHub)".to_owned();
+
+    let result = review_cli_with_github(
+        &ctx.dir,
+        &["edit", "github-t1_0"],
+        "Why new? edited in delta",
+        Rc::clone(&github),
+    );
+    assert!(
+        result.is_err() && github.edited.borrow().is_empty(),
+        "overwrote an edit made on GitHub since the last fetch: {:?}",
+        github.edited.borrow()
+    );
+}
+
+/// My reply was in my pending review when fetched, and I then submitted that review on GitHub.
+/// The reply is now public, so deleting it without --publish must be refused.
+#[test]
+fn deleting_my_reply_whose_review_was_submitted_on_github_since_the_fetch_needs_publish() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    let mut t = super::pr::thread(
+        "t1",
+        Some((crate::review::Side::New, 2)),
+        false,
+        &[("me", "Why new?"), ("me", "And more")],
+    );
+    for comment in &mut t.comments {
+        comment.draft = true;
+        comment.submitted = false;
+    }
+    *github.threads.borrow_mut() = vec![t];
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+
+    // On GitHub, I submit the pending review. delta has not fetched since.
+    for comment in &mut github.threads.borrow_mut()[0].comments {
+        comment.draft = false;
+        comment.submitted = true;
+    }
+    *github.submitted_by_me.borrow_mut() = true;
+    *github.pending.borrow_mut() = None;
+
+    let result =
+        review_cli_with_github(&ctx.dir, &["delete", "github-t1_1"], "", Rc::clone(&github));
+    assert!(
+        result.is_err() && github.deleted.borrow().is_empty(),
+        "deleted a now-public comment without --publish: {:?}",
+        github.deleted.borrow()
+    );
+}
+
 /// Sync never pushes: a branch with commits GitHub's PR doesn't have is refused, with nothing
 /// pushed or posted.
 #[test]

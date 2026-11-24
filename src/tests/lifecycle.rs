@@ -696,22 +696,36 @@ impl World {
                     }
                 }
             }
-            (Action::EditOnGitHub { repo, comment }, after) => {
+            (
+                Action::EditOnGitHub {
+                    repo,
+                    comment,
+                    publish,
+                },
+                after,
+            ) => {
                 let body = text(before, *comment, before.repos[repo].copied_edits[comment]);
                 let edited = github_body(before, *comment) + "+";
                 let id = self.comment_id(*repo, &body);
                 let mut args = vec!["edit", id.as_str()];
-                if before.publishes(action) {
+                if *publish {
                     args.push("--publish");
                 }
                 let result = self.review(*repo, &args, &edited);
                 assert_eq!(result.is_ok(), after.is_some(), "{action}: {result:?}");
             }
-            (Action::DeleteOnGitHub { repo, comment }, after) => {
+            (
+                Action::DeleteOnGitHub {
+                    repo,
+                    comment,
+                    publish,
+                },
+                after,
+            ) => {
                 let body = text(before, *comment, before.repos[repo].copied_edits[comment]);
                 let id = self.comment_id(*repo, &body);
                 let mut args = vec!["delete", id.as_str()];
-                if before.publishes(action) {
+                if *publish {
                     args.push("--publish");
                 }
                 let result = self.review(*repo, &args, "");

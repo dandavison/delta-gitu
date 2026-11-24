@@ -239,6 +239,33 @@ impl RealPr {
         thread
     }
 
+    /// Submit my pending review on GitHub, as I would in the browser.
+    fn submit_pending_review(&self) {
+        let review = self.graphql(
+            "query($id: ID!) { node(id: $id) { ... on PullRequest { reviews(states: PENDING, first: 1) { nodes { id } } } } }",
+            &[("id", &self.node_id())],
+            &[],
+        )["data"]["node"]["reviews"]["nodes"][0]["id"]
+            .as_str()
+            .expect("a pending review")
+            .to_owned();
+        self.graphql(
+            "mutation($review: ID!) { submitPullRequestReview(input: {pullRequestReviewId: $review, event: COMMENT}) { pullRequestReview { id } } }",
+            &[("review", &review)],
+            &[],
+        );
+    }
+
+    /// Edit the comment whose local id is `id` on GitHub, as I would in the browser.
+    fn edit_on_github(&self, id: &str, body: &str) {
+        let comment = id.strip_prefix("github-").expect("a comment from GitHub");
+        self.graphql(
+            "mutation($comment: ID!, $body: String!) { updatePullRequestReviewComment(input: {pullRequestReviewCommentId: $comment, body: $body}) { pullRequestReviewComment { id } } }",
+            &[("comment", comment), ("body", body)],
+            &[],
+        );
+    }
+
     /// The PR's review threads, as GitHub has them: for each, where it is, and its comments'
     /// bodies.
     fn github_threads(&self) -> Vec<serde_json::Value> {
@@ -529,6 +556,62 @@ fn my_comment_on_github_is_edited_and_deleted_there() {
         .to_owned();
     pr.review(&["delete", &reply], "").unwrap();
     assert_eq!(pr.pending_comments(), ["on three"]);
+}
+
+/// My comment in my pending review is public once I submit the review on GitHub, though delta
+/// hasn't fetched since: editing it without --publish is refused, and it is unchanged there.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn editing_my_comment_whose_review_was_submitted_since_the_fetch_needs_publish() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.review(
+        &["comment", "--path", "lines.txt", "--line", "3"],
+        "on three",
+    )
+    .unwrap();
+    pr.review(&["sync"], "").unwrap();
+    let comment = pr.only_local_thread()["comments"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    pr.submit_pending_review();
+
+    let error = pr
+        .review(&["edit", &comment], "on three, edited")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("--publish"), "{error}");
+    assert_eq!(
+        pr.github_threads()[0]["comments"]["nodes"][0]["body"],
+        "on three"
+    );
+}
+
+/// An edit made on GitHub since delta last fetched is not overwritten from delta's older copy.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn editing_my_comment_changed_on_github_since_the_fetch_is_refused() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.review(
+        &["comment", "--path", "lines.txt", "--line", "3"],
+        "on three",
+    )
+    .unwrap();
+    pr.review(&["sync"], "").unwrap();
+    let comment = pr.only_local_thread()["comments"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    pr.edit_on_github(&comment, "on three, edited on GitHub");
+
+    let error = pr
+        .review(&["edit", &comment], "on three, edited in delta")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("changed on GitHub"), "{error}");
+    assert_eq!(pr.pending_comments(), ["on three, edited on GitHub"]);
 }
 
 /// A file's Viewed checkbox is ticked and unticked on GitHub.
