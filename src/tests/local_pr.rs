@@ -938,6 +938,54 @@ fn o_on_the_summary_of_a_pr_not_on_github_says_so() {
     );
 }
 
+/// Each comment is drawn, over comment-style, in the style of where it is: local-only, in the draft
+/// review, in my pending review on GitHub, which says so, or in a submitted review.
+#[test]
+fn each_comment_is_drawn_in_the_style_of_where_it_is() {
+    use crate::style::Color;
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    super::pr::with_options(
+        &mut ctx,
+        &[
+            ("comment-local-only-style", "magenta"),
+            ("comment-draft-style", "yellow"),
+            ("comment-pending-style", "cyan"),
+            ("comment-submitted-style", "green"),
+        ],
+    );
+    let comment = |line: &str, local: &str, body: &str| {
+        let args = ["comment", "--path", "lines.txt", "--line", line, local];
+        review_cli_with_input(&ctx.dir, &args, body).unwrap();
+    };
+    comment("1", "--local", "Local words");
+    comment("2", "--draft", "Draft words");
+    let github = github_at_head(&ctx);
+    let side = Some((crate::review::Side::New, 3));
+    let mut pending = super::pr::thread("t2", side, false, &[("me", "Pending words")]);
+    pending.comments[0].draft = true;
+    pending.comments[0].submitted = false;
+    *github.threads.borrow_mut() = vec![
+        super::pr::thread("t1", side, false, &[("alice", "Submitted words")]),
+        pending,
+    ];
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+
+    ctx.update(&mut app, keys("OO"));
+
+    let fg = |text: &str| super::pr::cell(&ctx, text, text.chars().next().unwrap()).fg;
+    assert_eq!(fg("Local words"), Color::Magenta);
+    assert_eq!(fg("Draft words"), Color::Yellow);
+    assert_eq!(fg("Pending words"), Color::Cyan);
+    assert_eq!(fg("Submitted words"), Color::Green);
+    assert!(
+        ctx.redact_buffer().contains("(pending)"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
 /// The comment in the review file whose text is `body`.
 fn stored_comment(ctx: &TestContext, body: &str) -> serde_json::Value {
     let file = review_file(ctx);

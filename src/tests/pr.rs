@@ -402,7 +402,10 @@ pub(super) fn two_hours_ago() -> chrono::DateTime<chrono::FixedOffset> {
 
 /// What delta's config sets the options gitu asks it for to, as
 /// `(name, value)`, whatever the features.
-fn with_options(ctx: &mut TestContext, options: &'static [(&'static str, &'static str)]) {
+pub(super) fn with_options(
+    ctx: &mut TestContext,
+    options: &'static [(&'static str, &'static str)],
+) {
     ctx.config().general.diff_renderer.options = crate::config::RendererOptions::new(
         move |_, _, names| {
             names
