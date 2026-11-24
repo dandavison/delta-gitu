@@ -9,153 +9,138 @@ delta keeps one local store of PR review data, shared by the user and their agen
 **Core flows v1 must support**
 
 1. An agent writes code on a branch. The user reviews it with the agent locally, then opens a GitHub PR with review comments explaining the code.
-2. An agent helps the user review a colleague's GitHub PR. The agent's comments are either adopted into the user's review or sent as a separate agent review.
+2. An agent helps the user review a colleague's GitHub PR. The user posts the agent's comments with their own, or as a separate review.
 3. Any mix of the above, with the user also working directly on GitHub at the same time.
 
 **Principles**
 
 - **Bulletproof over broad.** An unsupported action fails with a message naming the action and the way to get it done.
-- **Each item has one owner.** Until it is sent, an item lives only in the local store. Once sent, it lives on the remote, and the local store holds a copy.
-- **Sync is dumb.** Pull replaces local copies of remote data, and Send creates remote copies of local reviews. Neither merges, splits, moves or re-anchors anything. Every transformation is an explicit action.
-- **Sync touches only review data.** Pull and Send never push, create a PR, check out, or move a branch.
-- **Visibility only rises on request.** Pull sends nothing out. Send changes only what the user alone can see. Publish (not in v1) is the only verb that makes anything visible to others.
-- **Nothing is lost by accident.** Local deletions are tombstones, and only the user's own explicit actions delete anything.
+- **Each comment has one owner.** Until it is posted, a comment lives only in the local store. Once posted, it lives on the remote, and the local store holds a copy.
+- **Sync is predictable.** It fetches, brings the branch to the PR's head, and posts the draft comments. It never pushes, and it posts nothing if the PR has changed since a draft was written.
+- **Nothing becomes visible to others unless the user confirms it.** Fetch and sync change only what the user alone can see. Each publishing action needs a confirmation.
+- **Nothing is lost by accident.** Only explicit actions delete anything, and sync never deletes local work.
 - **Other people's content is read-only.** delta never edits or deletes anything on the remote that someone else wrote.
 
 ## Local entities
 
-Local entities follow GitHub's shape, which other review systems share closely, with three additions: agent authors, local-only reviews, and code comments that are in no review.
+Local entities follow GitHub's shape, which other review systems share closely, with three additions: stores, agent authors, and two buckets for comments not yet on the remote.
 
 ```
-Author  = Me | Agent(name)
+Store   { owner }                 -- one per clone; its worktrees share it
+Author  = Me | Agent(name)        -- Me is the store's owner
 
 PR      { base, head, title, body, author, link? }
-Review  { pr, author, body, state, link? }
-  state = Open                -- local only
-        | Sent                -- linked to my pending review on the remote
-        | Submitted(verdict)  -- linked to a submitted remote review;
-                              -- verdict is backend-defined
-Thread  { pr, anchor: (commit, path, side, lines), resolved }
+Review  { pr, author, body, state, link }   -- always a copy of a remote review
+  state = Pending                 -- the owner's; only they can see it
+        | Submitted(verdict) | Dismissed
+Thread  { pr, anchor: (commit, path, side, lines), subject: Line | File, resolved }
 Comment { pr, author, body, place, link? }
-  place = Conversation
-        | Code { thread, review: Option<Review> }
+  place  = Conversation
+         | Code { thread, bucket }
+  bucket = Draft                  -- posted at the next sync
+         | LocalOnly              -- never leaves the store
+         | Remote(review)         -- a copy of a comment in a remote review
 ```
 
-- **A code comment in no review is local-only.** It can never be sent. This is where conversations between the user and agents live.
-- **A code comment in a review travels with that review** when the review is sent.
-- **A thread is linked when its root comment is linked.** It has no link of its own.
-- **A local conversation comment** stays local in v1, because on GitHub it would be public at once.
-- **Local reviews never reach Submitted locally in v1.** Submitted reviews come only from the remote, via pull. Verdicts and local submit are deferred.
+- **Draft comments** go into the owner's pending review at the next sync, whoever wrote them. An agent's draft is posted under the owner's identity on the remote. Together they are the store's draft review.
+- **Local-only comments** never leave the store. Conversations between the user and agents live here.
+- **Moving** a comment between Draft and LocalOnly is an explicit action.
+- **Once posted,** a comment belongs to the remote, and the store keeps only the copy that fetch gives it. Reviews exist locally only as such copies.
+- **A thread is linked** when its first comment is on the remote.
+- **A local conversation comment** stays local in v1, because GitHub would publish it at once.
 - **Anchors are commits.** Comments on uncommitted changes are not supported in v1.
 
 ## Replicated state
 
-The whole system is the tuple (L, R, Link). Every behaviour in this spec is a function of it.
+The whole system is a set of stores, the remote R, and each store's Link. Every behaviour in this spec is a function of them.
 
 | Part | What it is |
 | --- | --- |
-| L | The local store: Open reviews, comments in no review, tombstones, and copies of remote data |
-| R | The remote, as its backend shows it to the user |
-| Link | A one-to-one map between local ids and remote ids |
+| L, per store | Draft and local-only comments, and copies of remote data |
+| R | The remote, as its backend shows each user |
+| Link, per store | A one-to-one map between local ids and remote ids |
 
-**Two kinds of local data.** Open reviews and comments in no review are owned locally: they exist nowhere else, and change only through local actions. Everything linked is a copy of remote data. Pull replaces the copies, and nothing else writes to them.
+**Two kinds of local data.** Draft and local-only comments are owned by the store: they exist nowhere else, and change only through local actions. Everything linked is a copy of remote data. Fetch replaces the copies, and nothing else writes to them.
 
-**Changing a sent item** means adding, editing, deleting or moving a comment in the user's pending review, or editing its body. It is a change on the remote, made at once if the backend classifies it as private. delta first checks that its copy is current, refusing if the item changed on the remote since the last pull, and pulls afterwards. Without a connection these changes fail at once; nothing is queued. To work on a sent review offline, unsend it first.
+**Changing a posted comment** (editing or deleting one of the owner's comments on the remote) is a change on the remote, made at once. delta first checks that its copy is current, refusing if the comment changed on the remote since the last fetch, and fetches afterwards. A comment in the pending review changes privately. A comment in a submitted review changes publicly, so it needs confirmation (see Visibility). Without a connection these changes fail at once; nothing is queued.
 
-**Tombstones.** Deleting a local item sets `deleted` and keeps its content, so it can be restored. Copies have no tombstones: an item deleted on the remote is gone from the copy at the next pull.
+## Fetch and sync
 
-## Sync: pull and send
+There are two verbs, and neither merges: a store and the remote never hold two versions of the same comment.
 
-Sync is two verbs. Neither merges: the local store and the remote never hold two versions of the same item.
+**Fetch** replaces every copy in L with R as the owner sees it, links remote entities it has not seen, and never changes a draft or local-only comment. It runs when a linked PR is opened, on `g r`, and at the start and end of a sync. There is no background polling.
 
-**Pull** fetches R and replaces every copy in L with it. It also:
+**Sync** is always an explicit user action. It runs these steps, stopping at the first refusal:
 
-- creates and links a local copy of each remote entity it has not seen;
-- pulls the user's own pending review, if one exists, as a Sent review authored by Me;
-- never changes an Open review or a comment in no review.
+1. Fetch. If the PR is not on the remote, refuse and name the command that creates it.
+2. Bring the branch to the PR's head, fast-forward only. Refuse if the branch has commits the PR lacks, or if tracked files have uncommitted changes.
+3. The lease: if any draft thread was written against a different head from the PR's head now, move each one to where its line is now (or onto its file if the line has gone), post nothing, and tell the user to check them and sync again.
+4. Refuse if any draft comment is blocked, listing each with its reason.
+5. Post every draft comment into the owner's pending review, starting one if there is none, with each thread's first comment before its replies.
+6. Fetch.
 
-Pull is automatic: on opening a review and periodically.
-
-**Send(review)** turns an Open review into the user's pending review on the remote (see Reviews). It always pulls first, and is always an explicit user action.
-
-**Crash safety.** Before each remote create, send records its intent in L. On retry, send uses the backend's idempotent-create mechanism (Remote contract) to find anything already created, and links it instead of creating a second copy.
+**Crash safety.** Before posting each comment, sync looks for it among the comments already in the pending review, matching path, side, line and body and counting duplicates. A match is linked instead of posted again. The pending review is private to the owner, so a match is reliable.
 
 ## Visibility
 
-In v1, delta never makes anything visible to anyone but the user. The only way anything becomes public is the user's own action on the remote, such as GitHub's Submit review button.
+Without the user's confirmation, delta never makes anything visible to anyone but the user. Most things become public only through the user's own action on the remote, such as GitHub's Submit review button.
 
 The backend classifies every outgoing change (GitHub's rules are under GitHub backend):
 
-- **Private:** visible only to the user, such as any change to their pending review.
-- **Public:** visible to anyone else.
-- **Unsupported:** the backend can't make it at all.
+- **Private:** visible only to the user, such as posting drafts into their pending review, or editing its comments.
+- **Publishing:** visible to others, and supported with confirmation, such as editing the user's own submitted comment.
+- **Unsupported:** visible to others and not supported in v1, such as submitting a review. Refused at once.
 
-| Verb | Moves data | Who can see the result | v1 |
+| Verb | Moves data | Who can see the result | When |
 | --- | --- | --- | --- |
-| Pull | remote → local | nobody new | automatic |
-| Send | local → user's pending review | only the user | explicit |
-| Publish | local → public on the remote | everyone | not supported |
+| Fetch | remote → local | nobody new | on opening, `g r`, and in sync |
+| Sync | drafts → the user's pending review | only the user | explicit |
+| Publishing action | local → public on the remote | everyone | explicit and confirmed |
 
-**Public changes are refused when attempted, not queued.** With the GitHub backend, for example, editing a published comment locally fails with: "This comment is public on GitHub; delta v1 doesn't publish. Edit it on GitHub." Refusing at once avoids a growing queue of changes that can never be sent.
+**Confirmation.** In the TUI, a publishing action asks y/n, naming what will become visible. On the command line it needs `--publish`; without it, the command refuses and says why. The flag makes intent explicit, so an agent tidying drafts can't change a public comment by mistake. It is not a security boundary.
 
-Publish is kept in the model so v2 can add it without redesign. When added, it must name each change it publishes.
+**Unsupported changes are refused when attempted, not queued.** With the GitHub backend, for example, resolving a thread fails with: "Resolving is visible to others, and delta v1 doesn't do it. Resolve it on GitHub."
+
+v1 has two publishing actions: editing or deleting the user's own comment in a submitted review, and creating a PR. More can be added the same way, each named, confirmed and classified by the backend.
 
 ## Reviews
 
-A review is linked to the remote only when it is sent. Any local review can be sent, including an agent's; on the remote it appears as the user's. With GitHub, at most one review per PR can be Sent at a time, because GitHub allows each user one pending review.
+A store has one draft review per local PR: its draft comments. Remote reviews appear locally only as copies. Sync adds the drafts to the owner's pending review, whoever started it, whether that was delta or the GitHub UI. GitHub allows one pending review per user per PR, so there is never a choice of which.
 
-&#91;embedded content: review states and what moves a review between them\]
+&#91;embedded content: where a code comment can be, and what moves it\]
 
-Shown with the GitHub backend. Solid arrows are delta actions. Dashed arrows happen on GitHub and reach delta at the next pull. A pending review discarded on GitHub disappears at the next pull.
+Solid arrows are delta actions. Dashed arrows happen on GitHub and reach delta at the next fetch. A pending review discarded on GitHub disappears at the next fetch, and the store's drafts are not affected.
 
-**Send(r)** requires all of the following, and otherwise refuses with the reason:
+**Posting an agent's review as its own review.** Move your own drafts to local-only, sync, and submit the pending review on GitHub with a body such as "Review by an agent". Then move your drafts back.
 
-1. r's PR is linked.
-2. r is Open.
-3. Sending r breaks no backend constraint. With GitHub, the user has no pending review on the PR; move comments into that review instead.
-4. No comment in r is blocked.
-
-It then creates the pending review and posts each thread's first comment before its replies. **After a successful send, the user's pending review on the remote holds exactly r's comments.** From then on r is a Sent review: a copy, changed only on the remote (see Replicated state).
-
-**Unsend(r)** recreates r's comments locally as an Open review, then deletes the pending review on the remote, then pulls. If it stops part way, both exist; neither is lost. It needs a connection, so unsend before working offline on a sent review.
-
-**Moving comments.** A comment can move freely between Open reviews and "no review". Moving one into the Sent review adds it on the remote at once, unless it is blocked. Moving one out deletes it on the remote and puts it in the chosen Open review, or in no review. Moving one out of a Submitted review is refused, because it would delete a public comment.
-
-**Deleting a review** is allowed only when it is Open. Its comments are tombstoned with it. A Sent review must be unsent first.
+**Editing and deleting.** Draft and local-only comments change locally. The owner's comments on the remote change on the remote at once: privately in the pending review, and as a confirmed publishing action in a submitted review (see Replicated state).
 
 **First comments.** A thread's first comment can't be deleted while the thread has replies. A first comment on the remote can't be deleted from delta at all; edit it instead.
 
-**Changes made on the remote, seen at the next pull:**
+**Changes made on the remote, seen at the next fetch:**
 
-- *Submitted:* r becomes Submitted.
-- *Discarded:* r is gone from the copy, like anything deleted on the remote. To keep a pending review's comments, unsend it instead of discarding it.
+- *Submitted:* the copy becomes Submitted.
+- *Discarded:* the pending review is gone from the copy. The store's drafts are not affected.
 
 ## Authorship
 
-Every local author maps to the user's identity on the remote (on GitHub, their login). The local store keeps the true author permanently.
+Every author in a store maps to the store owner's identity on the remote (on GitHub, their login). The store keeps the true author of draft and local-only comments. Once a comment is posted, its copy shows the owner, and the agent's name is not kept.
 
-**Attribution.** Every item delta creates carries its local id and true author, in a form the backend chooses (GitHub: a hidden marker, under GitHub backend). This keeps agent attribution through a round trip and supports crash recovery.
-
-**Permissions.** A local edit or delete is allowed only when both hold:
-
-- the entity's author maps to the user, and
-- the entity is unlinked, or is in the user's Sent review.
-
-Other people's content is read-only. The user can reply to it, and can resolve a linked thread only if the backend classifies that as private, which GitHub never does. Agents act with the user's local permissions.
+**Permissions.** Anyone writing in a store can edit or delete its draft and local-only comments. On the remote, only the owner's own comments can be edited or deleted. Other people's content is read-only: the user can reply to it, and can resolve only local-only threads. Agents act with the owner's permissions.
 
 ## Blocked comments
 
-A comment in a review is blocked when the remote could not accept it as it stands. A blocked comment keeps its content and is shown with its reason. Send refuses the whole review until the user fixes or removes the comment.
+A draft comment is blocked when the remote could not accept it as it stands. Sync posts nothing while any draft is blocked, and lists each with its reason. A blocked comment keeps its content.
 
-| Reason | Typical cause | What the user does |
+| Reason | Typical cause | What happens |
 | --- | --- | --- |
-| Anchor not at the PR's current head | Written before the PR changed, or on commits not pushed | Bring the branch to the PR's head, then run reanchor |
-| Line gone at the PR's head | The code under the comment was changed or removed | Move the comment onto its file, or drop it |
-| Thread root not on the remote and not in this review | A reply in a thread whose root is still local | Send the root's review first, or move the root in |
-| Thread gone on the remote | Its root was deleted there | Start a new thread, or drop the comment |
-| Backend reason | Anything else the backend reports | What the backend's message says |
+| Anchor not at the PR's current head | Written before the PR changed | Sync moves it to where its line is now (the lease). The user checks it and syncs again |
+| Line gone at the PR's head | The code under it was changed or removed | Sync moves it onto its file, starting with the line it was on. The user checks it and syncs again |
+| Thread's first comment is local-only | A draft reply in a local-only thread | The user moves the first comment to Draft, or the reply to LocalOnly |
+| Thread gone on the remote | Its first comment was deleted there | The user deletes the reply, or writes it as a new comment |
+| Backend reason | Anything else the backend reports | As the backend's message says |
 
-Re-anchoring is always explicit. `reanchor` moves each comment to where its line is at the PR's current head, and shows where each one went. A comment whose line has gone stays blocked until the user moves it onto its file, which is explicit too.
+The lease moves comments locally and posts nothing in the same sync, so the user always sees where a comment will land before it is posted. Agents never run sync unless the user asks, so that second sync is always the user's own check.
 
 ## Remote contract
 
@@ -163,15 +148,15 @@ A backend connects the core to one kind of remote. Backends declare; the core en
 
 | Question | The backend answers | GitHub's answer |
 | --- | --- | --- |
-| Classify a change | Private, Public or Unsupported | Changes to the user's pending review are private; everything else is public |
-| Constraints on Send | Refusal reasons | At most one pending review per user per PR |
-| Blocked comments | Reasons a comment can't be sent | Anchor commit not in the PR; thread root missing or deleted |
-| Identity | The remote user that local authors map to, and what the user may edit | The user's login; only their own content |
-| Idempotent create | How a retry finds what an interrupted Send created | A hidden marker holding the local id |
-| Fetch | R, as visible to the user | Includes the user's pending review, not others' |
+| Classify a change | Private, Publishing or Unsupported | See Classification under GitHub backend |
+| Constraints on sync | Refusal reasons, or where drafts go | One pending review per user per PR, so sync adds to it |
+| Blocked comments | Reasons a comment can't be posted | Anchor not at the PR's head; thread's first comment missing or deleted |
+| Identity | The remote user a store's authors map to, and what that user may edit | The owner's login; only their own comments |
+| Retry after a crash | How sync finds what an interrupted sync posted | Match the pending review's comments by path, side, line and body |
+| Fetch | R, as visible to the owner | Includes the owner's pending review, not others' |
 | Verdicts | A backend-defined value, opaque to the core | Commented, approved, changes requested |
 
-The core never sends a Public change except through Publish, which v1 doesn't have, and never sends an Unsupported one. RemoteOp in Events is backend-specific. A review is anything the backend can hold as a batch of drafts published together; GitLab draft notes and Gerrit draft comments both fit.
+The core makes a Publishing change only after confirmation, and never makes an Unsupported one. Every remote write goes through one function that asks the backend to classify it, so this rule is enforced in one place. RemoteOp in Events is backend-specific. GitLab draft notes and Gerrit draft comments both fit the same model of drafts published together.
 
 ## GitHub backend
 
@@ -187,38 +172,42 @@ GitHub is the only backend in v1. On GitHub, a review is a batch of code comment
 
 **Classification**
 
-- *Private:* creating, editing or deleting the comments or body of the user's pending review; creating or deleting that pending review.
-- *Public:* everything else. That covers conversation comments, edits and deletes of published comments, resolving or unresolving a thread, submitting a review, and creating or editing the PR.
+- *Private:* starting the owner's pending review, posting to it, editing or deleting its comments, and deleting it.
+- *Publishing:* editing or deleting the owner's comments in a submitted review, and creating a PR.
+- *Unsupported:* everything else others would see. That covers submitting a review, conversation comments, resolving or unresolving a thread, and editing the PR.
 
-**Marker.** Every body delta sends ends with a hidden HTML comment, e.g. `<!-- delta id=c_8f2a author=agent:reviewer -->`. It gives crash recovery and keeps agent attribution through a round trip. Pull strips it for display. delta trusts a marker only on content whose GitHub author is the user, so nobody else can forge one.
+**After a push,** GitHub can briefly report the old head together with the new commit count. Any check that compares the two must allow for this.
 
-**Anchors.** GitHub places a pending review's comments against the PR's head, whatever commit is given when the review is started. That is why a comment can be sent only when it is anchored at the PR's head (see Blocked comments).
+**Anchors.** GitHub places a pending review's comments against the PR's head, whatever commit is given when the review is started. That is why a comment can be posted only when it is anchored at the PR's head (see Blocked comments).
 
 ## Events
 
-Every history is a sequence of these events applied to (L, R, Link). The same list is the alphabet for property tests.
+Every history is a sequence of these events applied to the stores and the remote. The same list is the alphabet for property tests.
 
 ```
 Event =
-  | Local(author, LocalOp)
+  | Local(store, author, LocalOp)
   | Remote(remote_user, RemoteOp)
-  | Pull
-  | Send(review)
-  | Unsend(review)
-  | Crash                  -- interrupts a Send between remote calls
+  | Fetch(store)
+  | Sync(store)
+  | Publish(store, PublishOp)       -- only after confirmation
+  | Crash                           -- interrupts a sync between remote calls
 
 LocalOp =
-  | CreateComment(place, anchor?, body)
-  | EditComment | DeleteComment | RestoreComment
-  | MoveComment(comment, Option<review>)
-  | CreateReview | EditReviewBody | DeleteReview
+  | Comment(path, line, side, body, Draft | LocalOnly)
+  | Reply(thread, body, Draft | LocalOnly)
+  | Edit(comment) | Delete(comment) -- draft or local-only
+  | Move(comment, Draft | LocalOnly)
+  | EditPending(comment) | DeletePending(comment)   -- made on the remote at once
   | ResolveThread(local-only thread)
-  | Reanchor(comment, anchor)
-  | Commit | Rebase       -- on the local branch
-  | LinkPR(remote_pr)
+  | Commit
 
-RemoteOp =                -- backend-specific; GitHub's:
-  | SingleComment         -- a review submitted with one comment
+PublishOp =
+  | EditSubmitted(comment) | DeleteSubmitted(comment)   -- the owner's own
+  | CreatePR
+
+RemoteOp =                          -- backend-specific; GitHub's:
+  | SingleComment                   -- a review submitted with one comment
   | ConversationComment
   | StartPendingReview | AddToPending
   | EditComment | DeleteComment
@@ -228,24 +217,24 @@ RemoteOp =                -- backend-specific; GitHub's:
   | EditPR
 ```
 
-Publish is reserved for v2 and is not an event in v1.
+A Publish event happens only after confirmation (see Visibility).
 
 ## Invariants
 
 These must hold after every event, for any sequence of events. They are the promises made to users, and each one is a test assertion.
 
-1. **No loss.** Every body a local author has saved can still be reached, in L (live or as a tombstone) or on the remote, unless the user deleted it.
-2. **No publication.** delta never makes a remote call that its backend classifies as Public.
-3. **Send is exact.** Straight after a successful Send(r), the user's pending review on the remote holds exactly r's comments, with their bodies (ignoring markers) and anchors.
-4. **One to one.** Link is a bijection. No local entity has two remote copies, even after a Crash at any point in a Send.
+1. **No loss.** Every body an author has saved can still be reached, in a store or on the remote, unless someone deleted it with an explicit action.
+2. **No unconfirmed publication.** What other users can see changes only through Publish events.
+3. **Sync is complete.** After a successful sync, every draft comment is in the owner's pending review, and the store has no drafts left.
+4. **One to one.** Link is a bijection. No comment is posted twice, even after a Crash at any point in a sync.
 5. **Hands off.** Nothing authored on the remote by someone else is ever edited or deleted by delta.
-6. **Pull is safe.** Pull never changes an Open review or a comment in no review.
-7. **Constraints hold.** Send never breaks a backend constraint; it refuses instead. With GitHub, the user never has more than one pending review per PR.
-8. **Convergence.** If edits stop, a pull leaves every copy in L equal to R, and every Open review with no blocked comments can be sent.
-9. **Local-only stays local.** A comment in no review never reaches the remote.
+6. **Fetch is safe.** Fetch never changes a draft or local-only comment.
+7. **Constraints hold.** No sync breaks a backend constraint. With GitHub, no user ever has more than one pending review per PR.
+8. **Convergence.** If edits stop, a sync posts every draft that isn't blocked, and leaves every copy equal to R.
+9. **Local-only stays local.** No comment that was local-only when a sync ran was posted by it.
 10. **First comments kept.** No thread loses its first comment while it has replies.
-11. **Anchors at head.** Every comment sent was anchored at the PR's head when it was sent.
-12. **Only review data.** No action of delta's changes a branch, the working tree, or what is pushed.
+11. **Anchors at head.** Every comment posted was anchored at the PR's head when it was posted.
+12. **Only review data.** delta changes a branch only by fast-forwarding it to the PR's head in a sync, with a clean working tree, and pushes only in CreatePR.
 
 ## Not supported in v1
 
@@ -255,21 +244,19 @@ Each of these fails at once with a message that names what the user can do inste
 | --- | --- |
 | Submitting a review | Submit it on GitHub |
 | Publishing a conversation comment | Post it on GitHub; it stays local in delta |
-| Editing or deleting a published comment | Edit it on GitHub |
 | Resolving or unresolving a GitHub thread | Do it on GitHub |
-| Creating or editing the PR | Use `gh pr create` or GitHub, then LinkPR |
-| Pushing, checking out or moving a branch | Do it with git or gh |
-| Sending while you have a pending review | Move comments into it, or submit, discard or unsend it first |
-| Sending a review with blocked comments | The list of blocked comments and their reasons |
-| Changing a sent review without a connection | Unsend it before going offline |
-| Moving a comment out of a Submitted review | It is public; edit or delete it on GitHub |
-| Deleting a Sent review | Unsend it first |
+| Editing the PR's title or body | Edit it on GitHub |
+| A publishing action without confirmation | Answer y, or pass `--publish` |
+| Syncing with no PR on the remote | The command that creates one |
+| Syncing with commits the PR lacks | Push them first |
+| Syncing with uncommitted changes to tracked files | Commit or stash them first |
+| Syncing with blocked comments | The list of blocked comments and their reasons |
+| Changing a posted comment without a connection | Try again when online |
 | Deleting a thread's first comment while it has replies | Delete the replies first |
 | Deleting a first comment on GitHub | Edit it instead |
 | Editing someone else's content | Reply instead |
 | Commenting on uncommitted changes | Commit first |
 | Local submit or verdicts | Deferred to v2 |
-| Automatic send | Send is always explicit |
 
 ## Worked flows
 
@@ -277,59 +264,58 @@ All three flows use the GitHub backend.
 
 **Default destinations.** Where a new comment lands is a UI default, not part of the semantics. The user can always move it.
 
-- An agent asked to review creates its own Open review, and its comments go there.
-- The user's comments go to their selected review, or to no review if none is selected.
-- Replies in local-only threads go to no review.
-- On a linked PR, the user's replies in GitHub threads go to their Open review.
+- A new thread, from anyone, starts as Draft.
+- A reply is LocalOnly if its thread's first comment is LocalOnly, and Draft otherwise.
+- `--local` and `--draft` on the command line, and a TUI key, move a comment either way.
 
 ### A. Agent wrote the code; you open a PR with explanations
 
 1. The agent commits on `feat`. delta has an unlinked local PR P, with base `main` and head `feat`.
-2. You and the agent discuss the code in threads. Those comments are in no review, so they are local-only.
+2. You and the agent discuss the code in threads you mark local-only, or that the agent starts with `--local`.
 3. The agent revises the code. Threads on old commits show as outdated, and you resolve them locally.
-4. You create review E and write comments explaining the code. You can also move in, or ask the agent to draft, comments anchored on the final commits.
-5. You push, run `gh pr create`, then LinkPR. Pull links P to the GitHub PR.
-6. Send(E). Any comment not anchored at the PR's head blocks the send and is listed.
-7. You check the pending review on GitHub and submit it. The next pull marks E Submitted.
+4. You write draft comments explaining the code, or have the agent draft them and edit them yourself.
+5. You create the PR with delta's create-PR command, which asks first and pushes the branch.
+6. You sync. The drafts go into a new pending review.
+7. You check the pending review on GitHub and submit it.
 
 The explanations are public, and the discussion with the agent never left the machine.
 
 ### B. An agent helps you review a colleague's PR
 
-1. Pull brings in Alice's PR, linked, with its existing reviews as Submitted.
-2. The agent reviews: its Open review A has a body and comments.
-3. You discuss its comments with it. Your replies are in no review.
+1. You open Alice's PR. Fetch copies its reviews, and a sync brings your branch to the PR's head.
+2. The agent reviews: its comments are drafts, labelled with its name.
+3. You discuss its comments with it in local-only replies.
 4. Then either:
-   - send A as an agent review: edit it, Send(A), and submit on GitHub; or
-   - adopt its comments: move the ones you want into your review M, edit them, Send(M), and submit.
-5. Alice replies. Pull brings her replies in, and you answer them in a new review.
+   - post its review on its own: move your drafts to local-only, sync, submit on GitHub with a body such as "Review by an agent", then move your drafts back; or
+   - edit or delete its drafts as you like, add your own, sync, and submit one review.
+5. Alice replies. A fetch brings her replies in, and you answer them as drafts and sync.
 
-You can do both in step 4, but one after the other: submit one before sending the next.
+With the first option, the agent's review and yours appear on GitHub as two separate reviews.
 
 ### C. Mixed work on GitHub and in delta
 
 | Step | What delta does | Visible to Alice |
 | --- | --- | --- |
-| You post single comments on GitHub | Pull links them as Submitted; read-only in delta | Yes, you posted them |
-| You start a pending review on GitHub | Pull links it as Sent review M | No |
-| You add comments in delta | They go into your Open review N | No |
-| An agent reviews | Agent's Open review A | No |
-| Alice replies to your single comments | Pull adds her replies, read-only | They're hers |
-| You discuss with the agent | Comments in no review | No |
-| You try to send N by accident | Refused: you already have pending review M | No |
-| You move N's comments, and some of A's, into M | Each is added to M on GitHub at once | No |
-| You tidy M's comments | Each edit or delete is made on GitHub at once | No |
-| You submit on GitHub | Pull marks M Submitted | Yes, from now |
+| You post single comments on GitHub | Fetch copies them as submitted | Yes, you posted them |
+| You start a pending review on GitHub | Fetch copies it as your pending review | No |
+| You add comments in delta | Drafts | No |
+| An agent reviews | Drafts labelled with its name | No |
+| Alice replies to your single comments | Fetch copies her replies, read-only | They're hers |
+| You discuss with the agent | Local-only replies | No |
+| You sync by accident | The drafts join your pending review | No |
+| You tidy them up | Each edit or delete is made in the pending review at once | No |
+| You fix a typo in an earlier single comment | Asks y/n, then edits it on GitHub | Yes, once you confirm |
+| You submit on GitHub | Fetch marks the review submitted | Yes, from now |
 
 ## Testing
 
 The model is executable Rust, and the tests generate event sequences against it. There is no separate formal spec to keep in step.
 
-- **Model.** `World { local, remote, links }`, the `Event` enum above, `fn step(&mut World, Event) -> Result<(), Refusal>`, and one function per invariant.
-- **Fake remotes.** One in-memory fake per backend, implementing the same trait as the real backend. The fake GitHub encodes GitHub's rules: one pending review per user, pending reviews private, conversation comments public at once, submitted reviews undeletable. Each fake is the written-down spec of its remote's behaviour.
-- **Property tests.** proptest generates random sequences of Local, Remote, Pull, Send, Unsend and Crash events, with several remote users and agents. The same invariant suite runs against every backend's fake after every step. Crash is injected between every pair of remote calls in a Send.
-- **Scenario tests.** Flows A, B and C below, as named tests.
-- **Real-remote traces.** Scripted runs against a sandbox repo pin down edge cases each fake must copy. Each trace becomes a regression test for that fake.
+- **Model.** The state machine in `lifecycle.rs`: stores, the remote, actions matching Events, and one check per invariant.
+- **Fake remotes.** One in-memory fake per backend, implementing the same trait as the real backend. The fake GitHub encodes GitHub's rules: one pending review per user, pending reviews private, conversation comments public at once, submitted reviews undeletable. It can fail part way through a sync, including after creating a comment but before replying. The fakes record every git and gh command delta runs.
+- **Property tests.** Random sequences of events, with two stores owned by one user and one owned by another, and agents writing in the first. All invariants are checked after every step, and Crash is injected between every pair of remote calls in a sync.
+- **Scenario tests.** Flows A, B and C, as named tests.
+- **Real-remote traces.** Scripted runs against a sandbox repo pin down the behaviour each fake must copy. Each trace becomes a regression test.
 
 Refusals are part of the model: a test can assert that an event is refused with a given reason and that the state is unchanged.
 
@@ -338,17 +324,15 @@ Refusals are part of the model: a test can assert that an event is refused with 
 **GitHub behaviour to confirm with traces**
 
 - [ ] What happens to comments in a pending review whose anchor commit is force-pushed away?
-- [ ] What happens to a pending reply when its thread's root is deleted?
 - [ ] Can a pending review's body be updated through the API before submit?
-- [ ] Does GitHub keep hidden HTML comments in bodies exactly as sent?
 
 **Design decisions**
 
-- [ ] Should agent attribution also be visible to colleagues, e.g. a short line under each agent comment?
+- [ ] Should agent comments carry a visible tag on GitHub, since the agent's name is not kept once posted?
 - [ ] What happens when a linked remote PR's base or head differs from the local PR's?
 - [ ] Should anchors on uncommitted changes be supported for agent loops?
 - [ ] Which second backend should test the Remote contract: GitLab, or a git-refs remote for sharing review data without a forge?
 
 **Settled:** L lives in `gitu/review/<head>...<base>.json` in the git common directory, shared by all worktrees, as the `local-prs` branch has it.
 
-**Deferred to v2:** publish, local submit and verdicts, creating PRs from delta, automatic send, changing sent reviews offline.
+**Deferred to v2:** local submit and verdicts, more publishing actions, background fetching.

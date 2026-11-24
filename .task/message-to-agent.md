@@ -4,21 +4,23 @@ Nov 24, 2026 · @Dan Davison
 
 For the agent working on `dandavison/delta-gitu`, branch `local-prs` (34 commits ahead of `main` at 677be9b). Read it alongside [delta PR review: sync model spec](https://claude.ai/artifact/Nvo4dvjDLvQuPQhkX87czJ).
 
-The branch already follows the spec's testing method: an executable state machine, a conformance test, and tests against GitHub. Two gaps remain. Every local comment goes into one draft review, and sync posts it whole, so a conversation with an agent can't stay local and an agent's review can't be sent on its own. And sync and edits can make things public. The plan below closes both, and keeps the state machine, the conformance test and most of the GitHub code.
+The branch already has most of the design: one draft review per local PR, sync into the user's pending review, the lease, live edits of the user's own comments, a state machine with a conformance test, and tests against GitHub. The changes below add five things: a local-only bucket, confirmation for publishing, crash-safe posting, one checked path for every write to GitHub, and the missing invariants.
 
 ## What to keep
 
 Keep all of the following and build on it. Together it already covers the spec's testing approach.
 
-- **The state machine** in `src/review/lifecycle.rs`: the `Model`, `Action` and invariants, the explorer that tries every sequence (depth 5, or 7 with `--ignored`), the `Rules` switch-off tests and `drain()`. This is the spec's executable model. Change it first (step 1).
-- **The conformance test** in `src/tests/lifecycle.rs`. It drives gitu through `delta --tui review` against a multi-user fake GitHub (`Server`) that can fail part way through a post.
-- **The real-GitHub tests** in `src/tests/real_github.rs` (`cargo test-github`). These are the spec's real-remote traces.
+- **The state machine** in `src/review/lifecycle.rs`: the explorer that tries every sequence (depth 5, or 7 with `--ignored`), the `Rules` switch-off tests and `drain()`. Step 1 changes it.
+- **The conformance test** in `src/tests/lifecycle.rs`, against the multi-user fake GitHub (`Server`).
+- **The real-GitHub tests** in `src/tests/real_github.rs` (`cargo test-github`).
 - **The store:** `gitu/review/<head>...<base>.json` in the git common directory, with a lock file, atomic replace and versioned migrations.
-- **Thread anchors** that record the line's text and context, and the line-following in `locate`, for display.
-- **Fetch** in `LocalBackend::fetch`. It replaces the copies wholesale and never touches drafts, which is the spec's "pull is safe".
-- **Refusing rather than working around:** errors for unknown review states, missing commits, threads with more than 100 comments, and GitHub replies that did nothing. Also `orphaned_replies`, which is the spec's "thread gone" blocked reason.
-- **The split between the two traits:** `Backend` serves a screen, and `GitHub` makes the remote calls. `check_pr` and the base checks on opening a PR also stay.
-- **The agent skill** (`agent_instructions.md`) with its test that every command it names exists, and the diagram with its exhaustive-match test.
+- **One draft review per local PR,** and sync adding it to the user's pending review, whoever started that review.
+- **The lease** (`stale_drafts`, `move_drafts`), including moving a thread whose line has gone onto its file.
+- **Sync bringing the branch to the PR's head** with `gh pr checkout`, fast-forward only, and refusing a branch with commits the PR lacks.
+- **Edits and deletes of the user's own comments** made on GitHub at once and then fetched, and the rules about first comments.
+- **Fetch** replacing the copies wholesale and never touching drafts; thread anchors and `locate`; `orphaned_replies`; and refusing rather than working around.
+- **The split between the two traits** (`Backend` for a screen, `GitHub` for remote calls), and `check_pr`.
+- **The agent skill** and its command test, and the diagram and its exhaustive-match test.
 
 ## Where the branch differs from the spec
 
@@ -26,80 +28,63 @@ Each row is one change. The spec column names the spec section.
 
 | Spec | Branch now | Change |
 | --- | --- | --- |
-| Local entities: several Open reviews, comments in no review | One draft review per repository (`RepoState.draft`; one `Draft` in `StoredReview`). Every local comment is in it. An agent writes as the repository's author, with `--agent` as a label | Several Open reviews per PR, each with an author: Me or Agent(name). A code comment is in one review or none. Comments in no review are never sent |
-| Reviews: Send(review) | `post::sync` posts the whole draft review, adding to any pending review | `review send <review>` posts one Open review, and is refused while the user has a pending review. Adding to the pending review is its own explicit action |
-| Reviews: Unsend | Missing | Add it: delete the pending review and recreate its comments locally as an Open review |
-| Visibility: no publication | `LocalBackend::whose` returns `OnGitHub` for any review marked `mine`. So `review edit`, `review delete`, `i` and `K` change submitted, public comments | Edit or delete on GitHub only for comments in the user's pending review. Refuse the rest with the spec's message |
-| Goals and principles: no PR creation | `sync` with `create_pr` pushes and runs `gh pr create`; `O s` asks first | Remove both from sync. The user runs `gh pr create`, and the next pull links the PR |
-| Goals and principles: no branch changes | `up_to_github_head` runs `gh pr checkout` | Remove it. Pull leaves the branch alone. If the PR's head commit isn't in the repository, pull says to fetch it, as \`missing\_commit\` already does for a thread's commit |
-| Blocked comments: anchors at the PR's head, re-anchored explicitly | Sync runs `stale_drafts` and `move_drafts`. These move drafts, and turn a thread whose line has gone into a file comment | Send refuses and lists the stale comments. A new `review reanchor` reuses `move_drafts` to move them. A thread whose line has gone stays blocked until the user moves it to its file with an explicit flag |
-| Sync: crash safety | `mark_posted` runs after each GitHub call. A crash in between means the retry posts the comment twice | A marker in each body holds the local id. Before each create, look for that marker in the pending review |
-| Authorship: attribution | The agent label is lost once posted: fetched comments get `agent: None` | The marker also carries the author. Fetch restores the label on the user's own comments |
-| Sync: pull and send | `review sync` fetches then posts; `review fetch` also exists | `review pull` (automatic in the TUI on opening and on `g r`) and `review send <review>`. Drop `sync` |
-| Remote contract | Calls that write to GitHub are spread through `post.rs` and `local.rs` | Route every remote write through one function. It asks the backend to classify the change and refuses anything not private |
+| Local entities: local-only comments | Every local comment is in the draft review, so a conversation with an agent is posted at the next sync unless it's deleted | Add a LocalOnly bucket that sync never posts, with the defaults and moving in the spec's Worked flows |
+| Visibility: confirmed publishing | Editing or deleting the user's comment in a submitted review needs no confirmation | Ask y/n in the TUI, and require `--publish` on the command line. Comments in the pending review need neither |
+| Visibility: creating a PR | Part of sync: `O s` asks, or `review sync --create-pr` | Its own command, with a TUI key and `review create-pr`. Sync on a branch with no PR refuses and names it |
+| Fetch and sync, step 2 | `up_to_github_head` runs whatever state the working tree is in | Refuse while tracked files have uncommitted changes |
+| Fetch and sync: crash safety | `mark_posted` runs after each GitHub call, so if the reply is lost, a retry posts the comment twice | Before posting, match against the pending review by path, side, line and body, counting duplicates. Link a match instead of posting it |
+| Remote contract: one write path | Calls that write to GitHub are spread through `post.rs` and `local.rs` | One function with an allow-list. It classifies each change as private or publishing and refuses anything else |
+| Blocked comments | No local-only comments yet, so no rule for a draft reply in a local-only thread | Sync refuses such a reply, as it refuses one whose thread was deleted |
+| Invariants | No checks for 2, 5, 9, 11 or 12 | Add them (see Invariants) |
+| Agent skill | Says nothing about local-only comments or about agents running sync | Agents use local-only for conversations and never sync unless asked. Describe posting an agent's review as its own review |
 
 ## The plan
 
 Work in this order, keeping the branch's habit of committing failing tests first. Step 1 changes only the model, so the explorer settles the rules before any product code changes. Each later step ends with the conformance test passing.
 
-1. **Model (`lifecycle.rs`).**
-   - Rename `Repo` to `Store`: a local store with an owner, `Store { id, owner: Person }`. Make stores data that each test declares, not fixed values. The tests declare two stores owned by Me and one owned by Colleague, the smallest setup that covers two clones under one GitHub identity. Worktrees of one clone share a store, and an agent is an author within a store, not a store.
-   - In each store, give each comment an author: Me or Agent(name). Replace `RepoState.draft` with `reviews: BTreeMap<Id, OpenReview { author }>`, and give `LocalComment` a `review: Option<Id>`.
-   - Actions: `Write { repo, author, thread, review }`, where review `None` means no review; `Move { repo, comment, to }`; `Send { repo, review, stop_after }`; `AddToPending { repo, comment }`; `Unsend { repo }`; `Pull { repo }` (renamed from `Fetch`); `Reanchor { repo, comment }`. Remove `Sync`. Restrict `EditOnGitHub` and `DeleteOnGitHub` to comments in the user's pending review.
-   - Send is refused while the user has a pending review, or while any comment in the review is blocked: written at another head, its thread neither on GitHub nor started in this review, or its thread deleted.
-   - Add the invariants in the next section, and update the diagram's mapping, which the compiler will force.
-   - Done when the explorer passes at depth 5 and 7, and each new rule has a switch-off test.
-2. **Store version 6 and local commands.**
-   - `StoredComment.review` becomes optional, and the store holds several Open reviews, each with an author and agent label. Migrating from version 5: the existing draft becomes the user's Open review, agent-labelled comments included. Don't guess which comments to split out.
-   - CLI: `review comment` and `review reply` take `--agent NAME`, and either `--review ID` or `--no-review`. Defaults follow the spec's "Default destinations": an agent writes to its own Open review, which is created if needed. Add `review move <comment> (--to ID | --none)`. `review show --format json` lists each review with its author and state.
-   - TUI: show which review each draft is in, and add a key to move a comment. Keep this minimal.
-3. **No publication.**
-   - In `LocalBackend::whose`, return `OnGitHub` only when the review is the user's and Pending.
-   - Remove `create_pr`, the push and `up_to_github_head` from sync, along with `--create-pr` and the question `O s` asks.
-   - Add one function that every remote write goes through. It takes a `RemoteChange` (start review, add thread, add reply, edit, delete, delete review) and refuses any change the backend doesn't classify as private.
-   - Make both fakes, `Server` and the fake in the PR tests, record each write along with the state of the review it touched. Add a test that fails if any write touched a review that wasn't pending.
-4. **Pull, send and unsend.**
-   - Replace `post::sync` with `pull`, which fetches and records the link, and `send(review)`. Send pulls first, refuses as in step 1, starts the pending review, and posts each thread before its replies. It then deletes the local Open review, whose comments come back in the copy, and pulls.
-   - While a send is under way, record `sending: <pending review id>` on the Open review. That way a retry after a failure part way continues the send instead of refusing because of the pending review it started.
-   - `review move <comment> --to pending` adds the comment to the pending review on GitHub straight away, with the same blocked checks, then pulls.
-   - Before editing or deleting a comment in the pending review, re-read it from GitHub and refuse if it differs from the copy.
-   - Unsend: create the Open review locally from the copy first, then delete the pending review, then pull. If it crashes part way, both copies exist; neither is ever lost.
-5. **Marker.**
-   - End every body sent with `<!-- delta id=<local id> author=<me or agent:name> -->`. Fetch strips the marker and restores the agent label, but trusts a marker only on comments the user wrote.
-   - Before each create, look for the marker in a freshly pulled copy of the pending review. If it's there, link the comment instead of creating it again.
-   - Give `Server` a way to fail after GitHub creates a comment but before gitu records it. Then test that the retry doesn't post a duplicate. Add a real-GitHub test that the marker survives a round trip.
-6. **Explicit re-anchoring.**
-   - Take the lease's moving out of sync. Send and add-to-pending refuse, listing each stale comment and saying to run `review reanchor`.
-   - `review reanchor [<thread>...]` reuses `move_drafts` and prints each thread's old and new place. A thread whose line has gone stays blocked unless it is named with `--to-file`. Only then does `to_post` add its "On line N" prefix.
-   - Reanchoring needs the local branch at the PR's head. If the branch is behind, refuse and say to update it first, e.g. with `gh pr checkout`.
-7. **Docs and screens.** Rewrite `agent_instructions.md` for Open reviews, comments in no review, pull, send, unsend and reanchor. Agents write to their own review and never send unless asked. Regenerate the diagram from the new actions, and update the help text and `O s`.
+1. **State machine (`lifecycle.rs`).**
+   - Rename `Repo` to `Store { id, owner: Person }`. Each test declares its stores; the standard setup is two owned by Me and one owned by Colleague. Worktrees of one clone share a store, and agents are authors within a store, not stores.
+   - Give `LocalComment` a bucket, Draft or LocalOnly. `Write` takes the bucket, and a new `Move { store, comment, to }` moves a comment between buckets.
+   - Sync posts only Draft comments, and refuses a draft reply whose thread's first comment is LocalOnly.
+   - Split `EditOnGitHub` and `DeleteOnGitHub` into a pending-review version, which is private, and a submitted-review version, which is a Publish action. Add `CreatePR` as a Publish action.
+   - Add the invariants below and update the diagram's mapping. Done when the explorer passes at depth 5 and 7, and each new rule has a switch-off test.
+2. **One write path.** Add one function that every GitHub write goes through. It takes a `RemoteChange` (start review, add thread, add reply, edit, delete, delete review, create PR), classifies it as private or publishing, requires confirmation for publishing, and refuses anything else. Make the fakes record every write and every git and gh command, and fail the test on anything not allowed.
+3. **Crash-safe posting.** In `post`, read the pending review's comments once per sync. Before each `add_thread` or `add_reply`, look for the comment by path, side, line and body, counting duplicates, and record a match with `mark_posted` instead of posting it. Give `Server` a failure after a comment is created but before the reply arrives, and test that a retry doesn't post twice.
+4. **The local-only bucket.**
+   - Store version 6: `StoredComment` gains a bucket. Migrated comments are Draft. `to_post` skips LocalOnly.
+   - CLI: `review comment` and `review reply` take `--local` or `--draft`, with the spec's defaults. Add `review move <comment> --local|--draft`. `review show --format json` includes the bucket.
+   - TUI: show local-only comments distinctly, and add a key to move a comment between buckets.
+5. **Confirmation for publishing.** In `LocalBackend::whose`, tell pending comments from submitted ones. For a submitted comment, the TUI asks y/n, naming what will become visible, and `review edit` and `review delete` refuse without `--publish`.
+6. **Clean working tree.** Before `up_to_github_head`, refuse if tracked files have uncommitted changes, and name them.
+7. **PR creation as its own command.** Move `create_pr` and the push out of `sync` into `review create-pr` and a TUI key, keeping the y/n question. Sync on a branch with no PR refuses and names the command.
+8. **Docs and screens.** Agent skill: use local-only for conversations (`--local`), never run sync unless asked, and how to post an agent's review as its own review. Regenerate the diagram from the state machine, and update the help text.
 
 ## Invariants
 
-The state machine already checks most of the spec's invariants. Five are missing, two of which guard against publishing too early. Numbers are the spec's.
+The state machine already checks most of the spec's invariants. Five are missing, two of which guard against publishing by mistake. Numbers are the spec's.
 
 | Spec invariant | `Model::invariants` now | What to do |
 | --- | --- | --- |
-| 1. No loss | "A comment was lost" | Keep. Extend it to Open reviews, comments in no review, and Unsend |
-| 2. No publication | Missing | Add: no action taken from a repository changes what any other user can see on GitHub (`visible(u)` for each other user u) |
-| 3. Send is exact | "Draft review split across GitHub reviews" | Replace: once a Send completes, the origins of the pending review's comments are exactly the sent review's comments |
-| 4. One to one | "Posted twice"; "a posted comment is still a local draft" | Keep |
-| 5. Hands off | Missing | Add: no action from a repository changes a GitHub comment whose author isn't that repository's user |
-| 6. Pull is safe | "Fetching changed a draft review" (`step_invariants`) | Keep, under the name Pull |
+| 1. No loss | "A comment was lost" | Keep, and extend it to local-only comments |
+| 2. No unconfirmed publication | Missing | Add: what any other user can see (`visible(u)`) changes only in Publish actions |
+| 3. Sync is complete | "Draft review split across GitHub reviews" | Keep, and check that a successful sync leaves no drafts |
+| 4. One to one | "Posted twice"; "a posted comment is still a local draft" | Keep, and include the reply-lost failure |
+| 5. Hands off | Missing | Add: no action from a store changes a GitHub comment whose author isn't the store's owner |
+| 6. Fetch is safe | "Fetching changed a draft review" (`step_invariants`) | Keep, and extend it to local-only comments |
 | 7. Constraints hold | "More than one pending review"; "reply posted before its thread" | Keep |
-| 8. Convergence | `drain()` | Keep. Make drain send each Open review in turn, submitting between sends |
+| 8. Convergence | `drain()` | Keep |
+| 9. Local-only stays local | Missing | Add: no comment that was local-only when a sync ran was posted by it |
 | 10. First comments kept | "Thread lost its first comment" | Keep |
-| 9. Local-only stays local | Missing | Record the review each comment was in when it was posted. Check that none was in no review |
-| 11. Anchors at head | Missing | Record the PR's head when each comment is posted. Check that it equals the comment's `written_at` |
-| 12. Only review data | Missing | Add to the conformance test: the fakes record every git or gh command gitu runs, and the test fails on any push, checkout or PR creation |
+| 11. Anchors at head | Missing | Add: record the PR's head when each comment is posted, and check that it equals the comment's `written_at` |
+| 12. Only review data | Missing | Add to the conformance test: fail on any git or gh command other than sync's fast-forward, with a clean tree, and the push in CreatePR |
 
 ## Out of scope
 
 If one of these seems needed, stop and ask Dan rather than building it.
 
-- Anything public: submitting, conversation comments, resolving threads, and creating or editing the PR.
-- Submitting locally, and verdicts.
+- Anything public beyond the two publishing actions: submitting, conversation comments, resolving threads, and editing the PR.
+- Local submit and verdicts.
 - Comments on uncommitted changes.
-- A second backend. Keeping GitHub's classification behind the single write function (step 3) is enough to leave room for one.
-- Automatic send, and any background posting.
-- Changes to Viewed checkboxes, and TUI changes beyond what steps 2 to 7 need.
+- A second backend. The single write path leaves room for one.
+- Background fetching or automatic sync.
+- Changes to Viewed checkboxes, and TUI changes beyond what the steps need.
