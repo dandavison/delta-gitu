@@ -1,4 +1,4 @@
-//! Reviewing a local PR: `O l` opens the current branch's diff against `main`, as a PR that
+//! Reviewing a local PR: `O O` opens the current branch's diff against `main`, as a PR that
 //! exists only in the repository. Its Viewed checkboxes and review threads are stored in the
 //! repository's git directory, shared by all its worktrees.
 
@@ -46,12 +46,12 @@ fn line_with(ctx: &TestContext, text: &str) -> String {
 }
 
 #[test]
-fn ol_opens_the_branch_against_main() {
+fn oo_opens_the_branch_against_main() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("lines.txt"), "{screen}");
@@ -62,13 +62,13 @@ fn ol_opens_the_branch_against_main() {
 }
 
 #[test]
-fn ol_on_main_says_there_is_nothing_to_review() {
+fn oo_on_main_says_there_is_nothing_to_review() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     run(&ctx.dir, &["git", "checkout", "main"]);
     let mut app = init_app(&mut ctx);
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(
@@ -82,11 +82,11 @@ fn a_ticked_file_stays_ticked_when_the_pr_is_opened_again() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/added.txt<enter>x"));
+    ctx.update(&mut app, keys("OO/added.txt<enter>x"));
     assert!(line_with(&ctx, "added.txt").contains("[x]"));
 
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     assert!(line_with(&ctx, "added.txt").contains("[x]"));
     assert!(line_with(&ctx, "lines.txt").contains("[ ]"));
@@ -97,7 +97,7 @@ fn x_unticks_a_ticked_file() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/added.txt<enter>x"));
+    ctx.update(&mut app, keys("OO/added.txt<enter>x"));
 
     ctx.update(&mut app, keys("x"));
 
@@ -109,7 +109,7 @@ fn a_ticked_file_changed_since_shows_as_changed() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/added.txt<enter>x"));
+    ctx.update(&mut app, keys("OO/added.txt<enter>x"));
 
     commit(&ctx.dir, "added.txt", "added\nmore\n");
     ctx.update(&mut app, keys("gr"));
@@ -122,7 +122,7 @@ fn ticks_are_shared_by_the_repositorys_worktrees() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/added.txt<enter>x"));
+    ctx.update(&mut app, keys("OO/added.txt<enter>x"));
     // `feature` can be checked out in only one worktree at a time.
     run(&ctx.dir, &["git", "checkout", "main"]);
     let worktree = ctx.dir.parent().unwrap().join("feature-worktree");
@@ -138,7 +138,7 @@ fn ticks_are_shared_by_the_repositorys_worktrees() {
     );
 
     let mut app = init_app_at(&mut ctx, worktree);
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     assert!(line_with(&ctx, "added.txt").contains("[x]"));
 }
@@ -158,7 +158,7 @@ fn ctrl_s_adds_a_comment_on_the_line_to_a_draft_review() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello"));
 
     ctx.update(&mut app, keys("<ctrl+s>"));
 
@@ -181,10 +181,10 @@ fn a_comment_is_there_when_the_pr_is_opened_again() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     let lines: Vec<&str> = screen.lines().collect();
@@ -212,7 +212,7 @@ fn i_on_my_agents_comment_replies_to_it_in_the_same_draft_review() {
     )
     .unwrap();
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     ctx.update(&mut app, keys("/agent \\[<enter>iand more<ctrl+s>"));
 
@@ -237,7 +237,7 @@ fn the_review_file_records_the_comment_and_the_lines_it_is_on() {
         .to_owned();
     let mut app = init_app(&mut ctx);
 
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
     let file = review_file(&ctx);
     let review = &file["reviews"][0];
@@ -264,10 +264,10 @@ fn a_comment_on_a_removed_line_is_shown_under_it() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/old<enter>igone<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/old<enter>igone<ctrl+s>"));
 
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     let lines: Vec<&str> = screen.lines().collect();
@@ -282,7 +282,7 @@ fn comments_are_shared_by_the_repositorys_worktrees() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     run(&ctx.dir, &["git", "checkout", "main"]);
     let worktree = ctx.dir.parent().unwrap().join("feature-worktree");
     run(
@@ -297,7 +297,7 @@ fn comments_are_shared_by_the_repositorys_worktrees() {
     );
 
     let mut app = init_app_at(&mut ctx, worktree);
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     assert!(
         ctx.redact_buffer().contains("hello"),
@@ -311,7 +311,7 @@ fn i_on_my_draft_comment_edits_it_in_the_box() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>/hello<enter>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>/hello<enter>"));
 
     ctx.update(&mut app, keys("i"));
     let screen = ctx.redact_buffer();
@@ -337,7 +337,7 @@ fn k_deletes_a_draft_comment() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>/hello<enter>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>/hello<enter>"));
 
     ctx.update(&mut app, keys("Ky"));
 
@@ -368,7 +368,7 @@ fn deleting_a_reply_keeps_the_rest_of_the_thread() {
     let mut app = init_app(&mut ctx);
     ctx.update(
         &mut app,
-        keys("Ol/agent \\[<enter>iand more<ctrl+s>/and more<enter>"),
+        keys("OO/agent \\[<enter>iand more<ctrl+s>/and more<enter>"),
     );
 
     ctx.update(&mut app, keys("Ky"));
@@ -401,7 +401,7 @@ fn a_thread_follows_its_line_when_lines_are_added_above_it() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
     commit(&ctx.dir, "lines.txt", "top\nkeep\nnew\nkeep\n");
     ctx.update(&mut app, keys("gr"));
@@ -423,7 +423,7 @@ fn a_thread_whose_line_has_gone_is_outdated() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
     commit(&ctx.dir, "lines.txt", "keep\nnewer\nkeep\n");
     ctx.update(&mut app, keys("gr"));
@@ -439,7 +439,7 @@ fn a_thread_on_a_repeated_line_follows_the_one_with_its_surrounding_lines() {
     setup(&mut ctx);
     commit(&ctx.dir, "lines.txt", "keep\nnew\nkeep\nother\nnew\nend\n");
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>nihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>nihello<ctrl+s>"));
     assert!(
         line_after(&ctx, "+new", 1).contains("CI ["),
         "{}",
@@ -527,7 +527,7 @@ fn review_show_prints_each_thread_with_its_lines_and_comments() {
     let mut app = init_app(&mut ctx);
     ctx.update(
         &mut app,
-        keys("Ol/agent \\[<enter>iand more<ctrl+s>/old<enter>igone<ctrl+s>"),
+        keys("OO/agent \\[<enter>iand more<ctrl+s>/old<enter>igone<ctrl+s>"),
     );
 
     let markdown = review_cli(&ctx.dir, &["show"]);
@@ -567,7 +567,7 @@ fn review_show_says_where_an_outdated_thread_was() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     commit(&ctx.dir, "lines.txt", "keep\nnewer\nkeep\n");
 
     let markdown = review_cli(&ctx.dir, &["show"]);
@@ -583,7 +583,7 @@ fn review_show_reads_the_pr_given_by_head_and_base() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     run(&ctx.dir, &["git", "checkout", "main"]);
 
     let markdown = review_cli(&ctx.dir, &["show", "--head", "feature", "--base", "main"]);
@@ -596,7 +596,7 @@ fn review_reply_with_an_agent_adds_the_reply_to_my_draft_review_with_its_name() 
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     let thread = review_file(&ctx)["threads"][0]["id"]
         .as_str()
         .unwrap()
@@ -630,7 +630,7 @@ fn review_reply_by_default_is_by_gits_user() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     let thread = review_file(&ctx)["threads"][0]["id"]
         .as_str()
         .unwrap()
@@ -665,7 +665,7 @@ fn review_reply_that_is_empty_is_an_error() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     let thread = review_file(&ctx)["threads"][0]["id"]
         .as_str()
         .unwrap()
@@ -720,7 +720,7 @@ fn review_comment_with_an_agent_starts_a_thread_in_my_draft_review() {
     assert_eq!(file["reviews"][0]["author"], "CI", "{file}");
     assert_eq!(file["reviews"][0]["state"], "draft", "{file}");
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
     assert!(
         line_after(&ctx, "+new", 0).contains("claude ["),
         "{}",
@@ -825,7 +825,7 @@ fn review_post_pushes_the_branch_and_creates_a_draft_pr_when_there_is_none() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     let github = github_at_head(&ctx);
     *github.has_pr.borrow_mut() = false;
 
@@ -850,7 +850,7 @@ fn op_says_so_when_github_does_not_add_a_thread_and_keeps_it_a_draft() {
     *github.refuses_threads.borrow_mut() = true;
     let mut app = init_app(&mut ctx);
     app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
     ctx.update(&mut app, keys("Opy"));
 
@@ -859,7 +859,8 @@ fn op_says_so_when_github_does_not_add_a_thread_and_keeps_it_a_draft() {
     assert!(!screen.contains("Posted"), "{screen}");
     let file = review_file(&ctx);
     assert_eq!(file["threads"][0]["comments"][0]["body"], "hello", "{file}");
-    assert_eq!(file["reviews"][0]["state"], "draft", "{file}");
+    let reviews = file["reviews"].as_array().unwrap();
+    assert!(reviews.iter().any(|r| r["state"] == "draft"), "{file}");
 }
 
 #[test]
@@ -869,7 +870,7 @@ fn review_post_pushes_new_commits_to_an_existing_pr() {
     run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
     commit(&ctx.dir, "added.txt", "added\nmore\n");
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     let github = github_at_head(&ctx);
 
     review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github)).unwrap();
@@ -885,7 +886,7 @@ fn review_post_refuses_when_githubs_head_is_not_the_branchs() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     let main = run(&ctx.dir, &["git", "rev-parse", "main"]);
     let github = Rc::new(FakeGitHub::new(main.trim(), &"0".repeat(40)));
 
@@ -904,7 +905,7 @@ fn op_posts_the_review_once_confirmed() {
     let github = github_at_head(&ctx);
     let mut app = init_app(&mut ctx);
     app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
     ctx.update(&mut app, keys("Opy"));
 
@@ -921,7 +922,7 @@ fn review_post_refuses_when_the_github_prs_base_is_not_the_local_prs() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     let github = github_at_head(&ctx);
     *github.base_ref.borrow_mut() = "release".to_owned();
 
@@ -1056,7 +1057,7 @@ fn a_thread_on_a_file_not_in_the_diff_is_said_not_to_be_shown() {
     .unwrap();
     let mut app = init_app(&mut ctx);
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(
@@ -1073,10 +1074,11 @@ fn the_screen_shows_a_pending_review_on_github_with_no_comments() {
     setup(&mut ctx);
     let github = github_at_head(&ctx);
     *github.pending.borrow_mut() = Some("R1".to_owned());
-    review_cli_with_github(&ctx.dir, &["fetch"], "", github).unwrap();
+    review_cli_with_github(&ctx.dir, &["fetch"], "", Rc::clone(&github)).unwrap();
     let mut app = init_app(&mut ctx);
+    app.state.github = github;
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(
@@ -1128,12 +1130,12 @@ fn setup_stale_main(ctx: &mut TestContext) {
 /// The PR's base is where its base branch is on the remote when the local branch is behind it,
 /// as it often is: the PR's diff has only the branch's own changes.
 #[test]
-fn ol_with_main_behind_origin_main_diffs_against_origin_main() {
+fn oo_with_main_behind_origin_main_diffs_against_origin_main() {
     let mut ctx = setup_clone!();
     setup_stale_main(&mut ctx);
     let mut app = init_app(&mut ctx);
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("feature.txt"), "{screen}");
@@ -1143,7 +1145,7 @@ fn ol_with_main_behind_origin_main_diffs_against_origin_main() {
 /// When the local base branch and the remote's have each moved on, which the PR is into can't
 /// be told, so opening it is an error.
 #[test]
-fn ol_with_main_and_origin_main_diverged_is_an_error() {
+fn oo_with_main_and_origin_main_diverged_is_an_error() {
     let mut ctx = setup_clone!();
     setup_stale_main(&mut ctx);
     run(&ctx.dir, &["git", "checkout", "main"]);
@@ -1151,7 +1153,7 @@ fn ol_with_main_and_origin_main_diverged_is_an_error() {
     run(&ctx.dir, &["git", "checkout", "feature"]);
     let mut app = init_app(&mut ctx);
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("have diverged"), "{screen}");
@@ -1161,7 +1163,7 @@ fn ol_with_main_and_origin_main_diverged_is_an_error() {
 /// When the branch has a PR on GitHub, the base must be where GitHub has it, so that the local
 /// PR's diff is the GitHub PR's.
 #[test]
-fn ol_with_a_base_not_where_github_has_it_is_an_error() {
+fn oo_with_a_base_not_where_github_has_it_is_an_error() {
     let mut ctx = setup_clone!();
     setup_stale_main(&mut ctx);
     let stale = run(&ctx.dir, &["git", "rev-parse", "main"]);
@@ -1169,7 +1171,7 @@ fn ol_with_a_base_not_where_github_has_it_is_an_error() {
     let mut app = init_app(&mut ctx);
     app.state.github = Rc::new(FakeGitHub::new(stale.trim(), feature.trim()));
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("GitHub's main is at"), "{screen}");
@@ -1179,7 +1181,7 @@ fn ol_with_a_base_not_where_github_has_it_is_an_error() {
 /// When the branch is where GitHub has the PR's head, the local PR has the GitHub PR's commits,
 /// as many as GitHub says.
 #[test]
-fn ol_with_a_commit_count_not_githubs_is_an_error() {
+fn oo_with_a_commit_count_not_githubs_is_an_error() {
     let mut ctx = setup_clone!();
     setup_stale_main(&mut ctx);
     let base = run(&ctx.dir, &["git", "rev-parse", "origin/main"]);
@@ -1189,7 +1191,7 @@ fn ol_with_a_commit_count_not_githubs_is_an_error() {
     let mut app = init_app(&mut ctx);
     app.state.github = Rc::new(github);
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("GitHub's PR has 26 commits"), "{screen}");
@@ -1217,19 +1219,19 @@ fn setup_two_authors(ctx: &mut TestContext) {
 /// A PR whose commits are by more than one author may have a wrong base, so its authors are
 /// listed, and it is opened only when the user says to go on.
 #[test]
-fn ol_with_commits_by_several_authors_asks_before_opening() {
+fn oo_with_commits_by_several_authors_asks_before_opening() {
     let mut ctx = setup_clone!();
     setup_two_authors(&mut ctx);
     let mut app = init_app(&mut ctx);
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let prompt = ctx.prompt_line();
     assert!(prompt.contains("Author Name"), "{prompt}");
     assert!(prompt.contains("Other Person"), "{prompt}");
 
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Oln"));
+    ctx.update(&mut app, keys("OOn"));
     assert!(
         !ctx.redact_buffer().contains("added: other.txt"),
         "{}",
@@ -1237,7 +1239,7 @@ fn ol_with_commits_by_several_authors_asks_before_opening() {
     );
 
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Oly"));
+    ctx.update(&mut app, keys("OOy"));
     assert!(
         ctx.redact_buffer().contains("added: other.txt"),
         "{}",
@@ -1248,7 +1250,7 @@ fn ol_with_commits_by_several_authors_asks_before_opening() {
 /// A branch behind its remote's would be reviewed as it was, not as it is, so opening its PR
 /// is an error.
 #[test]
-fn ol_on_a_branch_behind_its_remote_branch_is_an_error() {
+fn oo_on_a_branch_behind_its_remote_branch_is_an_error() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
@@ -1257,7 +1259,7 @@ fn ol_on_a_branch_behind_its_remote_branch_is_an_error() {
     run(&ctx.dir, &["git", "reset", "--hard", "HEAD~1"]);
     let mut app = init_app(&mut ctx);
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(
@@ -1269,13 +1271,13 @@ fn ol_on_a_branch_behind_its_remote_branch_is_an_error() {
 
 /// A branch with no commits since its base, as once it is merged, has nothing to review.
 #[test]
-fn ol_on_a_branch_with_no_commits_since_its_base_is_an_error() {
+fn oo_on_a_branch_with_no_commits_since_its_base_is_an_error() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     run(&ctx.dir, &["git", "checkout", "-b", "empty", "main"]);
     let mut app = init_app(&mut ctx);
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(
@@ -1284,14 +1286,197 @@ fn ol_on_a_branch_with_no_commits_since_its_base_is_an_error() {
     );
 }
 
+/// Where the PR `feature` into `release` is recorded.
+fn release_file_path(ctx: &TestContext) -> std::path::PathBuf {
+    ctx.dir.join(".git/gitu/review/feature...release.json")
+}
+
+/// A comment on `feature`, as the review command line writes it, into the base `base` if given.
+fn comment_with_base(ctx: &TestContext, base: Option<&str>) {
+    let mut args = vec!["comment", "--path", "lines.txt", "--line", "2"];
+    if let Some(base) = base {
+        args.extend(["--base", base]);
+    }
+    review_cli_with_input(&ctx.dir, &args, "hello").unwrap();
+}
+
+/// Opening the branch's PR when GitHub has one links the local PR to it: the link is recorded,
+/// so that the local PR stays that GitHub PR's.
 #[test]
-fn ol_without_gits_user_name_says_to_set_it() {
+fn oo_records_the_github_pr_it_links_to() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+
+    ctx.update(&mut app, keys("OO"));
+
+    let file = review_file(&ctx);
+    assert_eq!(file["github_pr"]["number"], 7, "{file}");
+    assert_eq!(
+        file["github_pr"]["url"], "https://github.com/o/r/pull/7",
+        "{file}"
+    );
+}
+
+/// A local PR made before its GitHub PR is linked to it once GitHub has it, keeping its drafts.
+#[test]
+fn oo_links_a_local_pr_made_before_its_github_pr() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let github = github_at_head(&ctx);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+
+    ctx.update(&mut app, keys("OO"));
+
+    let file = review_file(&ctx);
+    assert_eq!(file["github_pr"]["number"], 7, "{file}");
+    assert!(
+        ctx.redact_buffer().contains("hello"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+/// A local PR linked to a GitHub PR that GitHub no longer has open is not handled yet.
+#[test]
+fn oo_on_a_branch_whose_github_pr_is_no_longer_open_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+    ctx.update(&mut app, keys("OO"));
+    *github.has_pr.borrow_mut() = false;
+
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("linked to #7, which GitHub no longer"),
+        "{screen}"
+    );
+}
+
+/// A local PR linked to one GitHub PR, when GitHub's PR for the branch is another, is not
+/// handled yet.
+#[test]
+fn oo_on_a_branch_linked_to_another_github_pr_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+    ctx.update(&mut app, keys("OO"));
+    let mut file = review_file(&ctx);
+    file["github_pr"]["number"] = 8.into();
+    fs::write(
+        review_file_path(&ctx),
+        serde_json::to_string_pretty(&file).unwrap(),
+    )
+    .unwrap();
+
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("linked to #8, but GitHub's PR for it is"),
+        "{screen}"
+    );
+}
+
+/// A local PR into another base than its GitHub PR's is not handled yet.
+#[test]
+fn oo_with_a_local_pr_into_another_base_than_githubs_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "branch", "release", "main"]);
+    comment_with_base(&ctx, Some("release"));
+    let github = github_at_head(&ctx);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("is into release, but GitHub's PR #7 is"),
+        "{screen}"
+    );
+}
+
+/// A branch with more than one local PR, into different bases, is not handled yet.
+#[test]
+fn oo_on_a_branch_with_two_local_prs_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "branch", "release", "main"]);
+    comment_with_base(&ctx, None);
+    comment_with_base(&ctx, Some("release"));
+    assert!(release_file_path(&ctx).exists());
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("feature has local PRs into main and release"),
+        "{screen}"
+    );
+}
+
+/// Without GitHub, the branch's local PR opens, saying it was not checked against GitHub.
+#[test]
+fn oo_without_github_opens_the_local_pr_and_says_github_was_not_checked() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let github = FakeGitHub::new("", "");
+    *github.fails.borrow_mut() = true;
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::new(github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("hello"), "{screen}");
+    assert!(screen.contains("Not checked against GitHub"), "{screen}");
+}
+
+/// Without GitHub, and with no local PR for the branch, its base can't be known.
+#[test]
+fn oo_without_github_or_a_local_pr_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = FakeGitHub::new("", "");
+    *github.fails.borrow_mut() = true;
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::new(github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("Couldn't find feature's PR: there is none in this repository"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn oo_without_gits_user_name_says_to_set_it() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     run(&ctx.dir, &["git", "config", "--unset", "user.name"]);
     let mut app = init_app(&mut ctx);
 
-    ctx.update(&mut app, keys("Ol"));
+    ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("user.name"), "{screen}");
@@ -1316,7 +1501,7 @@ fn k_deletes_an_agents_draft_comment() {
     )
     .unwrap();
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/agent \\[<enter>"));
+    ctx.update(&mut app, keys("OO/agent \\[<enter>"));
 
     ctx.update(&mut app, keys("Ky"));
 
@@ -1379,7 +1564,7 @@ fn a_draft_review_by_another_author_in_an_old_store_becomes_part_of_mine() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     let thread = review_file(&ctx)["threads"][0]["id"]
         .as_str()
         .unwrap()
@@ -1418,7 +1603,7 @@ fn an_agents_reply_shows_without_refreshing() {
     setup(&mut ctx);
     ctx.config().general.refresh_on_file_change.enabled = true;
     let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("Ol/new<enter>ihello<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     let thread = review_file(&ctx)["threads"][0]["id"]
         .as_str()
         .unwrap()

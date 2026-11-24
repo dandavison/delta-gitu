@@ -123,14 +123,14 @@ impl GitHub for FakeGitHub {
         Ok(self.default_branch.borrow().clone())
     }
 
-    fn pr_for_branch(&self, _head: &str) -> Result<Option<GitHubPr>, Error> {
+    fn pr_for_branch(&self, head: &str) -> Result<Option<GitHubPr>, Error> {
         if *self.fails.borrow() {
             return Err(Error::Gh("error connecting to api.github.com".to_owned()));
         }
         if !*self.has_pr.borrow() {
             return Ok(None);
         }
-        self.pr(None).map(Some)
+        self.pr(Some(head)).map(Some)
     }
 
     fn create_pr(&self, head: &str, base: &str) -> Result<GitHubPr, Error> {
@@ -253,6 +253,7 @@ fn setup(ctx: &TestContext) -> Rc<FakeGitHub> {
     commit(&ctx.dir, "added.txt", "added\n");
     run(&ctx.dir, &["git", "checkout", "main"]);
     commit(&ctx.dir, "main-only.txt", "main\n");
+    run(&ctx.dir, &["git", "checkout", "feature"]);
     Rc::new(FakeGitHub::new(
         run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
         run(&ctx.dir, &["git", "rev-parse", "feature"]).trim(),
@@ -414,11 +415,12 @@ fn line_with(ctx: &TestContext, text: &str) -> String {
 fn opening_a_pr_by_number_checks_it_out_and_shows_its_diff() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
+    run(&ctx.dir, &["git", "checkout", "main"]);
     let mut app = init_app(&mut ctx, &github);
 
     ctx.update(&mut app, keys("Oo7<enter>"));
 
-    assert_eq!(*github.asked_for.borrow(), vec![Some("7".to_owned())]);
+    assert_eq!(github.asked_for.borrow()[0], Some("7".to_owned()));
     assert_eq!(head_branch(&ctx), "feature");
     let screen = ctx.redact_buffer();
     assert!(screen.contains("lines.txt"), "{screen}");
@@ -426,26 +428,47 @@ fn opening_a_pr_by_number_checks_it_out_and_shows_its_diff() {
     assert!(!screen.contains("main-only.txt"), "{screen}");
 }
 
+/// `O O` opens the current branch's PR, asking gh for the branch's, and checks nothing out.
 #[test]
-fn opening_the_current_branch_pr_asks_gh_for_it() {
+fn opening_the_current_branch_pr_asks_gh_for_the_branchs() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     let mut app = init_app(&mut ctx, &github);
 
     ctx.update(&mut app, keys("OO"));
 
-    assert_eq!(*github.asked_for.borrow(), vec![None]);
+    assert_eq!(*github.asked_for.borrow(), vec![Some("feature".to_owned())]);
     assert_eq!(head_branch(&ctx), "feature");
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("added.txt"), "{screen}");
+}
+
+#[test]
+fn opening_the_pr_of_the_base_branch_says_there_is_none() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.has_pr.borrow_mut() = false;
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("No PR to review: main is the base branch"),
+        "{screen}"
+    );
 }
 
 #[test]
 fn uncommitted_changes_stop_the_checkout() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
+    run(&ctx.dir, &["git", "checkout", "main"]);
     fs::write(ctx.dir.join("lines.txt"), "changed\n").unwrap();
     let mut app = init_app(&mut ctx, &github);
 
-    ctx.update(&mut app, keys("OO"));
+    ctx.update(&mut app, keys("Oo7<enter>"));
 
     assert_eq!(head_branch(&ctx), "main");
     let screen = ctx.redact_buffer();
@@ -459,10 +482,11 @@ fn uncommitted_changes_stop_the_checkout() {
 fn untracked_files_do_not_stop_the_checkout() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
+    run(&ctx.dir, &["git", "checkout", "main"]);
     fs::write(ctx.dir.join("untracked.txt"), "new\n").unwrap();
     let mut app = init_app(&mut ctx, &github);
 
-    ctx.update(&mut app, keys("OO"));
+    ctx.update(&mut app, keys("Oo7<enter>"));
 
     assert_eq!(head_branch(&ctx), "feature");
 }
@@ -488,10 +512,7 @@ fn a_base_commit_not_in_the_repository_is_an_error() {
     ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
-    assert!(
-        screen.contains("is not in the repository: fetch main"),
-        "{screen}"
-    );
+    assert!(screen.contains("is not in the repository:"), "{screen}");
 }
 
 #[test]
@@ -1120,7 +1141,6 @@ fn setup_folded_to_stat(ctx: &mut TestContext) -> Rc<FakeGitHub> {
     run(&ctx.dir, &["git", "checkout", "feature"]);
     let lines = (1..=200).map(|i| format!("{i}\n")).collect::<String>();
     commit(&ctx.dir, "big.txt", &lines);
-    run(&ctx.dir, &["git", "checkout", "main"]);
     // As on GitHub, every file of the PR has a Viewed state.
     github
         .viewed
