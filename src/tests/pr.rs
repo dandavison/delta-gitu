@@ -956,6 +956,34 @@ fn comments_are_drawn_in_the_comment_styles() {
     assert_eq!(cell(&ctx, "Because", 'B').fg, Color::Red);
 }
 
+/// A comment in a submitted review, which everyone can see, is drawn in `comment-submitted-style`
+/// over `comment-style`; a comment in a pending review, which only its author sees, is not.
+#[test]
+fn comments_in_a_submitted_review_are_drawn_in_the_submitted_style() {
+    let mut ctx = setup_clone!();
+    with_options(
+        &mut ctx,
+        &[
+            ("comment-style", "red"),
+            ("comment-submitted-style", "green"),
+        ],
+    );
+    let github = setup(&ctx);
+    let mut pending = thread("t2", None, false, &[("me", "Pending words")]);
+    pending.comments[0].draft = true;
+    *github.threads.borrow_mut() = vec![
+        thread("t1", None, false, &[("alice", "Submitted words")]),
+        pending,
+    ];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    use crate::style::Color;
+    assert_eq!(cell(&ctx, "Submitted words", 'S').fg, Color::Green);
+    assert_eq!(cell(&ctx, "Pending words", 'P').fg, Color::Red);
+}
+
 /// The comment options are delta's, so a delta feature can set them, and they
 /// change as the features in force do.
 #[test]

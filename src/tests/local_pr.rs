@@ -829,7 +829,7 @@ fn review_post_pushes_the_branch_and_creates_a_draft_pr_when_there_is_none() {
     let github = github_at_head(&ctx);
     *github.has_pr.borrow_mut() = false;
 
-    review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github)).unwrap();
+    review_cli_with_github(&ctx.dir, &["post", "--create-pr"], "", Rc::clone(&github)).unwrap();
 
     assert_eq!(
         *github.created.borrow(),
@@ -861,6 +861,47 @@ fn op_says_so_when_github_does_not_add_a_thread_and_keeps_it_a_draft() {
     assert_eq!(file["threads"][0]["comments"][0]["body"], "hello", "{file}");
     let reviews = file["reviews"].as_array().unwrap();
     assert!(reviews.iter().any(|r| r["state"] == "draft"), "{file}");
+}
+
+/// Creating a PR on GitHub makes the branch visible to everyone who can see the repository, so
+/// posting from a branch with no PR creates one only when told to.
+#[test]
+fn review_post_on_a_branch_with_no_github_pr_needs_create_pr() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let github = github_at_head(&ctx);
+    *github.has_pr.borrow_mut() = false;
+
+    let result = review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github));
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("--create-pr"), "{error}");
+    assert!(github.created.borrow().is_empty());
+    assert!(github.posted.borrow().is_empty());
+}
+
+/// `O p` on a branch with no GitHub PR says it would create one, which everyone who can see the
+/// repository sees, and does nothing unless told to.
+#[test]
+fn op_on_a_branch_with_no_github_pr_asks_before_creating_one() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let github = github_at_head(&ctx);
+    *github.has_pr.borrow_mut() = false;
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+
+    ctx.update(&mut app, keys("Op"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("create a draft PR"), "{screen}");
+
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+    ctx.update(&mut app, keys("Opn"));
+    assert!(github.created.borrow().is_empty());
+    assert!(github.posted.borrow().is_empty());
 }
 
 #[test]

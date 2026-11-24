@@ -337,3 +337,51 @@ fn a_files_viewed_checkbox_is_set_on_github() {
     github.set_viewed(&github_pr, "lines.txt", false).unwrap();
     assert_eq!(viewed(&github_pr), crate::review::ViewedState::Unviewed);
 }
+
+/// Posting from a branch with no PR on GitHub creates one only when told to: creating a PR makes
+/// the branch visible to everyone who can see the repository.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn posting_from_a_branch_with_no_pr_creates_one_only_with_create_pr() {
+    let pr = RealPr::new(stdext::function_name!());
+    run(
+        &pr.dir,
+        &["git", "checkout", "-q", "-b", &format!("{}-2", pr.head)],
+    );
+    commit(&pr.dir, "more.txt", "more\n");
+    run(
+        &pr.dir,
+        &[
+            "git",
+            "branch",
+            "--set-upstream-to",
+            &format!("origin/{}", pr.base),
+        ],
+    );
+    let head = format!("{}-2", pr.head);
+    let base = ["--base", pr.base.as_str()];
+    pr.review(
+        &[&["comment", "--path", "more.txt", "--line", "1"][..], &base].concat(),
+        "on more",
+    )
+    .unwrap();
+
+    let error = pr
+        .review(&[&["post"][..], &base].concat(), "")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("--create-pr"), "{error}");
+    let found = gh(
+        &pr.dir,
+        &["pr", "list", "--head", &head, "--json", "number"],
+    );
+    assert_eq!(found.trim(), "[]");
+
+    pr.review(&[&["post", "--create-pr"][..], &base].concat(), "")
+        .unwrap();
+    let number = gh(
+        &pr.dir,
+        &["pr", "view", &head, "--json", "number", "--jq", ".number"],
+    );
+    gh(&pr.dir, &["pr", "close", number.trim(), "--delete-branch"]);
+}
