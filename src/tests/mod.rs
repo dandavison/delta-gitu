@@ -45,6 +45,7 @@ mod pull;
 mod push;
 mod quit;
 mod read_only;
+mod real_github;
 mod rebase;
 mod remote;
 mod reset;

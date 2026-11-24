@@ -1,0 +1,4 @@
+[alias]
+# Tests against GitHub itself (see src/tests/real_github.rs), which `cargo test` ignores, one at
+# a time, as GitHub limits how fast content is created.
+test-github = "test -- tests::real_github:: --ignored --test-threads=1"
