@@ -233,6 +233,7 @@ impl GitHub for FakeGitHub {
             deletable: true,
             submitted: false,
             local_only: false,
+            reactions: vec![],
             agent: None,
         });
         drop(threads);
@@ -448,6 +449,7 @@ pub(super) fn thread(
                 deletable: false,
                 submitted: true,
                 local_only: false,
+                reactions: vec![],
                 agent: None,
             })
             .collect(),
@@ -1542,6 +1544,51 @@ fn a_markdown_link_in_a_comment_shows_its_text_linked_to_its_url() {
     let s = cell(&ctx, "See the check", 'S');
     assert_eq!(s.link, None);
     assert!(!s.modifier.contains(Modifier::UNDERLINED));
+}
+
+/// Under a comment are its reactions: each emoji, with who reacted, each linked to their page,
+/// and how many more reacted than GitHub gave.
+#[test]
+fn reactions_show_who_reacted_each_linked_to_their_page() {
+    use crate::review::{Reaction, Reactor};
+    let reactor = |login: &str| Reactor {
+        login: login.to_owned(),
+        url: format!("https://github.com/{login}"),
+    };
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut t = thread("t1", Some((Side::New, 2)), false, &[("alice", "Why new?")]);
+    t.comments[0].reactions = vec![
+        Reaction {
+            emoji: "👍".to_owned(),
+            people: vec![reactor("bob"), reactor("carol")],
+            count: 2,
+        },
+        Reaction {
+            emoji: "🎉".to_owned(),
+            people: vec![reactor("dave")],
+            count: 12,
+        },
+    ];
+    *github.threads.borrow_mut() = vec![t];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("👍 bob, carol  🎉 dave and 11 more"),
+        "{screen}"
+    );
+    assert_eq!(
+        cell(&ctx, "👍 bob", 'b').link.as_deref(),
+        Some("https://github.com/bob")
+    );
+    assert_eq!(
+        cell(&ctx, "👍 bob", 'v').link.as_deref(),
+        Some("https://github.com/dave")
+    );
+    assert_eq!(cell(&ctx, "👍 bob", 'm').link, None, "more");
 }
 
 /// A link's text wraps as other words do, each row of it linked, however long its URL.

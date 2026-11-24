@@ -624,6 +624,37 @@ fn editing_my_comment_changed_on_github_since_the_fetch_is_refused() {
     assert_eq!(pr.pending_comments(), ["on three, edited on GitHub"]);
 }
 
+/// A reaction to a comment on GitHub is fetched with who reacted.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_reaction_on_github_is_fetched_with_who_reacted() {
+    let pr = RealPr::new(stdext::function_name!());
+    let thread = pr.submitted_thread("line: 4, side: RIGHT", "on four");
+    let comment = pr.graphql(
+        "query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { comments(first: 1) { nodes { id } } } } }",
+        &[("id", &thread)],
+        &[],
+    )["data"]["node"]["comments"]["nodes"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    pr.graphql(
+        "mutation($id: ID!) { addReaction(input: {subjectId: $id, content: HOORAY}) { reaction { content } } }",
+        &[("id", &comment)],
+        &[],
+    );
+    let me = gh(&pr.dir, &["api", "user", "--jq", ".login"])
+        .trim()
+        .to_owned();
+
+    pr.review(&["fetch"], "").unwrap();
+
+    assert_eq!(
+        pr.only_local_thread()["comments"][0]["reactions"],
+        serde_json::json!([{"emoji": "🎉", "count": 1, "people": [me]}])
+    );
+}
+
 /// A file's Viewed checkbox is ticked and unticked on GitHub.
 #[test]
 #[ignore = "against GitHub itself: run with cargo test-github"]

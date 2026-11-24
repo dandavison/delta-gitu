@@ -165,6 +165,8 @@ pub(crate) struct Comment {
     pub draft: bool,
     /// Whether the comment is local-only: in no review, so that sync never posts it.
     pub local_only: bool,
+    /// The reactions to it on GitHub, one for each emoji.
+    pub reactions: Vec<Reaction>,
     /// Whether the comment is in a submitted review, which everyone who can see the PR sees.
     pub submitted: bool,
     /// Whether `i` on it edits it, rather than replying: the user's own comment, local (in the
@@ -174,6 +176,23 @@ pub(crate) struct Comment {
     /// Whether the user can delete it: any local comment, in the draft review or local-only, or
     /// their own comment in a review on GitHub, when the PR's backend can change that.
     pub deletable: bool,
+}
+
+/// The people who reacted to a comment on GitHub with one emoji.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Reaction {
+    pub emoji: String,
+    /// Who reacted, as many as GitHub gave.
+    pub people: Vec<Reactor>,
+    /// How many reacted, which may be more than `people` has.
+    pub count: usize,
+}
+
+/// Someone who reacted to a comment, and their page on GitHub.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Reactor {
+    pub login: String,
+    pub url: String,
 }
 
 /// The user's pending review on GitHub: only they can see its comments until they submit it.

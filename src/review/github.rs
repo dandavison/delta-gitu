@@ -787,6 +787,7 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
                         deletable: comment.state.as_deref() == Some("PENDING"),
                         submitted: comment.state.as_deref() != Some("PENDING"),
                         local_only: false,
+                        reactions: vec![],
                         agent: None,
                     })
                     .collect(),

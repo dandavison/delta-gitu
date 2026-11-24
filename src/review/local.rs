@@ -1873,6 +1873,7 @@ impl Backend for LocalBackend {
                         created_at: comment.created_at,
                         draft: draft(&comment.review),
                         local_only: comment.review.is_none(),
+                        reactions: vec![],
                         // In the TUI the user edits their own comments, and replies to an
                         // agent's; they can delete any local comment.
                         editable: (local(&comment.review) && comment.agent.is_none())

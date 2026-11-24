@@ -203,6 +203,7 @@ impl GitHub for User {
                             // Shown to the user as a draft only while in their pending review.
                             submitted: !*visible.get(id.as_str())?,
                             local_only: false,
+                            reactions: vec![],
                             agent: None,
                         })
                     })
