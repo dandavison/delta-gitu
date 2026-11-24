@@ -62,7 +62,12 @@ impl OpTrait for FoldOrBack {
             if menu != app.base_menu() {
                 return Ok(());
             }
-            if !app.screen_mut().fold_unfolded_here()? && app.state.screens.len() > 1 {
+            // A PR's screen is not left by going back, which would lose where the user is in
+            // it: q closes it.
+            if !app.screen_mut().fold_unfolded_here()?
+                && app.state.screens.len() > 1
+                && app.screen().pr.is_none()
+            {
                 app.state.screens.pop();
                 app.screen_mut().come_back()?;
             }
@@ -72,7 +77,8 @@ impl OpTrait for FoldOrBack {
     }
 
     fn display(&self, state: &State) -> String {
-        if state.screens.last().unwrap().has_unfolded_here() {
+        let screen = state.screens.last().unwrap();
+        if screen.has_unfolded_here() || screen.pr.is_some() {
             "Fold".into()
         } else {
             "Back".into()
