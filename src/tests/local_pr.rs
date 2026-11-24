@@ -2130,6 +2130,31 @@ fn the_pr_summary_is_drawn_in_its_style_and_followed_by_a_blank_line() {
     );
 }
 
+/// The back arrow stops at a PR's screen: it folds there, but doesn't close the PR, which q does.
+/// From a screen opened on top of it, it goes back to the PR.
+#[test]
+fn left_stops_at_the_pr_screen() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO"));
+    let screens = app.state.screens.len();
+
+    ctx.update(&mut app, keys("<left><left><left><left>"));
+    assert_eq!(app.state.screens.len(), screens);
+    assert!(
+        ctx.redact_buffer().contains("added: added.txt"),
+        "{}",
+        ctx.redact_buffer()
+    );
+
+    ctx.update(&mut app, keys("ll<left><left>"));
+    assert_eq!(app.state.screens.len(), screens);
+
+    ctx.update(&mut app, keys("q"));
+    assert_eq!(app.state.screens.len(), screens - 1);
+}
+
 /// On the PR's screen, the log is the PR's: its commits, as the user's log arguments show them,
 /// on top of the PR's screen.
 #[test]
