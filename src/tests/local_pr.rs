@@ -1160,10 +1160,10 @@ fn oo_with_main_and_origin_main_diverged_is_an_error() {
     assert!(!screen.contains("added: feature.txt"), "{screen}");
 }
 
-/// When the branch has a PR on GitHub, the base must be where GitHub has it, so that the local
-/// PR's diff is the GitHub PR's.
+/// When the branch has a PR on GitHub, the local PR must branch from its base where GitHub's
+/// does, so that its diff is the GitHub PR's.
 #[test]
-fn oo_with_a_base_not_where_github_has_it_is_an_error() {
+fn oo_branched_from_elsewhere_than_on_github_is_an_error() {
     let mut ctx = setup_clone!();
     setup_stale_main(&mut ctx);
     let stale = run(&ctx.dir, &["git", "rev-parse", "main"]);
@@ -1174,8 +1174,53 @@ fn oo_with_a_base_not_where_github_has_it_is_an_error() {
     ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
-    assert!(screen.contains("GitHub's main is at"), "{screen}");
+    assert!(screen.contains("on GitHub, so its diff"), "{screen}");
     assert!(!screen.contains("added: feature.txt"), "{screen}");
+}
+
+/// GitHub's base for a PR is where the base branch was when the PR was last updated, which the
+/// base branch has moved on from since: the PR still branched from where GitHub has it, and opens.
+#[test]
+fn oo_when_main_has_moved_on_since_the_pr_was_updated_opens_it() {
+    let mut ctx = setup_clone!();
+    setup_stale_main(&mut ctx);
+    let githubs_base = run(&ctx.dir, &["git", "rev-parse", "origin/main"]);
+    let feature = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    run(&ctx.dir, &["git", "reset", "--hard", "origin/main"]);
+    commit(&ctx.dir, "later.txt", "later\n");
+    run(&ctx.dir, &["git", "push", "origin", "main"]);
+    run(&ctx.dir, &["git", "checkout", "feature"]);
+    let github = FakeGitHub::new(githubs_base.trim(), feature.trim());
+    *github.commits.borrow_mut() = 1;
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::new(github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("added: feature.txt"), "{screen}");
+    assert!(!screen.contains("later.txt"), "{screen}");
+}
+
+/// A base that doesn't have GitHub's base commit is behind GitHub's, and must be fetched.
+#[test]
+fn oo_with_a_base_behind_githubs_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "checkout", "-b", "githubs-main", "main"]);
+    commit(&ctx.dir, "newer.txt", "newer\n");
+    let githubs_base = run(&ctx.dir, &["git", "rev-parse", "githubs-main"]);
+    run(&ctx.dir, &["git", "checkout", "feature"]);
+    let feature = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::new(FakeGitHub::new(githubs_base.trim(), feature.trim()));
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("which main doesn't have"), "{screen}");
+    assert!(!screen.contains("added: added.txt"), "{screen}");
 }
 
 /// When the branch is where GitHub has the PR's head, the local PR has the GitHub PR's commits,
