@@ -1516,6 +1516,79 @@ fn a_comments_time_links_to_it_on_github() {
     assert_eq!(cell(&ctx, ALICE, 'a').link, None, "the author");
 }
 
+/// A markdown link in a comment shows its text, underlined and linked to its URL, which isn't
+/// shown.
+#[test]
+fn a_markdown_link_in_a_comment_shows_its_text_linked_to_its_url() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "See [the check](https://example.com/check) here.")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("See the check here."), "{screen}");
+    assert!(!screen.contains("example.com"), "{screen}");
+    use crate::style::Modifier;
+    let k = cell(&ctx, "See the check", 'k');
+    assert_eq!(k.link.as_deref(), Some("https://example.com/check"));
+    assert!(k.modifier.contains(Modifier::UNDERLINED));
+    let s = cell(&ctx, "See the check", 'S');
+    assert_eq!(s.link, None);
+    assert!(!s.modifier.contains(Modifier::UNDERLINED));
+}
+
+/// A link's text wraps as other words do, each row of it linked, however long its URL.
+#[test]
+fn a_long_markdown_link_wraps_by_its_text() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let url = format!("https://example.com/{}", "a".repeat(300));
+    let body = format!("[alpha {}omega]({url})", "word ".repeat(30));
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", &body)],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(!screen.contains("aaaaaaaa"), "{screen}");
+    assert_eq!(cell(&ctx, "alpha", 'p').link, Some(url.clone()));
+    assert_eq!(cell(&ctx, "omega", 'g').link, Some(url));
+}
+
+/// A link in code is code: it is shown as written.
+#[test]
+fn a_markdown_link_in_code_is_shown_as_written() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Write `[text](https://example.com)` for a link")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("Write `[text](https://example.com)` for a link"),
+        "{screen}"
+    );
+}
+
 /// On a file's line of the diffstat the count is right-aligned in the names'
 /// column, so the counts end in a column against the `|`.
 #[test]
