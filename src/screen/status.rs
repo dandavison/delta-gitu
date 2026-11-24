@@ -25,6 +25,7 @@ enum SectionID {
     Untracked,
     Stashes,
     RecentCommits,
+    Pr,
     BranchStatus,
     UnstagedChanges,
     StagedChanges,
@@ -40,6 +41,7 @@ impl Hash for SectionID {
             SectionID::Untracked => "untracked",
             SectionID::Stashes => "stashes",
             SectionID::RecentCommits => "recent_commits",
+            SectionID::Pr => "pr",
             SectionID::BranchStatus => "branch_status",
             SectionID::UnstagedChanges => "unstaged_changes",
             SectionID::StagedChanges => "staged_changes",
@@ -101,6 +103,7 @@ pub(crate) fn create(
             } else {
                 branch_status_items(&status.branch_status, &config)?.into_iter()
             }
+            .chain(pr_items(&repo, status.branch_status.local.as_deref()))
             .chain(if untracked.is_empty() {
                 vec![]
             } else {
@@ -195,6 +198,71 @@ fn untracked_list(files: &[&String]) -> Vec<Item> {
             ..Default::default()
         })
         .collect::<Vec<_>>()
+}
+
+/// The section for the branch `branch`'s local PR, if it has one: what it is, with its commits
+/// under it. What can't be read of it is shown as an error.
+fn pr_items(repo: &Repository, branch: Option<&str>) -> Vec<Item> {
+    let Some(branch) = branch else {
+        return vec![];
+    };
+    let summary = match crate::review::local::summary(repo, branch) {
+        Ok(None) => return vec![],
+        Ok(Some(summary)) => summary,
+        Err(e) => {
+            let error = format!("PR: {e}");
+            return vec![
+                items::blank_line(),
+                Item {
+                    id: hash(&error),
+                    depth: 0,
+                    data: ItemData::Error(error),
+                    ..Default::default()
+                },
+            ];
+        }
+    };
+    let count = |n: usize, noun: &str| match n {
+        1 => format!("1 {noun}"),
+        n => format!("{n} {noun}s"),
+    };
+    let mut parts = vec![format!("PR into {}", summary.base)];
+    parts.push(match &summary.link {
+        Some(link) => format!("#{}", link.number),
+        None => "not on GitHub".to_owned(),
+    });
+    parts.push(count(summary.commits, "commit"));
+    if summary.drafts > 0 {
+        parts.push(count(summary.drafts, "draft comment"));
+    }
+    if let Some(pending) = summary.pending {
+        let comments = match pending.comments {
+            0 => "no comments".to_owned(),
+            n => count(n, "comment"),
+        };
+        parts.push(format!("pending review on GitHub with {comments}"));
+    }
+    let commits = items::log_between(repo, summary.head, summary.merge_base).unwrap_or_else(|e| {
+        let error = e.to_string();
+        vec![Item {
+            id: hash(&error),
+            depth: 1,
+            data: ItemData::Error(error),
+            ..Default::default()
+        }]
+    });
+    [
+        items::blank_line(),
+        Item {
+            id: hash(SectionID::Pr),
+            depth: 0,
+            data: ItemData::Header(SectionHeader::Pr(parts.join(" · "))),
+            ..Default::default()
+        },
+    ]
+    .into_iter()
+    .chain(commits)
+    .collect()
 }
 
 fn branch_status_items(status: &BranchStatus, config: &Config) -> Res<Vec<Item>> {

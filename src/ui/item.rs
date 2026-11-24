@@ -198,6 +198,7 @@ pub(crate) fn layout_item<'a>(
                 SectionHeader::CherryPick(head) => format!("Cherry-picking {head}").into(),
                 SectionHeader::Stashes => "Stashes".into(),
                 SectionHeader::RecentCommits => "Recent commits".into(),
+                SectionHeader::Pr(summary) => summary.clone().into(),
                 SectionHeader::StashRef(stash_ref) => stash_ref.as_str().into(),
                 SectionHeader::StagedChanges(count) => format!("Staged changes ({count})").into(),
                 SectionHeader::UnstagedChanges(count) => {

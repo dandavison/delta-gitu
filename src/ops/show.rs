@@ -63,6 +63,9 @@ impl OpTrait for ShowOrUnfold {
 
 fn show_screen(target: &ItemData) -> Option<Action> {
     match target {
+        ItemData::Header(crate::item_data::SectionHeader::Pr(_)) => Some(Rc::new(|app, term| {
+            crate::ops::pr::open_current(app, term, None)
+        })),
         ItemData::Commit { oid, .. }
         | ItemData::Reference {
             kind: Ref::Tag(oid),

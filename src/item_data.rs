@@ -237,6 +237,8 @@ pub(crate) enum SectionHeader {
     CherryPick(String),
     Stashes,
     RecentCommits,
+    /// The current branch's PR, as what the status view says of it.
+    Pr(String),
     StashRef(String),
     StagedChanges(usize),
     UnstagedChanges(usize),

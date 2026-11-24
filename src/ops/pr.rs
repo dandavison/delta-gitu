@@ -77,7 +77,7 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
 
 /// Open the current branch's PR, which must be linked to the GitHub PR `expected` if given: its
 /// reviews are fetched from GitHub if it is linked, and a PR not checked against GitHub says so.
-fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>) -> Res<()> {
+pub(crate) fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>) -> Res<()> {
     let local =
         LocalBackend::for_current_branch(Rc::clone(&app.state.repo), Rc::clone(&app.state.github))?;
     if let Some(expected) = expected

@@ -116,11 +116,15 @@ pub(crate) fn with_threads(
     if pr.backend.head_mismatch(repo) {
         out.push(warning_row());
     }
-    if let Some(pending) = *pr.pending_review.borrow() {
-        let (text, style) = pending_review_row(pending, options, error_style);
+    if let Some(pending) = *pr.pending_review.borrow()
+        && !pending.started_by_draft
+    {
         out.push(Item {
             unselectable: true,
-            rendered: Some(Rc::new(vec![(text, style)])),
+            rendered: Some(Rc::new(vec![(
+                blocking_pending_review(pending),
+                error_style,
+            )])),
             ..Default::default()
         });
     }
@@ -174,35 +178,18 @@ pub(crate) fn with_threads(
     out
 }
 
-/// What to say of the user's pending review on GitHub, which has no rows of its own when it has
-/// no comments, and in what style: an error's when it stops `O p`.
-fn pending_review_row(
-    pending: review::PendingReview,
-    options: &CommentOptions,
-    error_style: Style,
-) -> (String, Style) {
+/// What to say of the user's pending review on GitHub that the draft review didn't start, which
+/// stops `O p`, and which has no rows of its own when it has no comments.
+fn blocking_pending_review(pending: review::PendingReview) -> String {
     let comments = match pending.comments {
         0 => "no comments".to_owned(),
         1 => "1 comment".to_owned(),
         n => format!("{n} comments"),
     };
-    if pending.started_by_draft {
-        (
-            format!(
-                "You have a pending review on GitHub, with {comments}, which only you can see \
-                 until you submit it there. O p adds to it"
-            ),
-            options.count,
-        )
-    } else {
-        (
-            format!(
-                "You have a pending review on GitHub, with {comments}. O p won't post until you \
-                 submit or delete it on GitHub"
-            ),
-            error_style,
-        )
-    }
+    format!(
+        "You have a pending review on GitHub, with {comments}. O p won't post until you submit \
+         or delete it on GitHub"
+    )
 }
 
 /// What to say of the threads on files neither in the PR on GitHub, `pr_files`, nor among the

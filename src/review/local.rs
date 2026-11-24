@@ -1184,6 +1184,99 @@ fn find_pr(
     }
 }
 
+/// The user's pending review on GitHub, as the copy of it in `file` has it.
+fn pending_review(file: &PrFile) -> Option<PendingReview> {
+    let pending = file
+        .reviews
+        .iter()
+        .find(|r| r.state == ReviewState::Pending && r.mine)?;
+    let comments = file
+        .threads
+        .iter()
+        .flat_map(|t| &t.comments)
+        .filter(|c| c.review == pending.id)
+        .count();
+    let started_by_draft = file
+        .reviews
+        .iter()
+        .any(|r| r.state == ReviewState::Draft && r.github.is_some() && r.github == pending.github);
+    Some(PendingReview {
+        comments,
+        started_by_draft,
+    })
+}
+
+/// A local PR, as the status view shows it.
+pub(crate) struct PrSummary {
+    /// The base it is diffed against, as git shows a branch.
+    pub base: String,
+    pub link: Option<GitHubLink>,
+    pub commits: usize,
+    pub drafts: usize,
+    pub pending: Option<PendingReview>,
+    pub head: Oid,
+    /// Where the PR branched from its base: its commits are the head's since.
+    pub merge_base: Oid,
+}
+
+/// The branch `head`'s local PR, as recorded in this repository, without asking GitHub; `None`
+/// if it has none. A branch with more than one is an error, as not yet handled.
+pub(crate) fn summary(repo: &Repository, head: &str) -> Res<Option<PrSummary>> {
+    let base = match Store::bases(repo.commondir(), head)?.as_slice() {
+        [] => return Ok(None),
+        [base] => base.clone(),
+        [many @ .., last] => {
+            return Err(not_handled(&format!(
+                "{head} has local PRs into {} and {last}",
+                many.join(", ")
+            )));
+        }
+    };
+    let reviewer = repo
+        .config()
+        .and_then(|config| config.get_string("user.name"))
+        .map_err(|_| {
+            Error::LocalPr(
+                "Set git's user.name: your comments in a local PR are by that name".to_owned(),
+            )
+        })?;
+    let file = Store::new(repo.commondir(), head, &base, &reviewer).read()?;
+    let base_ref = resolve_base(repo, &base)?;
+    let missing = |name: &str| Error::LocalPr(format!("Couldn't find {name}"));
+    let base_commit = ref_commit(repo, &base_ref)?.ok_or_else(|| missing(&base_ref))?;
+    let head_ref = format!("refs/heads/{head}");
+    let head_commit = ref_commit(repo, &head_ref)?.ok_or_else(|| missing(&head_ref))?;
+    let error = |e: git2::Error| Error::LocalPr(format!("Couldn't read {head}'s PR: {e}"));
+    let merge_base = repo.merge_base(base_commit, head_commit).map_err(error)?;
+    let mut walk = repo.revwalk().map_err(error)?;
+    walk.push(head_commit).map_err(error)?;
+    walk.hide(merge_base).map_err(error)?;
+    let commits = walk
+        .try_fold(0, |n, oid| oid.map(|_| n + 1))
+        .map_err(error)?;
+    let drafts = file
+        .reviews
+        .iter()
+        .filter(|r| r.state == ReviewState::Draft)
+        .map(|draft| {
+            file.threads
+                .iter()
+                .flat_map(|t| &t.comments)
+                .filter(|c| c.review == draft.id)
+                .count()
+        })
+        .sum();
+    Ok(Some(PrSummary {
+        base: short_ref(&base_ref).to_owned(),
+        pending: pending_review(&file),
+        link: file.github_pr,
+        commits,
+        drafts,
+        head: head_commit,
+        merge_base,
+    }))
+}
+
 /// An error for a case gitu doesn't handle yet.
 fn not_handled(case: &str) -> Error {
     Error::LocalPr(format!("Not handled yet: {case}"))
@@ -1288,27 +1381,7 @@ impl Backend for LocalBackend {
     }
 
     fn pending_review(&self) -> Res<Option<PendingReview>> {
-        let file = self.store.read()?;
-        let Some(pending) = file
-            .reviews
-            .iter()
-            .find(|r| r.state == ReviewState::Pending && r.mine)
-        else {
-            return Ok(None);
-        };
-        let comments = file
-            .threads
-            .iter()
-            .flat_map(|t| &t.comments)
-            .filter(|c| c.review == pending.id)
-            .count();
-        let started_by_draft = file.reviews.iter().any(|r| {
-            r.state == ReviewState::Draft && r.github.is_some() && r.github == pending.github
-        });
-        Ok(Some(PendingReview {
-            comments,
-            started_by_draft,
-        }))
+        Ok(pending_review(&self.store.read()?))
     }
 
     fn viewed(&self) -> Res<HashMap<String, ViewedState>> {

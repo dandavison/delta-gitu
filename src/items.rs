@@ -849,7 +849,23 @@ pub(crate) fn log(
     } else if revwalk.push_head().is_err() {
         return Ok(vec![]);
     }
+    revwalk_items(repo, revwalk, limit, msg_regex)
+}
 
+/// The commits of `head` that `since` doesn't have, as [`log`] shows them.
+pub(crate) fn log_between(repo: &Repository, head: Oid, since: Oid) -> Res<Vec<Item>> {
+    let mut revwalk = repo.revwalk().map_err(Error::ReadLog)?;
+    revwalk.push(head).map_err(Error::ReadLog)?;
+    revwalk.hide(since).map_err(Error::ReadLog)?;
+    revwalk_items(repo, revwalk, usize::MAX, None)
+}
+
+fn revwalk_items(
+    repo: &Repository,
+    revwalk: git2::Revwalk,
+    limit: usize,
+    msg_regex: Option<Regex>,
+) -> Res<Vec<Item>> {
     let references = commit_refs(repo)?;
 
     let items: Vec<Item> = revwalk
