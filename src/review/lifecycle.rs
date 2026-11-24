@@ -824,7 +824,6 @@ mod tests {
     fn without_keeping_first_comments_a_thread_loses_its_first_comment() {
         let rules = Rules {
             keep_first_comment: false,
-            ..Rules::default()
         };
         let (_, error) = violation(rules, 5, 3).expect("a violation");
         assert!(error.contains("lost its first comment"), "{error}");

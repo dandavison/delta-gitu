@@ -144,9 +144,6 @@ pub(crate) struct Comment {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PendingReview {
     pub comments: usize,
-    /// Whether posting the draft review started it, so that posting again adds to it. Posting
-    /// refuses while the user has a pending review it didn't start.
-    pub started_by_draft: bool,
 }
 
 pub(crate) struct OpenPr {
@@ -298,12 +295,19 @@ pub(crate) mod cli {
         out: &mut impl Write,
     ) -> Res<()> {
         match command {
-            ReviewCommand::Post {
+            ReviewCommand::Sync {
                 create_pr,
                 head,
                 base,
             } => {
                 let pr = pr_by(repo, Rc::clone(&github), head, base, &None)?;
+                // Only fetching, there is nothing to push.
+                if pr.to_post()?.is_empty() {
+                    let synced = super::post::sync(&pr, github, *create_pr)?;
+                    return writeln!(out, "{}", synced.summary()).map_err(|e| {
+                        Error::LocalPr(format!("Couldn't print what was synced: {e}"))
+                    });
+                }
                 if !create_pr && github.pr_for_branch(pr.head())?.is_none() {
                     return Err(Error::Gh(format!(
                         "Couldn't post: {} has no GitHub PR. Give --create-pr to push it and \
@@ -321,9 +325,9 @@ pub(crate) mod cli {
                         String::from_utf8_lossy(&output.stderr).trim_end()
                     )));
                 }
-                let posted = super::post::post(&pr, github, *create_pr)?;
-                writeln!(out, "{}", posted.summary())
-                    .map_err(|e| Error::LocalPr(format!("Couldn't print what was posted: {e}")))
+                let synced = super::post::sync(&pr, github, *create_pr)?;
+                writeln!(out, "{}", synced.summary())
+                    .map_err(|e| Error::LocalPr(format!("Couldn't print what was synced: {e}")))
             }
             ReviewCommand::Comment {
                 path,

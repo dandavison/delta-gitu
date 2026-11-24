@@ -168,9 +168,10 @@ pub enum ReviewCommand {
         #[clap(long)]
         base: Option<String>,
     },
-    /// Push the PR's branch, create a draft PR on GitHub if it has none, and add every draft
-    /// comment to your pending review there. A thread whose line can't be found stays a draft.
-    Post {
+    /// Sync the PR with GitHub: push its branch, add every draft comment to your pending review
+    /// there, and copy GitHub's reviews into the local PR. With no draft comments, it only copies
+    /// GitHub's reviews.
+    Sync {
         /// Create a draft PR on GitHub if the branch has none. A PR makes the branch visible to
         /// everyone who can see the repository.
         #[clap(long)]

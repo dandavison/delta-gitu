@@ -22,24 +22,26 @@ opens the current branch's PR with `O O`.
   - **pending**: the person's draft review on GitHub, which only they can see.
   - **submitted**: on GitHub, for everyone to see. Later it may be **dismissed**.
 - **Thread**: a first comment on a line of the diff, and the replies to it.
-- **Post**: the person sends the draft review to GitHub, your comments included, where it
-  becomes their pending review.
-- **Fetch**: copy the reviews on the branch's GitHub PR into the local PR. The copies can't be
-  changed locally, except the person's own comments, which are changed on GitHub.
+- **Sync**: the draft review's comments, yours included, are added to the person's pending review
+  on GitHub, and the reviews on GitHub are copied into the local PR.
+- **Fetch**: copy the reviews on the branch's GitHub PR into the local PR, which sync also does.
+  The copies can't be changed locally, except the person's own comments, which are changed on
+  GitHub.
 
 How a review goes: your comments go into the draft review, which only this repository has. The
 person reads them in `delta --tui`, replies, and edits or deletes what they don't want. When they
-post, the whole draft review, your comments included, becomes their pending review on GitHub,
-under their name, which they submit there. For the states and how a review moves between them,
+sync, the draft review's comments, yours included, go into their pending review on GitHub, under
+their name, which they submit there. For the states and how a review moves between them,
 see `delta --tui --pr-state-machine-diagram=d2`.
 
 Rules:
 
 - Pass `--agent <your-name>` to `review comment` and `review reply`. Without it, your comments
   look like the person's.
-- Don't post a review to GitHub (`delta --tui review post`) unless the person asks you to. Posting
-  pushes the branch. On a branch with no GitHub PR it needs `--create-pr`, which creates a draft
-  PR that everyone who can see the repository can see: give it only if the person asks for a PR.
+- Don't sync with GitHub (`delta --tui review sync`) unless the person asks you to. Syncing
+  pushes the branch and adds the draft comments to the person's pending review on GitHub. On a
+  branch with no GitHub PR it needs `--create-pr`, which creates a draft PR that everyone who can
+  see the repository can see: give it only if the person asks for a PR.
 - Start each comment with 🤖. Posted comments appear on GitHub under the person's name, where
   only the 🤖 shows that an agent wrote them.
 - Edit and delete only your own comments, though nothing stops you changing the person's.
@@ -153,6 +155,6 @@ delta --tui review show --head <branch> --base <branch>
    ```
 
    Then `delta --tui review show` prints them with the local ones, and your replies go into the
-   draft review, for the person to read before they post it. Fetch again to see changes made on
+   draft review, for the person to read before they sync. Fetch again to see changes made on
    GitHub. Don't edit or delete comments in the copies of reviews on GitHub: those that can be
    changed are the person's, and are changed on GitHub.

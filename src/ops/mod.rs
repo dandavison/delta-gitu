@@ -98,7 +98,7 @@ pub(crate) enum Op {
     PushToElsewhere,
     PrCurrent,
     PrOther,
-    PrPost,
+    PrSync,
     ToggleViewed,
     ShowOnGithub,
     WriteComment,
@@ -243,7 +243,7 @@ impl Op {
             Op::PushToElsewhere => "Push to a branch you choose",
             Op::PrCurrent => "Open the current branch's PR",
             Op::PrOther => "Check out a GitHub PR you choose by number or URL, and open it",
-            Op::PrPost => "Post your draft review to GitHub",
+            Op::PrSync => "Sync the PR with GitHub: post your draft comments, and fetch its reviews",
             Op::ToggleViewed => "Tick or untick the PR file's Viewed checkbox on GitHub",
             Op::ShowOnGithub => "Open the PR file, hunk, line or comment on GitHub, to comment there",
             Op::WriteComment => "Write a comment or a reply, or edit your own comment",
@@ -376,7 +376,7 @@ impl Op {
             | Op::PushToUpstream
             | Op::PushToElsewhere
             | Op::PrOther
-            | Op::PrPost
+            | Op::PrSync
             | Op::RebaseAbort
             | Op::RebaseContinue
             | Op::RebaseElsewhere
@@ -472,7 +472,7 @@ impl Op {
             Op::PushToElsewhere => Box::new(push::PushToElsewhere),
             Op::PrCurrent => Box::new(pr::PrCurrent),
             Op::PrOther => Box::new(pr::PrOther),
-            Op::PrPost => Box::new(pr::PrPost),
+            Op::PrSync => Box::new(pr::PrSync),
             Op::ToggleViewed => Box::new(pr::ToggleViewed),
             Op::ShowOnGithub => Box::new(pr::ShowOnGithub),
             Op::WriteComment => Box::new(pr::WriteComment),

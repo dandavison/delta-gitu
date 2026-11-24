@@ -1,5 +1,6 @@
-//! Posting a local PR's draft comments to GitHub, as the user's pending review there, so that a
-//! review written locally, by the user or by an agent, can be revised and then shared.
+//! Syncing a local PR with GitHub: its draft comments are posted into the user's pending review
+//! there, so that a review written locally, by the user or by an agent, can be revised and then
+//! shared, and GitHub's reviews are copied into the local PR.
 
 use super::{
     github::{GitHub, GitHubBackend, GitHubPr},
@@ -9,27 +10,42 @@ use crate::{Res, error::Error};
 use git2::Repository;
 use std::{collections::HashMap, process::Command, rc::Rc};
 
-/// What [`post`] did.
-pub(crate) struct Posted {
-    pub url: String,
-    pub threads: usize,
-    pub replies: usize,
+/// What [`sync`] did.
+pub(crate) enum Synced {
+    /// It posted draft comments into the user's pending review on the PR at `url`, and fetched.
+    Posted {
+        url: String,
+        threads: usize,
+        replies: usize,
+    },
+    /// There were no draft comments, so it only fetched from the PR at `url`.
+    Fetched { url: String },
 }
 
-impl Posted {
+impl Synced {
     /// What to tell the user.
     pub fn summary(&self) -> String {
         let plural =
             |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
-        let mut summary = format!("Posted {}", plural(self.threads, "thread", "threads"));
-        if self.replies > 0 {
-            summary += &format!(" and {}", plural(self.replies, "reply", "replies"));
+        match self {
+            Synced::Posted {
+                url,
+                threads,
+                replies,
+            } => {
+                let mut summary = format!("Posted {}", plural(*threads, "thread", "threads"));
+                if *replies > 0 {
+                    summary += &format!(" and {}", plural(*replies, "reply", "replies"));
+                }
+                summary
+                    + &format!(
+                        " to your pending review on {url}. Submit it there to make it visible"
+                    )
+            }
+            Synced::Fetched { url } => {
+                format!("No draft comments to post: fetched the PR's reviews from {url}")
+            }
         }
-        summary
-            + &format!(
-                " to your pending review on {}. Submit it there to make it visible",
-                self.url
-            )
     }
 }
 
@@ -49,16 +65,29 @@ pub(crate) fn push_command(repo: &Repository, head: &str) -> Res<Command> {
     Ok(cmd)
 }
 
-/// Post the user's draft review of `local`'s PR, an agent's comments in it included, as their
-/// pending review on GitHub, creating a draft PR if the branch has none, and then fetch the PR's
-/// reviews. The branch must already be pushed. All of the draft review is posted, or none of it:
-/// posting is refused if a thread's line has gone, or if the user has a pending review on GitHub
-/// that this draft review did not start. If posting stops part way, as when the
-/// network fails, each comment posted is recorded as it is, so that posting again posts the
-/// rest into the same pending review. Each thread's first comment is posted before its replies.
-pub(crate) fn post(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool) -> Res<Posted> {
+/// Sync `local`'s PR with GitHub: post its draft comments, an agent's included, into the user's
+/// pending review on GitHub, which is started if they have none, and then fetch the PR's reviews;
+/// with no draft comments, only fetch. A branch with no GitHub PR gets a draft PR only if
+/// `create_pr`. The branch must already be pushed. A thread whose line has gone stops the whole
+/// post. If posting stops part way, as when the network fails, each comment posted is recorded as
+/// it is, so that syncing again posts the rest into the same pending review, the only one the user
+/// can have. Each thread's first comment is posted before its replies.
+pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool) -> Res<Synced> {
     let to_post = local.to_post()?;
-    let pr = match github.pr_for_branch(local.head())? {
+    let found = github.pr_for_branch(local.head())?;
+    if to_post.is_empty() {
+        let pr = found.ok_or_else(|| {
+            Error::Gh(format!(
+                "Nothing to sync: there are no draft comments, and {} has no PR on GitHub",
+                local.head()
+            ))
+        })?;
+        local.record_link(&pr)?;
+        let url = pr.url.clone();
+        local.fetch(&GitHubBackend { github, pr })?;
+        return Ok(Synced::Fetched { url });
+    }
+    let pr = match found {
         Some(pr) => pr,
         None if create_pr => github.create_pr(local.head(), local.base())?,
         None => {
@@ -70,46 +99,18 @@ pub(crate) fn post(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
     };
     check_pr(local, &pr).map_err(|e| Error::Gh(format!("Couldn't post: {e}")))?;
     local.record_link(&pr)?;
-    let review = match (github.pending_review(&pr)?, &to_post.link) {
-        (Some(pending), Some(link)) if pending == *link => pending,
-        (Some(pending), _) => {
-            let comments = github
-                .reviews(&pr)?
-                .into_iter()
-                .find(|review| review.id == pending)
-                .map(|review| review.comments.len())
-                .ok_or_else(|| {
-                    Error::Gh(format!(
-                        "Couldn't post: GitHub says you have a pending review {pending}, but \
-                         doesn't list it among the PR's reviews"
-                    ))
-                })?;
-            let comments = match comments {
-                0 => "no comments".to_owned(),
-                1 => "1 comment".to_owned(),
-                n => format!("{n} comments"),
-            };
-            return Err(Error::Gh(format!(
-                "Couldn't post: you have a pending review on {}, with {comments}, that this \
-                 draft review did not start. Submit or delete it there first",
-                pr.url
-            )));
-        }
-        (None, _) => github.start_review(&pr)?,
+    let review = match github.pending_review(&pr)? {
+        Some(pending) => pending,
+        None => github.start_review(&pr)?,
     };
-    local.set_link(&review)?;
-    let mut posted = Posted {
-        url: pr.url.clone(),
-        threads: 0,
-        replies: 0,
-    };
+    let (mut threads, mut replies) = (0, 0);
     let mut started: HashMap<String, String> = HashMap::new();
-    for comment in to_post.comments {
+    for comment in to_post {
         if comment.starts_thread {
             let first = github.add_thread(&review, &comment.path, comment.line, &comment.body)?;
             local.mark_posted(&comment.id, Some(&first))?;
             started.insert(comment.thread, first);
-            posted.threads += 1;
+            threads += 1;
         } else {
             let first = started
                 .get(&comment.thread)
@@ -119,11 +120,16 @@ pub(crate) fn post(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
                 })?;
             github.add_reply(&review, first, &comment.body)?;
             local.mark_posted(&comment.id, None)?;
-            posted.replies += 1;
+            replies += 1;
         }
     }
+    let url = pr.url.clone();
     local.fetch(&GitHubBackend { github, pr })?;
-    Ok(posted)
+    Ok(Synced::Posted {
+        url,
+        threads,
+        replies,
+    })
 }
 
 /// An error unless `pr` is into `local`'s base and at its head's commit, with its base commit

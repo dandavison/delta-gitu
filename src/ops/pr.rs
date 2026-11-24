@@ -118,10 +118,11 @@ fn confirm_authors(app: &mut App, term: &mut Term, local: &LocalBackend) -> Res<
     Ok(())
 }
 
-/// Post the current branch's local PR to GitHub: push the branch, create a draft PR if it has
-/// none, and add every draft comment to the user's pending review there.
-pub(crate) struct PrPost;
-impl OpTrait for PrPost {
+/// Sync the current branch's PR with GitHub (see [`review::post::sync`]): push the branch, add
+/// every draft comment to the user's pending review there, and fetch, asking first. With no draft
+/// comments, it only fetches.
+pub(crate) struct PrSync;
+impl OpTrait for PrSync {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
         Some(Rc::new(|app, term| {
             // The PR on screen, if it is a local PR's, which may be into another base than the
@@ -138,6 +139,13 @@ impl OpTrait for PrPost {
                     &for_current_branch
                 }
             };
+            if local.to_post()?.is_empty() {
+                let synced = review::post::sync(local, Rc::clone(&app.state.github), false)?;
+                reread_pr(app)?;
+                app.update_screens()?;
+                app.display_info(synced.summary());
+                return Ok(());
+            }
             // A PR makes the branch visible to everyone who can see the repository.
             let create_pr = app.state.github.pr_for_branch(local.head())?.is_none();
             if create_pr {
@@ -153,16 +161,16 @@ impl OpTrait for PrPost {
             }
             let push = review::post::push_command(&app.state.repo, local.head())?;
             app.run_cmd(term, &[], push)?;
-            let posted = review::post::post(local, Rc::clone(&app.state.github), create_pr)?;
+            let synced = review::post::sync(local, Rc::clone(&app.state.github), create_pr)?;
             reread_pr(app)?;
             app.update_screens()?;
-            app.display_info(posted.summary());
+            app.display_info(synced.summary());
             Ok(())
         }))
     }
 
     fn display(&self, _state: &State) -> String {
-        "post to GitHub".into()
+        "sync with GitHub".into()
     }
 }
 

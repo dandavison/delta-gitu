@@ -129,18 +129,6 @@ pub(crate) fn with_threads(
     if pr.backend.head_mismatch(repo) {
         out.push(warning_row());
     }
-    if let Some(pending) = *pr.pending_review.borrow()
-        && !pending.started_by_draft
-    {
-        out.push(Item {
-            unselectable: true,
-            rendered: Some(Rc::new(vec![(
-                blocking_pending_review(pending),
-                error_style,
-            )])),
-            ..Default::default()
-        });
-    }
     for error in not_in_diff(&threads, &pr.viewed.borrow(), &files) {
         out.push(Item {
             unselectable: true,
@@ -189,20 +177,6 @@ pub(crate) fn with_threads(
         }
     }
     out
-}
-
-/// What to say of the user's pending review on GitHub that the draft review didn't start, which
-/// stops `O p`, and which has no rows of its own when it has no comments.
-fn blocking_pending_review(pending: review::PendingReview) -> String {
-    let comments = match pending.comments {
-        0 => "no comments".to_owned(),
-        1 => "1 comment".to_owned(),
-        n => format!("{n} comments"),
-    };
-    format!(
-        "You have a pending review on GitHub, with {comments}. O p won't post until you submit \
-         or delete it on GitHub"
-    )
 }
 
 /// What to say of the threads on files neither in the PR on GitHub, `pr_files`, nor among the

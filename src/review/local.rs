@@ -440,23 +440,13 @@ impl LocalBackend {
         self.delete_comment(&thread.id, comment_id).map(|_| ())
     }
 
-    /// The draft review, as it is to be posted: refused if it is empty, or if a thread's line has
-    /// gone. Its comments are in the order they are to be posted: each thread's first comment
-    /// before its replies.
-    pub fn to_post(&self) -> Res<ToPost> {
+    /// The draft review's comments, as they are to be posted, in that order: each thread's
+    /// first comment before its replies. None if there is no draft review. A thread whose line
+    /// has gone is an error.
+    pub fn to_post(&self) -> Res<Vec<PostComment>> {
         let file = self.store.read()?;
-        let mine = file.reviews.iter().find(|r| r.state == ReviewState::Draft);
-        let comments_of = |review: &str| {
-            file.threads
-                .iter()
-                .flat_map(|t| &t.comments)
-                .filter(|c| c.review == review)
-                .count()
-        };
-        let Some(mine) = mine.filter(|r| comments_of(&r.id) > 0) else {
-            return Err(Error::LocalPr(
-                "Nothing to post: you have no draft comments".to_owned(),
-            ));
+        let Some(mine) = file.reviews.iter().find(|r| r.state == ReviewState::Draft) else {
+            return Ok(vec![]);
         };
         let lines: HashMap<String, Option<(Side, u32)>> = self
             .threads()?
@@ -487,21 +477,7 @@ impl LocalBackend {
                 });
             }
         }
-        Ok(ToPost {
-            link: mine.github.clone(),
-            comments,
-        })
-    }
-
-    /// Record that posting the draft review uses the pending review `review_id`.
-    pub fn set_link(&self, review_id: &str) -> Res<()> {
-        self.store.update(|file| {
-            for review in &mut file.reviews {
-                if review.state == ReviewState::Draft {
-                    review.github = Some(review_id.to_owned());
-                }
-            }
-        })
+        Ok(comments)
     }
 
     /// Record that the draft comment `comment_id` has been posted, by removing it, and, if it
@@ -1045,12 +1021,6 @@ pub(crate) fn markdown(title: &str, mut threads: Vec<MarkdownThread>) -> String 
 }
 
 /// The draft review, as [`LocalBackend::to_post`] gives it.
-pub(crate) struct ToPost {
-    /// The pending review on GitHub that posting it started, if it has.
-    pub link: Option<String>,
-    pub comments: Vec<PostComment>,
-}
-
 pub(crate) struct PostComment {
     pub id: String,
     pub thread: String,
@@ -1220,14 +1190,7 @@ fn pending_review(file: &PrFile) -> Option<PendingReview> {
         .flat_map(|t| &t.comments)
         .filter(|c| c.review == pending.id)
         .count();
-    let started_by_draft = file
-        .reviews
-        .iter()
-        .any(|r| r.state == ReviewState::Draft && r.github.is_some() && r.github == pending.github);
-    Some(PendingReview {
-        comments,
-        started_by_draft,
-    })
+    Some(PendingReview { comments })
 }
 
 /// A local PR, as the status view shows it.
@@ -1630,7 +1593,9 @@ impl Backend for LocalBackend {
 /// The version of [`PrFile`] this gitu writes. Version 1 had a draft review for each author,
 /// an agent's among them; version 2 has one, the reviewer's (see [`merge_drafts`]). Version 3
 /// records the GitHub PR the local PR is linked to, which a gitu writing version 2 would drop.
-const VERSION: u32 = 3;
+/// Before version 4, a draft review recorded the pending review on GitHub that posting it
+/// started, which posting no longer needs.
+const VERSION: u32 = 4;
 
 /// What is recorded about a local PR, as JSON.
 #[derive(Serialize, Deserialize)]
@@ -1665,8 +1630,7 @@ struct StoredReview {
     id: String,
     author: String,
     state: ReviewState,
-    /// For a draft, the pending review on GitHub that posting it started; for a copy of a review
-    /// on GitHub, its id there.
+    /// For a copy of a review on GitHub, its id there. A draft review has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     github: Option<String>,
     /// For a copy of a review on GitHub, whether the user wrote it, and so may edit and delete
@@ -1852,6 +1816,13 @@ impl Store {
         }
         if file.version < 2 {
             merge_drafts(&mut file, &self.reviewer);
+        }
+        if file.version < 4 {
+            for review in &mut file.reviews {
+                if review.state == ReviewState::Draft {
+                    review.github = None;
+                }
+            }
         }
         let mut drafts = file
             .reviews
