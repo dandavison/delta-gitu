@@ -199,6 +199,7 @@ impl GitHub for FakeGitHub {
             draft: true,
             editable: true,
             deletable: true,
+            submitted: false,
             agent: None,
         });
         Ok("reply".to_owned())
@@ -379,6 +380,7 @@ pub(super) fn thread(
                 draft: false,
                 editable: false,
                 deletable: false,
+                submitted: true,
                 agent: None,
             })
             .collect(),

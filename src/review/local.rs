@@ -1490,6 +1490,11 @@ impl Backend for LocalBackend {
                 .any(|r| r.id == review && r.state == ReviewState::Draft)
         };
         let mine = |review: &str| file.reviews.iter().any(|r| r.id == review && r.mine);
+        let submitted = |review: &str| {
+            file.reviews.iter().any(|r| {
+                r.id == review && matches!(r.state, ReviewState::Submitted | ReviewState::Dismissed)
+            })
+        };
         let head = self.branch_commit(&self.head)?;
         let merge_base = self.merge_base()?;
         let mut files: HashMap<(Oid, String), Vec<String>> = HashMap::new();
@@ -1533,6 +1538,7 @@ impl Backend for LocalBackend {
                         editable: (draft(&comment.review) && comment.agent.is_none())
                             || mine(&comment.review),
                         deletable: draft(&comment.review) || mine(&comment.review),
+                        submitted: submitted(&comment.review),
                     })
                     .collect(),
             });

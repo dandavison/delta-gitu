@@ -127,6 +127,8 @@ pub(crate) struct Comment {
     pub created_at: chrono::DateTime<chrono::FixedOffset>,
     /// Whether the comment is in a draft review, which only its reviewer sees.
     pub draft: bool,
+    /// Whether the comment is in a submitted review, which everyone who can see the PR sees.
+    pub submitted: bool,
     /// Whether `i` on it edits it, rather than replying: the user's own comment, in a draft
     /// review or in a review on GitHub, when the PR's backend can change that, and not written by
     /// an agent.
@@ -296,8 +298,19 @@ pub(crate) mod cli {
         out: &mut impl Write,
     ) -> Res<()> {
         match command {
-            ReviewCommand::Post { head, base } => {
+            ReviewCommand::Post {
+                create_pr,
+                head,
+                base,
+            } => {
                 let pr = pr_by(repo, Rc::clone(&github), head, base, &None)?;
+                if !create_pr && github.pr_for_branch(pr.head())?.is_none() {
+                    return Err(Error::Gh(format!(
+                        "Couldn't post: {} has no GitHub PR. Give --create-pr to push it and \
+                         create a draft PR, which everyone who can see the repository can see",
+                        pr.head()
+                    )));
+                }
                 let output = super::post::push_command(pr.repo(), pr.head())?
                     .output()
                     .map_err(|e| Error::LocalPr(format!("Couldn't run git push: {e}")))?;
@@ -308,7 +321,7 @@ pub(crate) mod cli {
                         String::from_utf8_lossy(&output.stderr).trim_end()
                     )));
                 }
-                let posted = super::post::post(&pr, github)?;
+                let posted = super::post::post(&pr, github, *create_pr)?;
                 writeln!(out, "{}", posted.summary())
                     .map_err(|e| Error::LocalPr(format!("Couldn't print what was posted: {e}")))
             }

@@ -138,13 +138,22 @@ impl OpTrait for PrPost {
                     &for_current_branch
                 }
             };
-            app.confirm(
-                term,
-                "Push the branch and post its draft comments to GitHub? [y/n]",
-            )?;
+            // A PR makes the branch visible to everyone who can see the repository.
+            let create_pr = app.state.github.pr_for_branch(local.head())?.is_none();
+            if create_pr {
+                app.confirm(
+                    term,
+                    "No GitHub PR: create a draft PR, which anyone with access sees, and post? [y/n]",
+                )?;
+            } else {
+                app.confirm(
+                    term,
+                    "Push the branch and post its draft comments to GitHub? [y/n]",
+                )?;
+            }
             let push = review::post::push_command(&app.state.repo, local.head())?;
             app.run_cmd(term, &[], push)?;
-            let posted = review::post::post(local, Rc::clone(&app.state.github))?;
+            let posted = review::post::post(local, Rc::clone(&app.state.github), create_pr)?;
             reread_pr(app)?;
             app.update_screens()?;
             app.display_info(posted.summary());

@@ -38,7 +38,8 @@ Rules:
 - Pass `--agent <your-name>` to `review comment` and `review reply`. Without it, your comments
   look like the person's.
 - Don't post a review to GitHub (`delta --tui review post`) unless the person asks you to. Posting
-  pushes the branch and can create a GitHub PR.
+  pushes the branch. On a branch with no GitHub PR it needs `--create-pr`, which creates a draft
+  PR that everyone who can see the repository can see: give it only if the person asks for a PR.
 - Start each comment with 🤖. Posted comments appear on GitHub under the person's name, where
   only the 🤖 shows that an agent wrote them.
 - Edit and delete only your own comments, though nothing stops you changing the person's.

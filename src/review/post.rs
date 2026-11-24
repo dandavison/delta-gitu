@@ -56,11 +56,17 @@ pub(crate) fn push_command(repo: &Repository, head: &str) -> Res<Command> {
 /// that this draft review did not start. If posting stops part way, as when the
 /// network fails, each comment posted is recorded as it is, so that posting again posts the
 /// rest into the same pending review. Each thread's first comment is posted before its replies.
-pub(crate) fn post(local: &LocalBackend, github: Rc<dyn GitHub>) -> Res<Posted> {
+pub(crate) fn post(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool) -> Res<Posted> {
     let to_post = local.to_post()?;
     let pr = match github.pr_for_branch(local.head())? {
         Some(pr) => pr,
-        None => github.create_pr(local.head(), local.base())?,
+        None if create_pr => github.create_pr(local.head(), local.base())?,
+        None => {
+            return Err(Error::Gh(format!(
+                "Couldn't post: {} has no GitHub PR, and creating one wasn't asked for",
+                local.head()
+            )));
+        }
     };
     check_pr(local, &pr).map_err(|e| Error::Gh(format!("Couldn't post: {e}")))?;
     local.record_link(&pr)?;
