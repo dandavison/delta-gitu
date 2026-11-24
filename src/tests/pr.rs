@@ -4,6 +4,7 @@
 //! they are on.
 
 use super::*;
+use crate::review::remote::WriteToken;
 use crate::{
     app::App,
     error::Error,
@@ -151,7 +152,7 @@ impl GitHub for FakeGitHub {
         self.pr(Some(head)).map(Some)
     }
 
-    fn create_pr(&self, head: &str, base: &str) -> Result<GitHubPr, Error> {
+    fn create_pr(&self, _: WriteToken, head: &str, base: &str) -> Result<GitHubPr, Error> {
         self.created
             .borrow_mut()
             .push((head.to_owned(), base.to_owned()));
@@ -163,7 +164,7 @@ impl GitHub for FakeGitHub {
         Ok(self.pending.borrow().clone())
     }
 
-    fn start_review(&self, _pr: &GitHubPr) -> Result<String, Error> {
+    fn start_review(&self, _: WriteToken, _pr: &GitHubPr) -> Result<String, Error> {
         *self.reviews_started.borrow_mut() += 1;
         let id = format!("R{}", self.reviews_started.borrow());
         *self.pending.borrow_mut() = Some(id.clone());
@@ -172,6 +173,7 @@ impl GitHub for FakeGitHub {
 
     fn add_thread(
         &self,
+        _: WriteToken,
         review_id: &str,
         path: &str,
         place: Place,
@@ -205,7 +207,13 @@ impl GitHub for FakeGitHub {
         Ok(comment_id)
     }
 
-    fn add_reply(&self, review_id: &str, comment_id: &str, body: &str) -> Result<String, Error> {
+    fn add_reply(
+        &self,
+        _: WriteToken,
+        review_id: &str,
+        comment_id: &str,
+        body: &str,
+    ) -> Result<String, Error> {
         self.posted
             .borrow_mut()
             .push((format!("{review_id} {comment_id}"), body.to_owned()));
@@ -232,7 +240,7 @@ impl GitHub for FakeGitHub {
         Ok("reply".to_owned())
     }
 
-    fn edit_comment(&self, comment_id: &str, body: &str) -> Result<(), Error> {
+    fn edit_comment(&self, _: WriteToken, comment_id: &str, body: &str) -> Result<(), Error> {
         self.edited
             .borrow_mut()
             .push((comment_id.to_owned(), body.to_owned()));
@@ -266,7 +274,7 @@ impl GitHub for FakeGitHub {
             }))
     }
 
-    fn delete_comment(&self, comment_id: &str) -> Result<(), Error> {
+    fn delete_comment(&self, _: WriteToken, comment_id: &str) -> Result<(), Error> {
         self.deleted.borrow_mut().push(comment_id.to_owned());
         let mut threads = self.threads.borrow_mut();
         for thread in threads.iter_mut() {
@@ -276,7 +284,13 @@ impl GitHub for FakeGitHub {
         Ok(())
     }
 
-    fn set_viewed(&self, _pr: &GitHubPr, path: &str, viewed: bool) -> Result<(), Error> {
+    fn set_viewed(
+        &self,
+        _: WriteToken,
+        _pr: &GitHubPr,
+        path: &str,
+        viewed: bool,
+    ) -> Result<(), Error> {
         let state = if viewed {
             ViewedState::Viewed
         } else {

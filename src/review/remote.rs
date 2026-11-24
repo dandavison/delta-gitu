@@ -99,6 +99,18 @@ impl Change<'_> {
     }
 }
 
+/// What a [`GitHub`] method that changes GitHub takes, which only this module can make, so that
+/// a change made other than through [`write`] doesn't compile.
+pub(crate) struct WriteToken(());
+
+#[cfg(test)]
+impl WriteToken {
+    /// For a test that changes GitHub as someone would outside gitu, such as in the browser.
+    pub(crate) fn for_test() -> Self {
+        WriteToken(())
+    }
+}
+
 /// Whether the user said to publish: to make changes others can see.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Consent {
@@ -144,27 +156,31 @@ pub(crate) fn write(github: &dyn GitHub, change: Change, consent: Consent) -> Re
         )));
     }
     Ok(match change {
-        Change::StartReview { pr } => Made::Id(github.start_review(pr)?),
+        Change::StartReview { pr } => Made::Id(github.start_review(WriteToken(()), pr)?),
         Change::AddThread {
             review,
             path,
             place,
             body,
-        } => Made::Id(github.add_thread(review, path, place, body)?),
-        Change::AddReply { review, to, body } => Made::Id(github.add_reply(review, to, body)?),
+        } => Made::Id(github.add_thread(WriteToken(()), review, path, place, body)?),
+        Change::AddReply { review, to, body } => {
+            Made::Id(github.add_reply(WriteToken(()), review, to, body)?)
+        }
         Change::EditComment { comment, body, .. } => {
-            github.edit_comment(comment, body)?;
+            github.edit_comment(WriteToken(()), comment, body)?;
             Made::Nothing
         }
         Change::DeleteComment { comment, .. } => {
-            github.delete_comment(comment)?;
+            github.delete_comment(WriteToken(()), comment)?;
             Made::Nothing
         }
         Change::SetViewed { pr, path, viewed } => {
-            github.set_viewed(pr, path, viewed)?;
+            github.set_viewed(WriteToken(()), pr, path, viewed)?;
             Made::Nothing
         }
-        Change::CreatePr { head, base } => Made::Pr(github.create_pr(head, base)?),
+        Change::CreatePr { head, base } => {
+            Made::Pr(github.create_pr(WriteToken(()), head, base)?)
+        }
     })
 }
 

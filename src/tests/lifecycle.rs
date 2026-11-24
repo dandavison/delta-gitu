@@ -14,6 +14,7 @@
 //! `GITU_LIFECYCLE_STEPS` actions (default 10), from the seed `GITU_LIFECYCLE_SEED`.
 
 use super::*;
+use crate::review::remote::WriteToken;
 use crate::{
     error::Error,
     review::{
@@ -236,7 +237,7 @@ impl GitHub for User {
             .map(|i| server.reviews[i].id.clone()))
     }
 
-    fn start_review(&self, _pr: &GitHubPr) -> Result<String, Error> {
+    fn start_review(&self, _: WriteToken, _pr: &GitHubPr) -> Result<String, Error> {
         let mut server = self.server.borrow_mut();
         assert!(
             server.pending_of(self.login).is_none(),
@@ -254,6 +255,7 @@ impl GitHub for User {
 
     fn add_thread(
         &self,
+        _: WriteToken,
         review_id: &str,
         path: &str,
         place: Place,
@@ -279,7 +281,13 @@ impl GitHub for User {
         Ok(server.add_comment(review_id, thread, self.login, body))
     }
 
-    fn add_reply(&self, review_id: &str, comment_id: &str, body: &str) -> Result<String, Error> {
+    fn add_reply(
+        &self,
+        _: WriteToken,
+        review_id: &str,
+        comment_id: &str,
+        body: &str,
+    ) -> Result<String, Error> {
         let mut server = self.server.borrow_mut();
         server.spend()?;
         let thread = server
@@ -290,7 +298,7 @@ impl GitHub for User {
         Ok(server.add_comment(review_id, thread, self.login, body))
     }
 
-    fn edit_comment(&self, comment_id: &str, body: &str) -> Result<(), Error> {
+    fn edit_comment(&self, _: WriteToken, comment_id: &str, body: &str) -> Result<(), Error> {
         let mut server = self.server.borrow_mut();
         let Some(comment) = server
             .threads
@@ -330,7 +338,7 @@ impl GitHub for User {
         }))
     }
 
-    fn delete_comment(&self, comment_id: &str) -> Result<(), Error> {
+    fn delete_comment(&self, _: WriteToken, comment_id: &str) -> Result<(), Error> {
         let mut server = self.server.borrow_mut();
         for thread in &mut server.threads {
             thread.comments.retain(|(id, ..)| id != comment_id);
@@ -351,11 +359,17 @@ impl GitHub for User {
         self.pr(None).map(Some)
     }
 
-    fn create_pr(&self, _head: &str, _base: &str) -> Result<GitHubPr, Error> {
+    fn create_pr(&self, _: WriteToken, _head: &str, _base: &str) -> Result<GitHubPr, Error> {
         unreachable!("the PR exists")
     }
 
-    fn set_viewed(&self, _pr: &GitHubPr, _path: &str, _viewed: bool) -> Result<(), Error> {
+    fn set_viewed(
+        &self,
+        _: WriteToken,
+        _pr: &GitHubPr,
+        _path: &str,
+        _viewed: bool,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -679,10 +693,11 @@ impl World {
                 let pr = github.pr(None).unwrap();
                 let review = match github.pending_review(&pr).unwrap() {
                     Some(review) => review,
-                    None => github.start_review(&pr).unwrap(),
+                    None => github.start_review(WriteToken::for_test(), &pr).unwrap(),
                 };
                 github
                     .add_thread(
+                        WriteToken::for_test(),
                         &review,
                         FILE,
                         Place::Line(Side::New, line),

@@ -4,6 +4,7 @@
 //! them, which is closed, and the branches deleted, when the test ends.
 
 use super::*;
+use crate::review::remote::WriteToken;
 use crate::{
     error::Error,
     review::{
@@ -433,9 +434,12 @@ fn a_thread_github_does_not_add_is_an_error() {
     let pr = RealPr::new(stdext::function_name!());
     let github = pr.github();
     let github_pr = github.pr(Some(&pr.head)).unwrap();
-    let review = github.start_review(&github_pr).unwrap();
+    let review = github
+        .start_review(WriteToken::for_test(), &github_pr)
+        .unwrap();
 
     let result = github.add_thread(
+        WriteToken::for_test(),
         &review,
         "lines.txt",
         Place::Line(Side::New, 9999),
@@ -472,9 +476,12 @@ fn syncing_adds_to_a_pending_review_started_elsewhere() {
     let pr = RealPr::new(stdext::function_name!());
     let github = pr.github();
     let github_pr = github.pr(Some(&pr.head)).unwrap();
-    let review = github.start_review(&github_pr).unwrap();
+    let review = github
+        .start_review(WriteToken::for_test(), &github_pr)
+        .unwrap();
     github
         .add_thread(
+            WriteToken::for_test(),
             &review,
             "lines.txt",
             Place::Line(Side::New, 5),
@@ -502,9 +509,12 @@ fn syncing_with_no_draft_comments_fetches() {
     let pr = RealPr::new(stdext::function_name!());
     let github = pr.github();
     let github_pr = github.pr(Some(&pr.head)).unwrap();
-    let review = github.start_review(&github_pr).unwrap();
+    let review = github
+        .start_review(WriteToken::for_test(), &github_pr)
+        .unwrap();
     github
         .add_thread(
+            WriteToken::for_test(),
             &review,
             "lines.txt",
             Place::Line(Side::New, 5),
@@ -623,10 +633,14 @@ fn a_files_viewed_checkbox_is_set_on_github() {
     let github_pr = github.pr(Some(&pr.head)).unwrap();
     let viewed = |github_pr| github.viewed(github_pr).unwrap()["lines.txt"];
 
-    github.set_viewed(&github_pr, "lines.txt", true).unwrap();
+    github
+        .set_viewed(WriteToken::for_test(), &github_pr, "lines.txt", true)
+        .unwrap();
     assert_eq!(viewed(&github_pr), crate::review::ViewedState::Viewed);
 
-    github.set_viewed(&github_pr, "lines.txt", false).unwrap();
+    github
+        .set_viewed(WriteToken::for_test(), &github_pr, "lines.txt", false)
+        .unwrap();
     assert_eq!(viewed(&github_pr), crate::review::ViewedState::Unviewed);
 }
 

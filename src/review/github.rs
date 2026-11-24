@@ -4,7 +4,7 @@
 
 use super::{
     Backend, Comment, Place, Side, Subject, Thread, ViewedState,
-    remote::{self, Change, Consent},
+    remote::{self, Change, Consent, WriteToken},
 };
 use crate::{Res, error::Error};
 use serde::Deserialize;
@@ -147,29 +147,42 @@ pub(crate) trait GitHub {
     /// GitHub lets each user have one at a time.
     fn pending_review(&self, pr: &GitHubPr) -> Res<Option<String>>;
     /// Start a pending review of the PR, returning its id.
-    fn start_review(&self, pr: &GitHubPr) -> Res<String>;
+    fn start_review(&self, _: WriteToken, pr: &GitHubPr) -> Res<String>;
     /// Add `body` to the pending review `review_id` as a new thread on `line` of the file at
     /// `path`, numbered as in the PR's head commit on GitHub for the new side and its base for
     /// the old, returning the id of the thread's comment.
-    fn add_thread(&self, review_id: &str, path: &str, place: Place, body: &str) -> Res<String>;
+    fn add_thread(
+        &self,
+        _: WriteToken,
+        review_id: &str,
+        path: &str,
+        place: Place,
+        body: &str,
+    ) -> Res<String>;
     /// The open PR whose head is the branch `head`, if there is one.
     fn pr_for_branch(&self, head: &str) -> Res<Option<GitHubPr>>;
     /// The default branch of the repository a PR would be opened against, as `gh pr create`
     /// chooses it.
     fn default_branch(&self) -> Res<String>;
     /// Create a draft PR of the branch `head`, already pushed, into the branch `base`.
-    fn create_pr(&self, head: &str, base: &str) -> Res<GitHubPr>;
+    fn create_pr(&self, _: WriteToken, head: &str, base: &str) -> Res<GitHubPr>;
     /// Add `body` to the pending review `review_id` as a reply to the comment `comment_id`,
     /// which is the first comment of the thread it replies in, returning the reply's id.
-    fn add_reply(&self, review_id: &str, comment_id: &str, body: &str) -> Res<String>;
+    fn add_reply(
+        &self,
+        _: WriteToken,
+        review_id: &str,
+        comment_id: &str,
+        body: &str,
+    ) -> Res<String>;
     /// Change what the review comment `comment_id` says to `body`.
-    fn edit_comment(&self, comment_id: &str, body: &str) -> Res<()>;
+    fn edit_comment(&self, _: WriteToken, comment_id: &str, body: &str) -> Res<()>;
     /// Delete the review comment `comment_id`.
-    fn delete_comment(&self, comment_id: &str) -> Res<()>;
+    fn delete_comment(&self, _: WriteToken, comment_id: &str) -> Res<()>;
     /// The review comment `comment_id` as GitHub has it now, or `None` if it has been deleted.
     fn comment_now(&self, comment_id: &str) -> Res<Option<CommentNow>>;
     /// Tick or untick the checkbox of the file at `path`.
-    fn set_viewed(&self, pr: &GitHubPr, path: &str, viewed: bool) -> Res<()>;
+    fn set_viewed(&self, _: WriteToken, pr: &GitHubPr, path: &str, viewed: bool) -> Res<()>;
     /// Open `url` in the browser.
     fn open(&self, url: &str) -> Res<()>;
 }
@@ -492,12 +505,19 @@ impl GitHub for Gh {
         Ok(output.lines().next().map(str::to_owned))
     }
 
-    fn start_review(&self, pr: &GitHubPr) -> Res<String> {
+    fn start_review(&self, _: WriteToken, pr: &GitHubPr) -> Res<String> {
         let output = self.graphql(START_REVIEW, &[("id", &pr.id)], &[], None)?;
         required_id(&output, STARTED_REVIEW, "start a pending review")
     }
 
-    fn add_thread(&self, review_id: &str, path: &str, place: Place, body: &str) -> Res<String> {
+    fn add_thread(
+        &self,
+        _: WriteToken,
+        review_id: &str,
+        path: &str,
+        place: Place,
+        body: &str,
+    ) -> Res<String> {
         let line = match place {
             Place::Line(side, line) => (side, line),
             Place::File => {
@@ -557,7 +577,7 @@ impl GitHub for Gh {
         }
     }
 
-    fn create_pr(&self, head: &str, base: &str) -> Res<GitHubPr> {
+    fn create_pr(&self, _: WriteToken, head: &str, base: &str) -> Res<GitHubPr> {
         self.run(&[
             "pr", "create", "--draft", "--fill", "--head", head, "--base", base,
         ])?;
@@ -565,7 +585,13 @@ impl GitHub for Gh {
             .ok_or_else(|| Error::Gh(format!("Couldn't find the PR gh created for {head}")))
     }
 
-    fn add_reply(&self, review_id: &str, comment_id: &str, body: &str) -> Res<String> {
+    fn add_reply(
+        &self,
+        _: WriteToken,
+        review_id: &str,
+        comment_id: &str,
+        body: &str,
+    ) -> Res<String> {
         let output = self.graphql(
             ADD_REPLY,
             &[
@@ -579,7 +605,7 @@ impl GitHub for Gh {
         required_id(&output, ADDED_REPLY, "add the reply")
     }
 
-    fn edit_comment(&self, comment_id: &str, body: &str) -> Res<()> {
+    fn edit_comment(&self, _: WriteToken, comment_id: &str, body: &str) -> Res<()> {
         let output = self.graphql(
             EDIT_COMMENT,
             &[("id", comment_id), ("body", body)],
@@ -589,7 +615,7 @@ impl GitHub for Gh {
         required_id(&output, EDITED_COMMENT, "edit the comment").map(|_| ())
     }
 
-    fn delete_comment(&self, comment_id: &str) -> Res<()> {
+    fn delete_comment(&self, _: WriteToken, comment_id: &str) -> Res<()> {
         let output = self.graphql(DELETE_COMMENT, &[("id", comment_id)], &[], None)?;
         required(&output, DELETED_COMMENT, "delete the comment").map(|_| ())
     }
@@ -621,7 +647,7 @@ impl GitHub for Gh {
         }))
     }
 
-    fn set_viewed(&self, pr: &GitHubPr, path: &str, viewed: bool) -> Res<()> {
+    fn set_viewed(&self, _: WriteToken, pr: &GitHubPr, path: &str, viewed: bool) -> Res<()> {
         let (mutation, payload) = if viewed {
             (MARK_VIEWED, MARKED_VIEWED)
         } else {
