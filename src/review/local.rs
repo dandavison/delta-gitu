@@ -311,6 +311,79 @@ impl LocalBackend {
                 .map_err(|e| Error::LocalPr(format!("Couldn't compare commits: {e}")))?)
     }
 
+    /// The draft threads not yet on GitHub whose lines were found in another commit than the PR's
+    /// head (or, for the old side, where it branched from its base) now: those written, or last
+    /// moved, before the PR changed. Posting them would put them where the user hasn't seen them.
+    pub fn stale_drafts(&self) -> Res<Vec<String>> {
+        let file = self.store.read()?;
+        let head = self.head_commit()?.to_string();
+        let merge_base = self.merge_base()?.to_string();
+        let drafts: HashSet<&str> = file
+            .reviews
+            .iter()
+            .filter(|r| r.state == ReviewState::Draft)
+            .map(|r| r.id.as_str())
+            .collect();
+        Ok(file
+            .threads
+            .iter()
+            .filter(|t| t.github.is_none() && t.subject == Subject::Line)
+            .filter(|t| {
+                t.comments
+                    .iter()
+                    .any(|c| drafts.contains(c.review.as_str()))
+            })
+            .filter(|t| {
+                let now = match t.anchor.side {
+                    Side::New => &head,
+                    Side::Old => &merge_base,
+                };
+                t.anchor.commit != *now
+            })
+            .map(|t| t.id.clone())
+            .collect())
+    }
+
+    /// Move the draft threads `ids` to where their lines are now, in the PR's head (or where it
+    /// branched from its base), as the screen shows them; one whose line has gone goes on its
+    /// file. Returns how many went on their files.
+    pub fn move_drafts(&self, ids: &[String]) -> Res<usize> {
+        let head = self.head_commit()?;
+        let merge_base = self.merge_base()?;
+        let mut moved: HashMap<String, Option<Anchor>> = HashMap::new();
+        for thread in self.threads()? {
+            if !ids.contains(&thread.id) {
+                continue;
+            }
+            let anchor = match thread.line {
+                Some((side, line)) => {
+                    let commit = match side {
+                        Side::New => head,
+                        Side::Old => merge_base,
+                    };
+                    Some(Anchor {
+                        start_line: thread.start_line,
+                        ..self.anchor_at(commit, &thread.path, (side, line))?
+                    })
+                }
+                None => None,
+            };
+            moved.insert(thread.id, anchor);
+        }
+        let to_file = moved.values().filter(|anchor| anchor.is_none()).count();
+        self.store.update(|file| {
+            for thread in &mut file.threads {
+                match moved.remove(&thread.id) {
+                    Some(Some(anchor)) => thread.anchor = anchor,
+                    // Its anchor stays, to say which line it was on.
+                    Some(None) => thread.subject = Subject::File,
+                    None => {}
+                }
+            }
+        })?;
+        Ok(to_file)
+    }
+
     /// The draft replies, by their text, in threads that have been deleted on GitHub, which can't
     /// be posted.
     pub fn orphaned_replies(&self) -> Res<Vec<String>> {
@@ -502,7 +575,9 @@ impl LocalBackend {
                     _ => Place::File,
                 };
                 let starts = (i == 0 && thread.github.is_none()).then_some(place);
-                let gone = starts == Some(Place::File) && thread.subject == Subject::Line;
+                // A thread whose line has gone, now or when sync moved it to its file, still has
+                // the line it was on in its anchor; one fetched on a whole file has none.
+                let gone = starts == Some(Place::File) && thread.anchor.line > 0;
                 let body = if gone {
                     let anchor = &thread.anchor;
                     let side = if anchor.side == Side::Old {

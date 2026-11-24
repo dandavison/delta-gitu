@@ -150,10 +150,11 @@ impl OpTrait for PrSync {
             let github = Rc::clone(&app.state.github);
             let synced = review::post::sync(local, github, create_pr, &mut |cmd| {
                 app.run_cmd(term, &[], cmd)
-            })?;
+            });
+            // What sync did is shown, as drafts it moved, even when it posted nothing.
             reread_pr(app)?;
             app.update_screens()?;
-            app.display_info(synced.summary());
+            app.display_info(synced?.summary());
             Ok(())
         }))
     }

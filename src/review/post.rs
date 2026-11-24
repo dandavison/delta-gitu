@@ -71,7 +71,9 @@ pub(crate) fn push_command(repo: &Repository, head: &str) -> Res<Command> {
 /// are only fetched.
 ///
 /// Sync never pushes to a PR on GitHub: a branch behind GitHub's head is brought up to it, and one
-/// with commits the PR doesn't have is refused. A branch with no PR on GitHub is pushed, and gets
+/// with commits the PR doesn't have is refused. Draft threads written before the PR changed are
+/// not posted: they are moved with their lines, for the user to check, and posted at the next
+/// sync. A branch with no PR on GitHub is pushed, and gets
 /// a draft PR, only if `create_pr`. Nothing is posted while a draft reply's thread has been deleted
 /// on GitHub. If posting stops part way, as when the network fails, each comment posted is
 /// recorded as it is, so that syncing again posts the rest into the same pending review, the only
@@ -113,6 +115,27 @@ pub(crate) fn sync(
             "Couldn't post: the threads of these draft replies were deleted on GitHub: \"{}\". \
              Delete them, or write them as new comments",
             orphans.join("\", \"")
+        )));
+    }
+    // The lease: drafts written before the PR changed are moved with their lines, for the user
+    // to see where they are, and nothing is posted.
+    let stale = local.stale_drafts()?;
+    if !stale.is_empty() {
+        let to_file = local.move_drafts(&stale)?;
+        let drafts = if stale.len() == 1 {
+            "1 of your draft threads was".to_owned()
+        } else {
+            format!("{} of your draft threads were", stale.len())
+        };
+        let gone = match to_file {
+            0 => String::new(),
+            1 => ", and 1 whose line has gone is now on its file".to_owned(),
+            n => format!(", and {n} whose lines have gone are now on their files"),
+        };
+        return Err(Error::Gh(format!(
+            "Posted nothing: GitHub's PR #{} has changed since {drafts} written. They have moved \
+             with their lines{gone}: check them, then sync again",
+            pr.number
         )));
     }
     let to_post = local.to_post()?;

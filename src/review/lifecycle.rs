@@ -96,7 +96,8 @@ pub(crate) struct Draft {
 pub(crate) struct LocalComment {
     pub thread: Id,
     /// For a comment that starts its thread, the head of the PR its line was found in when it was
-    /// written, or since moved to; a reply has no line of its own.
+    /// written, or since moved to; a reply has no line of its own, nor a thread moved to its file
+    /// once its line had gone.
     pub written_at: Option<u32>,
 }
 
@@ -385,7 +386,10 @@ impl Model {
                 if !stale.is_empty() {
                     let r = m.repos.get_mut(&repo).unwrap();
                     for c in stale {
-                        r.comments.get_mut(&c).unwrap().written_at = Some(self.head);
+                        let comment = r.comments.get_mut(&c).unwrap();
+                        // One whose line has gone is now on its file, which has no line to move.
+                        comment.written_at =
+                            self.threads[&comment.thread].placeable.then_some(self.head);
                     }
                     return Some(m);
                 }
