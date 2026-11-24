@@ -7,6 +7,7 @@ use super::{
     ViewedState,
     github::{GitHub, GitHubBackend, GitHubPr, GitHubReviewState},
     missing_commit,
+    remote::{self, Change, Consent},
 };
 use crate::{Res, error::Error};
 use git2::{Oid, Repository};
@@ -31,6 +32,10 @@ pub(crate) struct LocalBackend {
     reviewer: String,
     /// The agent writing as the reviewer, whose name labels the comments it writes.
     agent: Option<String>,
+    /// Whether comments written are local-only (true) or in the draft review (false), when
+    /// said; by default, a new thread is in the draft review, and a reply is local-only if its
+    /// thread's first comment is.
+    local: Option<bool>,
     store: Store,
     /// GitHub, which gives the PR's base, and through which the user's own comments in reviews
     /// copied from GitHub are edited and deleted.
@@ -96,6 +101,7 @@ impl LocalBackend {
             base_ref,
             reviewer,
             agent: None,
+            local: None,
             store,
             github: Rc::clone(&github),
             linked: None,
@@ -331,7 +337,7 @@ impl LocalBackend {
             .filter(|t| {
                 t.comments
                     .iter()
-                    .any(|c| drafts.contains(c.review.as_str()))
+                    .any(|c| c.review.as_deref().is_some_and(|r| drafts.contains(r)))
             })
             .filter(|t| {
                 let now = match t.anchor.side {
@@ -391,7 +397,7 @@ impl LocalBackend {
             .threads()?
             .into_iter()
             .filter(|t| t.deleted_on_github)
-            .flat_map(|t| t.comments.into_iter().map(|c| c.body))
+            .flat_map(|t| t.comments.into_iter().filter(|c| c.draft).map(|c| c.body))
             .collect())
     }
 
@@ -537,15 +543,16 @@ impl LocalBackend {
         self.branch_commit(&self.head)
     }
 
-    /// Delete the draft comment `comment_id`, wherever it is.
-    pub fn delete(&self, comment_id: &str) -> Res<()> {
+    /// Delete the comment `comment_id`, wherever it is: see [`Backend::delete_comment`].
+    pub fn delete(&self, comment_id: &str, consent: Consent) -> Res<()> {
         let file = self.store.read()?;
         let thread = file
             .threads
             .iter()
             .find(|t| t.comments.iter().any(|c| c.id == comment_id))
             .ok_or_else(|| Error::LocalPr(format!("There is no comment {comment_id}")))?;
-        self.delete_comment(&thread.id, comment_id).map(|_| ())
+        self.delete_comment(&thread.id, comment_id, consent)
+            .map(|_| ())
     }
 
     /// The draft review's comments, as they are to be posted, in that order: each thread's
@@ -564,7 +571,7 @@ impl LocalBackend {
         let mut comments = vec![];
         for thread in &file.threads {
             for (i, comment) in thread.comments.iter().enumerate() {
-                if comment.review != mine.id {
+                if comment.review.as_deref() != Some(mine.id.as_str()) {
                     continue;
                 }
                 // A thread whose line has gone, or on a whole file, starts on its file. One
@@ -601,24 +608,50 @@ impl LocalBackend {
                     path: thread.anchor.path.clone(),
                     starts,
                     reply_to: thread.github.clone(),
+                    posting_since: comment.posting_since,
                 });
             }
         }
         Ok(comments)
     }
 
+    /// Record that posting the draft comment `comment_id` is beginning, unless an earlier attempt
+    /// already began it, so that a later attempt can look for it on GitHub.
+    pub fn mark_posting(&self, comment_id: &str) -> Res<()> {
+        let now = chrono::Local::now().fixed_offset();
+        self.store.update(|file| {
+            for comment in file.threads.iter_mut().flat_map(|t| &mut t.comments) {
+                if comment.id == comment_id && comment.posting_since.is_none() {
+                    comment.posting_since = Some(now);
+                }
+            }
+        })
+    }
+
     /// Record that the draft comment `comment_id` has been posted, by removing it, and, if it
     /// started its thread, that the thread's first comment on GitHub is `started`. The comment
-    /// comes back as part of the copy of the review on GitHub at the next fetch.
+    /// comes back as part of the copy of the review on GitHub at the next fetch, in the same
+    /// thread: a copy of that thread made apart from it, by a fetch before it was known to be
+    /// posted, goes.
     pub fn mark_posted(&self, comment_id: &str, started: Option<&str>) -> Res<()> {
         self.store.update(|file| {
+            let mut posted_in = None;
             for thread in &mut file.threads {
                 if thread.comments.iter().any(|c| c.id == comment_id) {
                     thread.comments.retain(|c| c.id != comment_id);
                     if let Some(started) = started {
                         thread.github = Some(started.to_owned());
                     }
+                    posted_in = Some(thread.id.clone());
                 }
+            }
+            if let (Some(started), Some(posted_in)) = (started, posted_in) {
+                let drafts = draft_ids(file);
+                file.threads.retain(|t| {
+                    t.id == posted_in
+                        || t.github.as_deref() != Some(started)
+                        || t.comments.iter().any(|c| is_local(&drafts, c))
+                });
             }
             // A thread on GitHub stays, with no comments until the fetch after posting brings
             // them back, so that it is the same thread.
@@ -721,9 +754,9 @@ impl LocalBackend {
         let now = chrono::Local::now().fixed_offset();
         self.store.update(|file| {
             file.reviews.retain(|r| r.state == ReviewState::Draft);
-            let drafts: Vec<String> = file.reviews.iter().map(|r| r.id.clone()).collect();
+            let drafts = draft_ids(file);
             for thread in &mut file.threads {
-                thread.comments.retain(|c| drafts.contains(&c.review));
+                thread.comments.retain(|c| is_local(&drafts, c));
             }
             let mut review_of = HashMap::new();
             for review in &reviews {
@@ -753,13 +786,14 @@ impl LocalBackend {
                     .map(|c| StoredComment {
                         id: format!("github-{}", c.id),
                         // Every comment's review was found above.
-                        review: review_of[&c.id].clone(),
+                        review: Some(review_of[&c.id].clone()),
                         author: c.author.clone(),
                         agent: None,
                         body: c.body.clone(),
                         created_at: c.created_at,
                         github: Some(c.id.clone()),
                         url: c.url.clone(),
+                        posting_since: None,
                     })
                     .collect();
                 let Some(first) = thread.comments.first().map(|c| c.id.clone()) else {
@@ -789,8 +823,8 @@ impl LocalBackend {
                 // As GitHub has it, as when a thread whose line had gone was posted on its file.
                 local.subject = thread.subject;
                 local.resolved = thread.resolved;
-                let drafts = std::mem::take(&mut local.comments);
-                local.comments = comments.into_iter().chain(drafts).collect();
+                let unposted = std::mem::take(&mut local.comments);
+                local.comments = comments.into_iter().chain(unposted).collect();
             }
             file.threads.retain(|t| !t.comments.is_empty());
         })
@@ -841,6 +875,7 @@ impl LocalBackend {
                     "comments": t.comments.iter().map(|c| serde_json::json!({
                         "id": c.id,
                         "review": c.review,
+                        "local_only": c.review.is_none(),
                         "author": c.author,
                         "agent": c.agent,
                         "body": c.body,
@@ -882,9 +917,10 @@ impl LocalBackend {
     }
 
     /// Edit the comment `comment_id`, wherever it is: see [`Backend::edit_comment`].
-    pub fn edit(&self, comment_id: &str, body: &str) -> Res<()> {
+    pub fn edit(&self, comment_id: &str, body: &str, consent: Consent) -> Res<()> {
         let thread = self.thread_of(comment_id)?;
-        self.edit_comment(&thread, comment_id, body).map(|_| ())
+        self.edit_comment(&thread, comment_id, body, consent)
+            .map(|_| ())
     }
 
     fn thread_of(&self, comment_id: &str) -> Res<String> {
@@ -916,7 +952,11 @@ impl LocalBackend {
                 Error::LocalPr("Couldn't change the comment: it has been deleted".to_owned())
             })?;
         let comment = &thread.comments[i];
-        let review = file.reviews.iter().find(|r| r.id == comment.review);
+        let Some(review_id) = &comment.review else {
+            // Local-only.
+            return Ok(Changeable::Draft);
+        };
+        let review = file.reviews.iter().find(|r| r.id == *review_id);
         match review {
             Some(r) if r.state == ReviewState::Draft => Ok(Changeable::Draft),
             Some(r) if r.mine => Ok(Changeable::OnGitHub {
@@ -928,6 +968,7 @@ impl LocalBackend {
                     ))
                 })?,
                 starts_thread: i == 0,
+                public: matches!(r.state, ReviewState::Submitted | ReviewState::Dismissed),
             }),
             _ => Err(Error::LocalPr(NOT_DRAFT.to_owned())),
         }
@@ -941,11 +982,95 @@ impl LocalBackend {
         }
     }
 
-    /// Give a comment saying `body`, in the draft review, to `add` to put in a thread. If `add`
-    /// puts it in one, the draft review is started if there is none; returns whether it did.
-    fn add_to_draft(
+    /// The same PR, with the comments written local-only if `local`, and otherwise in the draft
+    /// review.
+    pub fn with_bucket(self, local: bool) -> Self {
+        Self {
+            local: Some(local),
+            ..self
+        }
+    }
+
+    /// Move a local comment to local-only if `local`, and otherwise to the draft review,
+    /// starting the draft review if there is none.
+    pub fn move_comment(&self, comment_id: &str, local: bool) -> Res<()> {
+        let head = self.branch_commit(&self.head)?.to_string();
+        let now = chrono::Local::now().fixed_offset();
+        let mut result = Err(Error::LocalPr(format!(
+            "Couldn't move the comment: there is no comment {comment_id}"
+        )));
+        self.store.update(|file| {
+            let drafts = draft_ids(file);
+            let draft = drafts.iter().next().cloned();
+            let Some(comment) = file
+                .threads
+                .iter_mut()
+                .flat_map(|t| &mut t.comments)
+                .find(|c| c.id == comment_id)
+            else {
+                return;
+            };
+            if !is_local(&drafts, comment) {
+                result = Err(Error::LocalPr(
+                    "Couldn't move the comment: only a local comment can be moved, and this one \
+                     is on GitHub"
+                        .to_owned(),
+                ));
+                return;
+            }
+            if local && comment.posting_since.is_some() {
+                result = Err(Error::LocalPr(STOPPED_POSTING.to_owned()));
+                return;
+            }
+            result = Ok(());
+            if local {
+                comment.review = None;
+                remove_empty_drafts(file);
+                return;
+            }
+            if comment.review.is_some() {
+                return;
+            }
+            let review = draft.unwrap_or_else(new_id);
+            comment.review = Some(review.clone());
+            if !drafts.contains(&review) {
+                file.reviews.push(StoredReview {
+                    id: review,
+                    author: self.reviewer.clone(),
+                    state: ReviewState::Draft,
+                    github: None,
+                    mine: false,
+                    head,
+                    body: String::new(),
+                    created_at: now,
+                });
+            }
+        })?;
+        result
+    }
+
+    /// The draft replies, by their text, in threads whose first comment is local-only, which
+    /// can't be posted before their thread.
+    pub fn blocked_replies(&self) -> Res<Vec<String>> {
+        let file = self.store.read()?;
+        let drafts = draft_ids(&file);
+        Ok(file
+            .threads
+            .iter()
+            .filter(|t| t.comments.first().is_some_and(|c| c.review.is_none()))
+            .flat_map(|t| &t.comments)
+            .filter(|c| c.review.as_ref().is_some_and(|r| drafts.contains(r)))
+            .map(|c| c.body.clone())
+            .collect())
+    }
+
+    /// Give a comment saying `body`, local-only if `local` and otherwise in the draft review, to
+    /// `add` to put in a thread. If `add` puts one in the draft review, the draft review is
+    /// started if there is none; returns whether `add` put it in a thread.
+    fn add_comment(
         &self,
         body: &str,
+        local: bool,
         add: impl FnOnce(&mut Vec<StoredThread>, StoredComment) -> bool,
     ) -> Res<bool> {
         let head = self.branch_commit(&self.head)?.to_string();
@@ -960,16 +1085,17 @@ impl LocalBackend {
             let review = draft.clone().unwrap_or_else(new_id);
             let comment = StoredComment {
                 id: new_id(),
-                review: review.clone(),
+                review: (!local).then(|| review.clone()),
                 author: self.reviewer.clone(),
                 agent: self.agent.clone(),
                 body: body.to_owned(),
                 created_at: now,
                 github: None,
                 url: None,
+                posting_since: None,
             };
             added = add(&mut file.threads, comment);
-            if added && draft.is_none() {
+            if added && !local && draft.is_none() {
                 file.reviews.push(StoredReview {
                     id: review,
                     author: self.reviewer.clone(),
@@ -1022,8 +1148,8 @@ impl LocalBackend {
     }
 
     /// Change the comment `comment_id` in the thread `thread_id` as `change` says, given the
-    /// thread and the comment's index in it, if the comment is in a draft review. A thread left
-    /// with no comments is deleted.
+    /// thread and the comment's index in it, if the comment is local: in the draft review, or
+    /// local-only. A thread left with no comments is deleted.
     fn change_draft_comment(
         &self,
         thread_id: &str,
@@ -1034,20 +1160,19 @@ impl LocalBackend {
             "Couldn't change the comment: it has been deleted".to_owned(),
         ));
         self.store.update(|file| {
-            let drafts: Vec<&str> = file
-                .reviews
-                .iter()
-                .filter(|review| review.state == ReviewState::Draft)
-                .map(|review| review.id.as_str())
-                .collect();
+            let drafts = draft_ids(file);
             let Some(thread) = file.threads.iter_mut().find(|t| t.id == thread_id) else {
                 return;
             };
             let Some(i) = thread.comments.iter().position(|c| c.id == comment_id) else {
                 return;
             };
-            if !drafts.contains(&thread.comments[i].review.as_str()) {
+            if !is_local(&drafts, &thread.comments[i]) {
                 result = Err(Error::LocalPr(NOT_DRAFT.to_owned()));
+                return;
+            }
+            if thread.comments[i].posting_since.is_some() {
+                result = Err(Error::LocalPr(STOPPED_POSTING.to_owned()));
                 return;
             }
             change(thread, i);
@@ -1111,10 +1236,21 @@ const HAS_REPLIES: &str =
 /// Where a comment that can be changed is, as [`LocalBackend::whose`] gives it.
 enum Changeable {
     Draft,
-    OnGitHub { id: String, starts_thread: bool },
+    /// The user's own comment on GitHub, `public` if in a review others can see.
+    OnGitHub {
+        id: String,
+        starts_thread: bool,
+        public: bool,
+    },
 }
 
-pub(crate) const NOT_DRAFT: &str = "Only a comment in a draft review can be changed";
+pub(crate) const NOT_DRAFT: &str = "Only a local comment, or your own on GitHub, can be changed";
+
+/// Why a comment a sync was posting when it stopped can't be changed: it may be in the pending
+/// review on GitHub already, where the next sync finds it by its text and place.
+const STOPPED_POSTING: &str = "Couldn't change the comment: a sync stopped while posting it, so it \
+                               may be in your pending review on GitHub already. To change it, \
+                               sync again, which finds it there, and then change it";
 
 /// Lines quoted in markdown: a line, or none, and the lines before and after it.
 pub(crate) struct Quote {
@@ -1133,7 +1269,8 @@ pub(crate) struct MarkdownThread<'a> {
 }
 
 /// `threads` as markdown, under the heading `title`: by file and line, each with its id, the
-/// lines it is on (the line marked `>`), and its comments, saying which are drafts.
+/// lines it is on (the line marked `>`), and its comments, saying which are drafts and which
+/// local-only.
 pub(crate) fn markdown(title: &str, mut threads: Vec<MarkdownThread>) -> String {
     threads.sort_by_key(|entry| {
         let line = entry.thread.line.map(|(side, n)| (n, side == Side::Old));
@@ -1177,10 +1314,14 @@ pub(crate) fn markdown(title: &str, mut threads: Vec<MarkdownThread>) -> String 
             out += "````\n";
         }
         for comment in &thread.comments {
-            let draft = if comment.draft { "draft, " } else { "" };
+            let bucket = match (comment.draft, comment.local_only) {
+                (true, _) => "draft, ",
+                (_, true) => "local-only, ",
+                _ => "",
+            };
             let time = comment.created_at.format("%Y-%m-%d %H:%M");
             out += &format!(
-                "\n**{}** ({draft}{time})\n\n{}\n",
+                "\n**{}** ({bucket}{time})\n\n{}\n",
                 comment.agent.as_ref().unwrap_or(&comment.author),
                 comment.body.trim_end()
             );
@@ -1199,6 +1340,8 @@ pub(crate) struct PostComment {
     pub starts: Option<Place>,
     /// The GitHub id of its thread's first comment, if that is on GitHub.
     pub reply_to: Option<String>,
+    /// When an earlier attempt to post it began, if one did and didn't finish.
+    pub posting_since: Option<chrono::DateTime<chrono::FixedOffset>>,
 }
 
 /// Remove the draft reviews with no comments left.
@@ -1209,8 +1352,25 @@ fn remove_empty_drafts(file: &mut PrFile) {
             || threads
                 .iter()
                 .flat_map(|t| &t.comments)
-                .any(|c| c.review == review.id)
+                .any(|c| c.review.as_deref() == Some(review.id.as_str()))
     });
+}
+
+/// The ids of the draft reviews in `file`.
+fn draft_ids(file: &PrFile) -> HashSet<String> {
+    file.reviews
+        .iter()
+        .filter(|r| r.state == ReviewState::Draft)
+        .map(|r| r.id.clone())
+        .collect()
+}
+
+/// Whether `comment` is local: in a draft review, one of `drafts`, or local-only.
+fn is_local(drafts: &HashSet<String>, comment: &StoredComment) -> bool {
+    comment
+        .review
+        .as_ref()
+        .is_none_or(|review| drafts.contains(review))
 }
 
 /// How many lines before and after a comment's line its anchor records.
@@ -1358,7 +1518,7 @@ fn pending_review(file: &PrFile) -> Option<PendingReview> {
         .threads
         .iter()
         .flat_map(|t| &t.comments)
-        .filter(|c| c.review == pending.id)
+        .filter(|c| c.review.as_deref() == Some(pending.id.as_str()))
         .count();
     Some(PendingReview { comments })
 }
@@ -1370,6 +1530,7 @@ pub(crate) struct PrSummary {
     pub link: Option<GitHubLink>,
     pub commits: usize,
     pub drafts: usize,
+    pub local_only: usize,
     pub pending: Option<PendingReview>,
 }
 
@@ -1420,16 +1581,23 @@ fn summarize(repo: &Repository, file: &PrFile, base_ref: &str, head: &str) -> Re
             file.threads
                 .iter()
                 .flat_map(|t| &t.comments)
-                .filter(|c| c.review == draft.id)
+                .filter(|c| c.review.as_deref() == Some(draft.id.as_str()))
                 .count()
         })
         .sum();
+    let local_only = file
+        .threads
+        .iter()
+        .flat_map(|t| &t.comments)
+        .filter(|c| c.review.is_none())
+        .count();
     Ok(PrSummary {
         base: short_ref(base_ref).to_owned(),
         pending: pending_review(file),
         link: file.github_pr.clone(),
         commits,
         drafts,
+        local_only,
     })
 }
 
@@ -1450,6 +1618,9 @@ impl PrSummary {
         parts.push(count(self.commits, "commit"));
         if self.drafts > 0 {
             parts.push(count(self.drafts, "draft comment"));
+        }
+        if self.local_only > 0 {
+            parts.push(count(self.local_only, "local-only comment"));
         }
         if let Some(pending) = self.pending {
             let comments = match pending.comments {
@@ -1634,16 +1805,22 @@ impl Backend for LocalBackend {
     /// is unchanged, and otherwise on the line it is found at (see [`locate`]).
     fn threads(&self) -> Res<Vec<Thread>> {
         let file = self.store.read()?;
-        let draft = |review: &str| {
-            file.reviews
-                .iter()
-                .any(|r| r.id == review && r.state == ReviewState::Draft)
+        let review_of = |review: &Option<String>| {
+            review
+                .as_ref()
+                .and_then(|id| file.reviews.iter().find(|r| r.id == *id))
         };
-        let mine = |review: &str| file.reviews.iter().any(|r| r.id == review && r.mine);
-        let submitted = |review: &str| {
-            file.reviews.iter().any(|r| {
-                r.id == review && matches!(r.state, ReviewState::Submitted | ReviewState::Dismissed)
-            })
+        // A local-only comment is in no review, and is local as a draft is.
+        let local = |review: &Option<String>| {
+            review.is_none() || review_of(review).is_some_and(|r| r.state == ReviewState::Draft)
+        };
+        let draft = |review: &Option<String>| {
+            review_of(review).is_some_and(|r| r.state == ReviewState::Draft)
+        };
+        let mine = |review: &Option<String>| review_of(review).is_some_and(|r| r.mine);
+        let submitted = |review: &Option<String>| {
+            review_of(review)
+                .is_some_and(|r| matches!(r.state, ReviewState::Submitted | ReviewState::Dismissed))
         };
         let head = self.branch_commit(&self.head)?;
         let merge_base = self.merge_base()?;
@@ -1683,7 +1860,7 @@ impl Backend for LocalBackend {
                 // On GitHub, and with none of its comments copied from there.
                 deleted_on_github: thread.github.is_some()
                     && !thread.comments.is_empty()
-                    && thread.comments.iter().all(|c| draft(&c.review)),
+                    && thread.comments.iter().all(|c| local(&c.review)),
                 comments: thread
                     .comments
                     .iter()
@@ -1695,11 +1872,12 @@ impl Backend for LocalBackend {
                         url: comment.url.clone(),
                         created_at: comment.created_at,
                         draft: draft(&comment.review),
+                        local_only: comment.review.is_none(),
                         // In the TUI the user edits their own comments, and replies to an
-                        // agent's; they can delete any draft comment.
-                        editable: (draft(&comment.review) && comment.agent.is_none())
+                        // agent's; they can delete any local comment.
+                        editable: (local(&comment.review) && comment.agent.is_none())
                             || mine(&comment.review),
-                        deletable: draft(&comment.review) || mine(&comment.review),
+                        deletable: local(&comment.review) || mine(&comment.review),
                         submitted: submitted(&comment.review),
                     })
                     .collect(),
@@ -1708,8 +1886,21 @@ impl Backend for LocalBackend {
         Ok(threads)
     }
 
+    /// A reply is local-only if its thread's first comment is, unless [`LocalBackend::with_bucket`]
+    /// says otherwise.
     fn reply(&self, thread_id: &str, body: &str) -> Res<&'static str> {
-        let added = self.add_to_draft(body, |threads, comment| {
+        let local = match self.local {
+            Some(local) => local,
+            None => self
+                .store
+                .read()?
+                .threads
+                .iter()
+                .find(|t| t.id == thread_id)
+                .and_then(|t| t.comments.first())
+                .is_some_and(|c| c.review.is_none()),
+        };
+        let added = self.add_comment(body, local, |threads, comment| {
             let thread = threads.iter_mut().find(|t| t.id == thread_id);
             thread.map(|thread| thread.comments.push(comment)).is_some()
         })?;
@@ -1723,7 +1914,7 @@ impl Backend for LocalBackend {
 
     fn comment(&self, path: &str, line: (Side, u32), body: &str) -> Res<&'static str> {
         let anchor = self.anchor(path, line)?;
-        self.add_to_draft(body, |threads, comment| {
+        self.add_comment(body, self.local.unwrap_or(false), |threads, comment| {
             threads.push(StoredThread {
                 id: new_id(),
                 anchor,
@@ -1739,10 +1930,21 @@ impl Backend for LocalBackend {
 
     /// A draft comment is edited locally; the user's own comment in a review copied from GitHub
     /// is edited on GitHub, and the PR's reviews fetched again.
-    fn edit_comment(&self, thread_id: &str, comment_id: &str, body: &str) -> Res<&'static str> {
-        if let Changeable::OnGitHub { id, .. } = self.whose(thread_id, comment_id)? {
+    fn edit_comment(
+        &self,
+        thread_id: &str,
+        comment_id: &str,
+        body: &str,
+        consent: Consent,
+    ) -> Res<&'static str> {
+        if let Changeable::OnGitHub { id, public, .. } = self.whose(thread_id, comment_id)? {
             let github = self.github_pr()?;
-            github.github.edit_comment(&id, body)?;
+            let change = Change::EditComment {
+                comment: &id,
+                body,
+                public,
+            };
+            remote::write(github.github.as_ref(), change, consent)?;
             self.fetch(&github)?;
             return Ok("Comment updated on GitHub");
         }
@@ -1755,8 +1957,18 @@ impl Backend for LocalBackend {
     /// As [`LocalBackend::edit_comment`] edits. A draft thread's first comment can't be deleted
     /// while the thread has replies, which would be left replying to nothing; on GitHub, a
     /// thread's first comment can't be deleted at all, since anyone may have a draft reply to it.
-    fn delete_comment(&self, thread_id: &str, comment_id: &str) -> Res<&'static str> {
-        if let Changeable::OnGitHub { id, starts_thread } = self.whose(thread_id, comment_id)? {
+    fn delete_comment(
+        &self,
+        thread_id: &str,
+        comment_id: &str,
+        consent: Consent,
+    ) -> Res<&'static str> {
+        if let Changeable::OnGitHub {
+            id,
+            starts_thread,
+            public,
+        } = self.whose(thread_id, comment_id)?
+        {
             if starts_thread {
                 return Err(Error::LocalPr(
                     "Couldn't delete the comment: it starts a thread on GitHub, to which anyone \
@@ -1765,7 +1977,11 @@ impl Backend for LocalBackend {
                 ));
             }
             let github = self.github_pr()?;
-            github.github.delete_comment(&id)?;
+            let change = Change::DeleteComment {
+                comment: &id,
+                public,
+            };
+            remote::write(github.github.as_ref(), change, consent)?;
             self.fetch(&github)?;
             return Ok("Comment deleted on GitHub");
         }
@@ -1795,8 +2011,10 @@ impl Backend for LocalBackend {
 /// records the GitHub PR the local PR is linked to, which a gitu writing version 2 would drop.
 /// Before version 4, a draft review recorded the pending review on GitHub that posting it
 /// started, which posting no longer needs. Version 5 records a thread's subject and the first of
-/// its lines, which a gitu writing version 4 would drop.
-const VERSION: u32 = 5;
+/// its lines, which a gitu writing version 4 would drop. Version 6 records when posting a draft
+/// comment began, which a gitu writing version 5 would drop. Version 7 has local-only comments,
+/// in no review, which a gitu writing version 6 can't read.
+const VERSION: u32 = 7;
 
 /// What is recorded about a local PR, as JSON.
 #[derive(Serialize, Deserialize)]
@@ -1891,8 +2109,9 @@ struct StoredThread {
 #[derive(Serialize, Deserialize)]
 struct StoredComment {
     id: String,
-    /// The id of the review the comment is in.
-    review: String,
+    /// The id of the review the comment is in: none for a local-only comment, which sync never
+    /// posts, such as a conversation with an agent.
+    review: Option<String>,
     author: String,
     /// The name of the agent that wrote the comment as the reviewer, if one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1905,6 +2124,10 @@ struct StoredComment {
     /// The comment's page on GitHub, for a copy of a comment there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
+    /// For a draft comment, when an attempt to post it began that may not have finished: GitHub
+    /// may have added it though gitu never heard back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    posting_since: Option<chrono::DateTime<chrono::FixedOffset>>,
 }
 
 /// Where a thread is: a line of a file, on the old or the new side of the diff, numbered as in
@@ -2085,10 +2308,10 @@ fn merge_drafts(file: &mut PrFile, reviewer: &str) {
     };
     let merged: Vec<String> = drafts.iter().map(|r| r.id.clone()).collect();
     for comment in file.threads.iter_mut().flat_map(|t| &mut t.comments) {
-        if !merged.contains(&comment.review) {
+        if !comment.review.as_ref().is_some_and(|r| merged.contains(r)) {
             continue;
         }
-        comment.review = kept.clone();
+        comment.review = Some(kept.clone());
         if comment.author != reviewer {
             comment.agent = Some(std::mem::replace(&mut comment.author, reviewer.to_owned()));
         }

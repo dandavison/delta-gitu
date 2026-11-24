@@ -3,8 +3,10 @@
 //! shared, and GitHub's reviews are copied into the local PR.
 
 use super::{
+    Place, Subject,
     github::{GitHub, GitHubBackend, GitHubPr},
     local::LocalBackend,
+    remote::{self, Change, Consent},
 };
 use crate::{Res, error::Error};
 use git2::Repository;
@@ -49,6 +51,20 @@ impl Synced {
     }
 }
 
+/// Refuse to post while a draft reply is in a thread whose first comment is local-only, since a
+/// reply can't reach GitHub before its thread.
+fn refuse_blocked_replies(local: &LocalBackend) -> Res<()> {
+    let blocked = local.blocked_replies()?;
+    if blocked.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Gh(format!(
+        "Couldn't post: these draft replies are in threads whose first comment is local-only: \
+         \"{}\". Move each thread's first comment to the draft review, or the reply to local-only",
+        blocked.join("\", \"")
+    )))
+}
+
 /// The command that pushes `head`, in `repo`, to its remote (`origin` if it has none), setting it
 /// as the branch's upstream.
 pub(crate) fn push_command(repo: &Repository, head: &str) -> Res<Command> {
@@ -70,14 +86,16 @@ pub(crate) fn push_command(repo: &Repository, head: &str) -> Res<Command> {
 /// started if they have none, and then the PR's reviews are fetched; with no draft comments, they
 /// are only fetched.
 ///
-/// Sync never pushes to a PR on GitHub: a branch behind GitHub's head is brought up to it, and one
-/// with commits the PR doesn't have is refused. Draft threads written before the PR changed are
+/// Sync never pushes to a PR on GitHub: a branch behind GitHub's head is brought up to it, unless
+/// tracked files have uncommitted changes, and one with commits the PR doesn't have is refused. Draft threads written before the PR changed are
 /// not posted: they are moved with their lines, for the user to check, and posted at the next
-/// sync. A branch with no PR on GitHub is pushed, and gets
-/// a draft PR, only if `create_pr`. Nothing is posted while a draft reply's thread has been deleted
-/// on GitHub. If posting stops part way, as when the network fails, each comment posted is
-/// recorded as it is, so that syncing again posts the rest into the same pending review, the only
-/// one the user can have. Each thread's first comment is posted before its replies.
+/// sync. A branch with no PR on GitHub is pushed, and gets a draft PR, only if `create_pr`.
+/// Local-only comments are never posted. Nothing is posted while a draft reply's thread has been
+/// deleted on GitHub, or starts with a local-only comment. If posting stops part way, as when the
+/// network fails, each comment posted is recorded as it is, so that syncing again posts the rest
+/// into the same pending review, the only one the user can have; one GitHub added but whose reply
+/// was lost is found there, and not posted again. Each thread's first comment is posted before
+/// its replies.
 pub(crate) fn sync(
     local: &LocalBackend,
     github: Rc<dyn GitHub>,
@@ -92,6 +110,7 @@ pub(crate) fn sync(
                 local.head()
             )));
         }
+        refuse_blocked_replies(local)?;
         if !create_pr {
             return Err(Error::Gh(format!(
                 "Couldn't post: {} has no GitHub PR, and creating one wasn't asked for",
@@ -99,7 +118,12 @@ pub(crate) fn sync(
             )));
         }
         run(push_command(local.repo(), local.head())?)?;
-        let pr = github.create_pr(local.head(), local.base())?;
+        // The user asked for it, as create_pr says.
+        let change = Change::CreatePr {
+            head: local.head(),
+            base: local.base(),
+        };
+        let pr = remote::write(github.as_ref(), change, Consent::Publish)?.pr()?;
         let pr = once_github_has_head(local, github.as_ref(), pr)?;
         return post(local, github, pr, to_post);
     };
@@ -117,6 +141,7 @@ pub(crate) fn sync(
             orphans.join("\", \"")
         )));
     }
+    refuse_blocked_replies(local)?;
     // The lease: drafts written before the PR changed are moved with their lines, for the user
     // to see where they are, and nothing is posted.
     let stale = local.stale_drafts()?;
@@ -157,15 +182,45 @@ fn post(
     local.record_link(&pr)?;
     let review = match github.pending_review(&pr)? {
         Some(pending) => pending,
-        None => github.start_review(&pr)?,
+        None => {
+            let change = Change::StartReview { pr: &pr };
+            remote::write(github.as_ref(), change, Consent::Private)?.id()?
+        }
+    };
+    // What an earlier attempt that didn't finish may have added, though gitu never heard back.
+    let mut pending = if to_post.iter().any(|c| c.posting_since.is_some()) {
+        pending_comments(github.as_ref(), &pr)?
+    } else {
+        vec![]
     };
     let (mut threads, mut replies) = (0, 0);
     let mut started: HashMap<String, String> = HashMap::new();
     for comment in to_post {
+        let found = |at: &At, pending: &mut Vec<Pending>| {
+            comment
+                .posting_since
+                .and_then(|since| take_added(pending, at, &comment.body, since))
+        };
         if let Some(place) = comment.starts {
-            let first = github.add_thread(&review, &comment.path, place, &comment.body)?;
+            let at = At::Thread {
+                path: comment.path.clone(),
+                place,
+            };
+            let first = match found(&at, &mut pending) {
+                Some(added) => added,
+                None => {
+                    local.mark_posting(&comment.id)?;
+                    let change = Change::AddThread {
+                        review: &review,
+                        path: &comment.path,
+                        place,
+                        body: &comment.body,
+                    };
+                    remote::write(github.as_ref(), change, Consent::Private)?.id()?
+                }
+            };
             local.mark_posted(&comment.id, Some(&first))?;
-            started.insert(comment.thread, first);
+            started.insert(comment.thread.clone(), first);
             threads += 1;
         } else {
             let first = started
@@ -173,8 +228,18 @@ fn post(
                 .or(comment.reply_to.as_ref())
                 .ok_or_else(|| {
                     Error::Gh("Couldn't post a reply: its thread is not on GitHub".to_owned())
-                })?;
-            github.add_reply(&review, first, &comment.body)?;
+                })?
+                .clone();
+            let at = At::Reply { to: first.clone() };
+            if found(&at, &mut pending).is_none() {
+                local.mark_posting(&comment.id)?;
+                let change = Change::AddReply {
+                    review: &review,
+                    to: &first,
+                    body: &comment.body,
+                };
+                remote::write(github.as_ref(), change, Consent::Private)?;
+            }
             local.mark_posted(&comment.id, None)?;
             replies += 1;
         }
@@ -186,6 +251,78 @@ fn post(
         threads,
         replies,
     })
+}
+
+/// How much earlier than the attempt that posted it GitHub may say a comment was made, as this
+/// machine's clock and GitHub's differ.
+const CLOCK_SKEW: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
+
+/// A comment in the user's pending review on GitHub, as an attempt to post a draft comment that
+/// didn't finish may have added it.
+struct Pending {
+    id: String,
+    at: At,
+    body: String,
+    created_at: chrono::DateTime<chrono::FixedOffset>,
+}
+
+/// Where a comment is on GitHub: starting a thread at a place on a file, or replying to a
+/// thread's first comment.
+#[derive(PartialEq)]
+enum At {
+    Thread { path: String, place: Place },
+    Reply { to: String },
+}
+
+/// The comments in the user's pending review on `pr`, which only they can see, so that any of
+/// them was added by the user.
+fn pending_comments(github: &dyn GitHub, pr: &GitHubPr) -> Res<Vec<Pending>> {
+    let mut pending = vec![];
+    for thread in github.threads(pr)? {
+        let place = match (thread.subject, thread.line) {
+            (Subject::File, _) => Some(Place::File),
+            (Subject::Line, Some((side, line))) => Some(Place::Line(side, line)),
+            // Outdated: not one just added, which is on a line of the PR's head.
+            (Subject::Line, None) => None,
+        };
+        let Some(first) = thread.comments.first().map(|c| c.id.clone()) else {
+            continue;
+        };
+        for (i, comment) in thread.comments.into_iter().enumerate() {
+            if !comment.draft {
+                continue;
+            }
+            let at = match (i, place) {
+                (0, Some(place)) => At::Thread {
+                    path: thread.path.clone(),
+                    place,
+                },
+                (0, None) => continue,
+                _ => At::Reply { to: first.clone() },
+            };
+            pending.push(Pending {
+                id: comment.id,
+                at,
+                body: comment.body,
+                created_at: comment.created_at,
+            });
+        }
+    }
+    Ok(pending)
+}
+
+/// The id of the comment in `pending` that an attempt begun at `since` added at `at` saying
+/// `body`, if there is one, taken from `pending` so that each is found once.
+fn take_added(
+    pending: &mut Vec<Pending>,
+    at: &At,
+    body: &str,
+    since: chrono::DateTime<chrono::FixedOffset>,
+) -> Option<String> {
+    let i = pending.iter().position(|p| {
+        p.at == *at && p.body.trim_end() == body.trim_end() && p.created_at >= since - CLOCK_SKEW
+    })?;
+    Some(pending.remove(i).id)
 }
 
 /// Bring `local`'s branch up to `pr`'s head on GitHub, with `gh pr checkout`, which only fast-
@@ -207,6 +344,17 @@ fn up_to_github_head(
             pr.number
         )));
     }
+    // Bringing commits into files with uncommitted changes would mix them with those changes.
+    let changed = uncommitted_changes(local.repo())?;
+    if !changed.is_empty() {
+        return Err(Error::Gh(format!(
+            "Couldn't sync: GitHub's PR #{} has commits that {} doesn't, which sync brings in, but \
+             these files have uncommitted changes: {}. Commit or stash them, then sync",
+            pr.number,
+            local.head(),
+            changed.join(", ")
+        )));
+    }
     run(github.checkout(pr))?;
     let head = local.head_commit()?.to_string();
     if head != pr.head_oid {
@@ -220,6 +368,20 @@ fn up_to_github_head(
         )));
     }
     Ok(())
+}
+
+/// The files git tracks in `repo`'s worktree that have uncommitted changes, staged or not.
+fn uncommitted_changes(repo: &Repository) -> Res<Vec<String>> {
+    let mut options = git2::StatusOptions::new();
+    options.include_untracked(false).include_ignored(false);
+    let statuses = repo
+        .statuses(Some(&mut options))
+        .map_err(|e| Error::LocalPr(format!("Couldn't read git's status: {e}")))?;
+    Ok(statuses
+        .iter()
+        .filter(|entry| entry.status() != git2::Status::CURRENT)
+        .filter_map(|entry| entry.path().map(str::to_owned))
+        .collect())
 }
 
 /// How long GitHub is given to show a pushed commit as its PR's head.

@@ -309,6 +309,7 @@ root.blame = ["B"]
 root.toggle_viewed = ["x"]
 root.show_on_github = ["o"]
 root.write_comment = ["i"]
+root.toggle_local_only = ["p"]
 # Enable or disable a renderer feature (side-by-side, line numbers, ...) in place.
 # In the list, space enables or disables the selected feature and keeps the list
 # open, enter does so and closes it, a letter sets its key, and this key closes

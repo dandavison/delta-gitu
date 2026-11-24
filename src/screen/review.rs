@@ -463,7 +463,7 @@ const MIN_TEXT_WIDTH: usize = 20;
 /// over it, or, with none of those, a bar down its left. A blank row comes between one comment
 /// and the next. The first row is the first comment's first, and folds the rest; a box, or lines over and under, stay around it while it is folded.
 /// The thread's first row says whether the thread is resolved or outdated, and when it is not
-/// `on_line` though it has a line, which line. A comment in a draft review says so.
+/// `on_line` though it has a line, which line. A comment in a draft review, or local-only, says so.
 fn thread_rows(
     thread: &Thread,
     depth: usize,
@@ -501,6 +501,9 @@ fn thread_rows(
         };
         if comment.draft {
             notes.push("draft".to_owned());
+        }
+        if comment.local_only {
+            notes.push("local-only".to_owned());
         }
         let notes = (!notes.is_empty()).then(|| format!("({})", notes.join(", ")));
         if comment_i > 0 {

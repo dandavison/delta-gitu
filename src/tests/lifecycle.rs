@@ -1,7 +1,8 @@
 //! gitu follows the review lifecycle's state machine ([`crate::review::lifecycle`]): driven
 //! through random sequences of the model's actions, it is in the model's state after each one,
 //! and refuses what the model refuses. Since every state of the model keeps the lifecycle's
-//! invariants, so does gitu, for the sequences tried.
+//! invariants, so does gitu, for the sequences tried. gitu also changes only review data: no
+//! command it runs here changes a repository's refs, HEAD or working tree, or the remote's refs.
 //!
 //! Three repositories, each a clone of one remote: my laptop (where my agent writes too, as me),
 //! my desktop, and my colleague's. Everyone acts as an agent would, through `delta --tui review`;
@@ -200,6 +201,7 @@ impl GitHub for User {
                             deletable: *visible.get(id.as_str())?,
                             // Shown to the user as a draft only while in their pending review.
                             submitted: !*visible.get(id.as_str())?,
+                            local_only: false,
                             agent: None,
                         })
                     })
@@ -353,6 +355,8 @@ type SeenReview = (String, String, Vec<SeenComment>);
 struct SeenRepo {
     /// The draft reviews, by author.
     drafts: BTreeMap<String, Vec<SeenComment>>,
+    /// The local-only comments.
+    local: Vec<SeenComment>,
     /// The local copy of GitHub's reviews.
     copies: Vec<SeenReview>,
 }
@@ -427,14 +431,52 @@ impl World {
             login: login(repo.github_user()),
         });
         let mut out = vec![];
-        crate::review::cli::run(
+        let before = self.git_state();
+        let result = crate::review::cli::run(
             &command,
             git2::Repository::open(&self.dirs[&repo]).unwrap(),
             github,
             &mut input.as_bytes(),
             &mut out,
-        )?;
+        );
+        // Only review data: here the branch is always at the PR's head, which is on GitHub, so
+        // that sync has nothing to fast-forward, and nothing to push.
+        assert_eq!(
+            self.git_state(),
+            before,
+            "{command:?} in {repo:?} changed more than review data"
+        );
+        result?;
         Ok(String::from_utf8(out).unwrap())
+    }
+
+    /// What gitu must leave as it is: each repository's refs, HEAD and working tree, and the
+    /// remote's refs.
+    fn git_state(&self) -> Vec<String> {
+        let remote = self.server.borrow().remote.clone();
+        let mut state = vec![];
+        for dir in self.dirs.values().chain([&remote]) {
+            let repo = git2::Repository::open(dir).unwrap();
+            for reference in repo.references().unwrap() {
+                let reference = reference.unwrap();
+                state.push(format!(
+                    "{dir:?} {:?} {:?} {:?}",
+                    reference.name(),
+                    reference.target(),
+                    reference.symbolic_target()
+                ));
+            }
+            let head = repo.head().ok().and_then(|h| h.name().map(str::to_owned));
+            state.push(format!("{dir:?} HEAD {head:?}"));
+            if !repo.is_bare() {
+                let mut options = git2::StatusOptions::new();
+                options.include_untracked(true);
+                for entry in repo.statuses(Some(&mut options)).unwrap().iter() {
+                    state.push(format!("{dir:?} {:?} {:?}", entry.path(), entry.status()));
+                }
+            }
+        }
+        state
     }
 
     fn json(&self, repo: Repo) -> serde_json::Value {
@@ -521,37 +563,66 @@ impl World {
     /// `None`, in gitu or on the fake GitHub.
     fn act(&mut self, before: &Model, action: &Action, after: Option<&Model>) {
         match (action, after) {
-            (Action::Write { repo, thread }, Some(after)) => {
+            (
+                Action::Write {
+                    repo,
+                    thread,
+                    local,
+                },
+                Some(after),
+            ) => {
                 let cid = *after.written.last().unwrap();
                 let body = cid.to_string();
-                let agent: &[&str] = if *repo == Repo::Laptop && cid % 2 == 0 {
-                    &["--agent", "agent"]
+                let mut agent: Vec<&str> = if *repo == Repo::Laptop && cid % 2 == 0 {
+                    vec!["--agent", "agent"]
                 } else {
-                    &[]
+                    vec![]
                 };
+                // Said each time, rather than left to the defaults, which the model doesn't have.
+                agent.push(if *local { "--local" } else { "--draft" });
                 match thread {
                     None => {
                         let t = *after.threads.keys().last().unwrap();
                         let line = self.new_line(t);
                         let line = line.to_string();
                         let mut args = vec!["comment", "--path", FILE, "--line", &line];
-                        args.extend(agent);
+                        args.extend(&agent);
                         self.review(*repo, &args, &body).unwrap();
                     }
                     Some(t) => {
+                        // As the repository last fetched them.
+                        let copied = &before.repos[repo].copied_edits;
                         let bodies: Vec<String> = before.threads[t]
                             .comments
                             .iter()
-                            .map(|c| body_of(before, *c))
+                            .filter_map(|c| match c {
+                                CommentRef::Local(c) => Some(c.to_string()),
+                                CommentRef::GitHub(g) => {
+                                    copied.get(g).map(|edits| text(before, *g, *edits))
+                                }
+                            })
                             .collect();
                         let thread = self.thread_id(*repo, &bodies);
                         let mut args = vec!["reply", thread.as_str()];
-                        args.extend(agent);
+                        args.extend(&agent);
                         self.review(*repo, &args, &body).unwrap();
                     }
                 }
             }
             (Action::Write { .. }, None) => {}
+            (
+                Action::Move {
+                    repo,
+                    comment,
+                    local,
+                },
+                after,
+            ) => {
+                let id = self.comment_id(*repo, &comment.to_string());
+                let to = if *local { "--local" } else { "--draft" };
+                let result = self.review(*repo, &["move", &id, to], "");
+                assert_eq!(result.is_ok(), after.is_some(), "{action}: {result:?}");
+            }
             (Action::Delete { repo, comment }, after) => {
                 let id = self.comment_id(*repo, &comment.to_string());
                 let result = self.review(*repo, &["delete", &id], "");
@@ -629,13 +700,21 @@ impl World {
                 let body = text(before, *comment, before.repos[repo].copied_edits[comment]);
                 let edited = github_body(before, *comment) + "+";
                 let id = self.comment_id(*repo, &body);
-                let result = self.review(*repo, &["edit", &id], &edited);
+                let mut args = vec!["edit", id.as_str()];
+                if before.publishes(action) {
+                    args.push("--publish");
+                }
+                let result = self.review(*repo, &args, &edited);
                 assert_eq!(result.is_ok(), after.is_some(), "{action}: {result:?}");
             }
             (Action::DeleteOnGitHub { repo, comment }, after) => {
                 let body = text(before, *comment, before.repos[repo].copied_edits[comment]);
                 let id = self.comment_id(*repo, &body);
-                let result = self.review(*repo, &["delete", &id], "");
+                let mut args = vec!["delete", id.as_str()];
+                if before.publishes(action) {
+                    args.push("--publish");
+                }
+                let result = self.review(*repo, &args, "");
                 assert_eq!(result.is_ok(), after.is_some(), "{action}: {result:?}");
             }
             (Action::Submit { .. } | Action::BrowserComment { .. }, None)
@@ -688,6 +767,13 @@ impl World {
                         (login(repo.github_user()).to_owned(), comments)
                     })
                     .collect();
+                let mut local: Vec<SeenComment> = r
+                    .comments
+                    .iter()
+                    .filter(|(_, c)| c.local_only)
+                    .map(|(id, c)| (id.to_string(), line(c.thread)))
+                    .collect();
+                local.sort();
                 let fetched = |g: Id| r.copied_edits[&g];
                 let mut copies: Vec<SeenReview> = r
                     .copy
@@ -696,7 +782,14 @@ impl World {
                     .map(|(_, review_)| review(review_, &fetched))
                     .collect();
                 copies.sort();
-                (*repo, SeenRepo { drafts, copies })
+                (
+                    *repo,
+                    SeenRepo {
+                        drafts,
+                        local,
+                        copies,
+                    },
+                )
             })
             .collect();
         Seen { github, repos }
@@ -747,15 +840,19 @@ fn review_bodies(m: &Model, review: Id) -> Vec<String> {
 /// A repository's local PR, as `delta --tui review show --format json` prints it.
 fn seen_repo(json: &serde_json::Value) -> SeenRepo {
     let mut by_review: BTreeMap<String, Vec<SeenComment>> = BTreeMap::new();
+    let mut local = vec![];
     for thread in json["threads"].as_array().unwrap() {
         let line = thread["line"].as_u64().map(|n| n as u32);
         for comment in thread["comments"].as_array().unwrap() {
-            by_review
-                .entry(comment["review"].as_str().unwrap().to_owned())
-                .or_default()
-                .push((comment["body"].as_str().unwrap().to_owned(), line));
+            let seen = (comment["body"].as_str().unwrap().to_owned(), line);
+            // A local-only comment is in no review.
+            match comment["review"].as_str() {
+                Some(review) => by_review.entry(review.to_owned()).or_default().push(seen),
+                None => local.push(seen),
+            }
         }
     }
+    local.sort();
     let mut drafts = BTreeMap::new();
     let mut copies = vec![];
     for review in json["reviews"].as_array().unwrap() {
@@ -773,7 +870,11 @@ fn seen_repo(json: &serde_json::Value) -> SeenRepo {
     }
     assert!(by_review.is_empty(), "comments in no review: {json}");
     copies.sort();
-    SeenRepo { drafts, copies }
+    SeenRepo {
+        drafts,
+        local,
+        copies,
+    }
 }
 
 /// A small, seeded random number generator, so that a failing sequence can be run again.

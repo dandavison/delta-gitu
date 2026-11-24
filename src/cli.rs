@@ -111,28 +111,34 @@ pub enum ShowFormat {
 #[derive(Debug, Subcommand)]
 pub enum ReviewCommand {
     /// Copy the reviews of the branch's GitHub PR, as you see them, into the local PR, replacing
-    /// the copy fetched before. Your draft reviews are not changed.
+    /// the copy fetched before. Local comments, draft or local-only, are not changed.
     Fetch {
         #[clap(long)]
         head: Option<String>,
         #[clap(long)]
         base: Option<String>,
     },
-    /// Edit a comment, with its new text read from stdin: a comment in a draft review, or your own
-    /// comment in a review on GitHub, which is edited there and fetched again.
+    /// Edit a comment, with its new text read from stdin: a local comment, draft or local-only, or
+    /// your own comment in a review on GitHub, which is edited there and fetched again.
     Edit {
         /// The comment's id, as `delta --tui review show --format json` prints it.
         comment: String,
+        /// Change it although it is in a submitted review, which others see.
+        #[clap(long)]
+        publish: bool,
         #[clap(long)]
         head: Option<String>,
         #[clap(long)]
         base: Option<String>,
     },
-    /// Delete a comment in a draft review. A thread's first comment can't be deleted while the
-    /// thread has replies.
+    /// Delete a local comment, draft or local-only, or your own reply in a review on GitHub. A
+    /// thread's first comment can't be deleted while the thread has replies.
     Delete {
         /// The comment's id, as `delta --tui review show --format json` prints it.
         comment: String,
+        /// Delete it although it is in a submitted review, which others see.
+        #[clap(long)]
+        publish: bool,
         #[clap(long)]
         head: Option<String>,
         #[clap(long)]
@@ -149,7 +155,7 @@ pub enum ReviewCommand {
         base: Option<String>,
     },
     /// Comment on a line of the PR's diff, with the comment read from stdin. The comment starts a
-    /// thread, in your draft review, which is started if you have none.
+    /// thread, in your draft review, which is started if you have none, unless --local.
     Comment {
         /// The file's path, from the top of the repository.
         #[clap(long)]
@@ -163,14 +169,20 @@ pub enum ReviewCommand {
         /// The name of the agent writing the comment, shown with it.
         #[clap(long)]
         agent: Option<String>,
+        /// Make the comment local-only: sync never posts it to GitHub.
+        #[clap(long, conflicts_with = "draft")]
+        local: bool,
+        /// Put the comment in your draft review, which sync posts to GitHub. This is the default.
+        #[clap(long)]
+        draft: bool,
         #[clap(long)]
         head: Option<String>,
         #[clap(long)]
         base: Option<String>,
     },
-    /// Sync the PR with GitHub: push its branch, add every draft comment to your pending review
-    /// there, and copy GitHub's reviews into the local PR. With no draft comments, it only copies
-    /// GitHub's reviews.
+    /// Sync the PR with GitHub: copy GitHub's reviews into the local PR, bring the branch up to
+    /// the PR's head, and add every draft comment to your pending review there. With no draft
+    /// comments, it only copies GitHub's reviews. Local-only comments are never posted.
     Sync {
         /// Create a draft PR on GitHub if the branch has none. A PR makes the branch visible to
         /// everyone who can see the repository.
@@ -181,14 +193,37 @@ pub enum ReviewCommand {
         #[clap(long)]
         base: Option<String>,
     },
-    /// Reply to a thread, with the reply read from stdin. The reply goes into your draft review,
-    /// which is started if you have none.
+    /// Reply to a thread, with the reply read from stdin. The reply is local-only if the thread's
+    /// first comment is, and otherwise goes into your draft review, which is started if you have
+    /// none.
     Reply {
         /// The thread's id, as `delta --tui review show` prints it.
         thread: String,
         /// The name of the agent writing the reply, shown with it.
         #[clap(long)]
         agent: Option<String>,
+        /// Make the reply local-only: sync never posts it to GitHub.
+        #[clap(long, conflicts_with = "draft")]
+        local: bool,
+        /// Put the reply in your draft review, which sync posts to GitHub.
+        #[clap(long)]
+        draft: bool,
+        #[clap(long)]
+        head: Option<String>,
+        #[clap(long)]
+        base: Option<String>,
+    },
+    /// Move a local comment to local-only, which sync never posts, or to your draft review, which
+    /// sync posts to GitHub.
+    Move {
+        /// The comment's id, as `delta --tui review show --format json` prints it.
+        comment: String,
+        /// Move it to local-only.
+        #[clap(long, conflicts_with = "draft", required_unless_present = "draft")]
+        local: bool,
+        /// Move it to your draft review, which is started if you have none.
+        #[clap(long)]
+        draft: bool,
         #[clap(long)]
         head: Option<String>,
         #[clap(long)]

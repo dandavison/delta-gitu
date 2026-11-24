@@ -2,7 +2,10 @@
 //! Comments written in gitu go into the user's pending review, which GitHub shows only to them
 //! until they submit it on GitHub.
 
-use super::{ADDED_TO_DRAFT, Backend, Comment, Place, Side, Subject, Thread, ViewedState};
+use super::{
+    Backend, Comment, Place, Side, Subject, Thread, ViewedState,
+    remote::{self, Change, Consent},
+};
 use crate::{Res, error::Error};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -50,14 +53,10 @@ pub(crate) struct GitHubBackend {
     pub pr: GitHubPr,
 }
 
-impl GitHubBackend {
-    /// The id of the user's pending review of the PR, started if they have none.
-    pub fn pending_review(&self) -> Res<String> {
-        match self.github.pending_review(&self.pr)? {
-            Some(review) => Ok(review),
-            None => self.github.start_review(&self.pr),
-        }
-    }
+/// What a [`GitHubBackend`] says when asked to write a comment: a GitHub PR is opened as a local
+/// PR linked to it, whose comments reach GitHub by sync.
+fn written_locally() -> Error {
+    Error::Gh("Comments on a GitHub PR are written in the local PR linked to it".to_owned())
 }
 
 impl Backend for GitHubBackend {
@@ -76,40 +75,43 @@ impl Backend for GitHubBackend {
     }
 
     fn set_viewed(&self, path: &str, viewed: bool) -> Res<()> {
-        self.github.set_viewed(&self.pr, path, viewed)
+        let change = Change::SetViewed {
+            pr: &self.pr,
+            path,
+            viewed,
+        };
+        remote::write(self.github.as_ref(), change, Consent::Private).map(|_| ())
     }
 
     fn threads(&self) -> Res<Vec<Thread>> {
         self.github.threads(&self.pr)
     }
 
-    fn reply(&self, thread_id: &str, body: &str) -> Res<&'static str> {
-        let threads = self.github.threads(&self.pr)?;
-        let first = threads
-            .iter()
-            .find(|thread| thread.id == thread_id)
-            .and_then(|thread| thread.comments.first())
-            .ok_or_else(|| Error::Gh("Couldn't reply: the thread is not on GitHub".to_owned()))?;
-        let review = self.pending_review()?;
-        self.github.add_reply(&review, &first.id, body)?;
-        Ok(ADDED_TO_DRAFT)
+    fn reply(&self, _thread_id: &str, _body: &str) -> Res<&'static str> {
+        Err(written_locally())
     }
 
-    fn comment(&self, path: &str, line: (Side, u32), body: &str) -> Res<&'static str> {
-        let review = self.pending_review()?;
-        self.github
-            .add_thread(&review, path, Place::Line(line.0, line.1), body)?;
-        Ok(ADDED_TO_DRAFT)
+    fn comment(&self, _path: &str, _line: (Side, u32), _body: &str) -> Res<&'static str> {
+        Err(written_locally())
     }
 
-    fn edit_comment(&self, _thread_id: &str, comment_id: &str, body: &str) -> Res<&'static str> {
-        self.github.edit_comment(comment_id, body)?;
-        Ok("Comment updated")
+    fn edit_comment(
+        &self,
+        _thread_id: &str,
+        _comment_id: &str,
+        _body: &str,
+        _consent: Consent,
+    ) -> Res<&'static str> {
+        Err(written_locally())
     }
 
-    fn delete_comment(&self, _thread_id: &str, comment_id: &str) -> Res<&'static str> {
-        self.github.delete_comment(comment_id)?;
-        Ok("Comment deleted")
+    fn delete_comment(
+        &self,
+        _thread_id: &str,
+        _comment_id: &str,
+        _consent: Consent,
+    ) -> Res<&'static str> {
+        Err(written_locally())
     }
 
     fn file_url(&self, path: &str, line: Option<(Side, u32)>) -> Option<String> {
@@ -279,9 +281,13 @@ const UNMARK_VIEWED: &str = "mutation($id: ID!, $path: String!) {
 
 /// Where, in GitHub's reply to each mutation, is what it did: the new review's, thread's or
 /// comment's id, or the mutation's payload.
-const PR_COMMIT_COUNT: &str = "query($id: ID!) {
-  node(id: $id) { ... on PullRequest { commits { totalCount } } }
+/// A PR's base and head commits, and how many commits it has, read together so that they agree:
+/// read one at a time, a push between them gives the old head with the new number of commits.
+const PR_COMMITS: &str = "query($id: ID!) {
+  node(id: $id) { ... on PullRequest { baseRefOid headRefOid commits { totalCount } } }
 }";
+const BASE_OID: &str = "/data/node/baseRefOid";
+const HEAD_OID: &str = "/data/node/headRefOid";
 const COMMIT_COUNT: &str = "/data/node/commits/totalCount";
 const STARTED_REVIEW: &str = "/data/addPullRequestReview/pullRequestReview/id";
 const ADDED_THREAD: &str = "/data/addPullRequestReviewThread/thread/comments/nodes/0/id";
@@ -373,16 +379,24 @@ impl GitHub for Gh {
             number: u64,
             url: String,
             base_ref_name: String,
-            base_ref_oid: String,
-            head_ref_oid: String,
         }
 
         let mut args = vec!["pr", "view"];
         args.extend(selector);
-        args.extend(["--json", "id,number,url,baseRefName,baseRefOid,headRefOid"]);
+        args.extend(["--json", "id,number,url,baseRefName"]);
         let view: View = serde_json::from_str(&self.run(&args)?)
             .map_err(|e| Error::Gh(format!("Couldn't read gh's description of the PR: {e}")))?;
-        let output = self.graphql(PR_COMMIT_COUNT, &[("id", &view.id)], &[], None)?;
+        let output = self.graphql(PR_COMMITS, &[("id", &view.id)], &[], None)?;
+        let oid = |pointer: &str, what: &str| {
+            let oid = required(&output, pointer, what)?;
+            oid.as_str().map(str::to_owned).ok_or_else(|| {
+                Error::Gh(format!(
+                    "Couldn't {what}: GitHub replied with {oid} where a commit should be"
+                ))
+            })
+        };
+        let base_oid = oid(BASE_OID, "find the PR's base commit")?;
+        let head_oid = oid(HEAD_OID, "find the PR's head commit")?;
         let commits = required(&output, COMMIT_COUNT, "count the PR's commits")?;
         let commits = commits.as_u64().ok_or_else(|| {
             Error::Gh(format!(
@@ -396,8 +410,8 @@ impl GitHub for Gh {
             number: view.number,
             url: view.url,
             base_ref: view.base_ref_name,
-            base_oid: view.base_ref_oid,
-            head_oid: view.head_ref_oid,
+            base_oid,
+            head_oid,
         })
     }
 
@@ -696,6 +710,7 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
                         editable: comment.state.as_deref() == Some("PENDING"),
                         deletable: comment.state.as_deref() == Some("PENDING"),
                         submitted: comment.state.as_deref() != Some("PENDING"),
+                        local_only: false,
                         agent: None,
                     })
                     .collect(),

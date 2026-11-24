@@ -40,6 +40,12 @@ pub(crate) const STATES: &[State] = &[
         at: (260, 0),
     },
     State {
+        key: "local_only",
+        label: "Local-only comments\n(in no review, never posted)",
+        place: Place::Local,
+        at: (520, 0),
+    },
+    State {
         key: "pending",
         label: "Pending review\n(only its author sees it)",
         place: Place::GitHub,
@@ -64,6 +70,24 @@ pub(crate) const EDGES: &[Edge] = &[
         from: None,
         to: "mine",
         label: "i, or review comment [--agent <name>]",
+        copies: false,
+    },
+    Edge {
+        from: None,
+        to: "local_only",
+        label: "review comment --local",
+        copies: false,
+    },
+    Edge {
+        from: Some("mine"),
+        to: "local_only",
+        label: "p, or review move --local",
+        copies: false,
+    },
+    Edge {
+        from: Some("local_only"),
+        to: "mine",
+        label: "p, or review move --draft",
         copies: false,
     },
     Edge {
@@ -171,8 +195,19 @@ mod tests {
     /// without deciding where it goes in the diagram.
     fn edge_label(action: &Action) -> Option<&'static str> {
         match action {
-            Action::Write { thread: None, .. } => Some("i, or review comment [--agent <name>]"),
-            // A reply goes into the same draft review as a comment.
+            Action::Write {
+                thread: None,
+                local: false,
+                ..
+            } => Some("i, or review comment [--agent <name>]"),
+            Action::Write {
+                thread: None,
+                local: true,
+                ..
+            } => Some("review comment --local"),
+            Action::Move { local: true, .. } => Some("p, or review move --local"),
+            Action::Move { local: false, .. } => Some("p, or review move --draft"),
+            // A reply goes where a comment does.
             Action::Write {
                 thread: Some(_), ..
             } => None,
@@ -197,6 +232,22 @@ mod tests {
             Action::Write {
                 repo: Repo::Laptop,
                 thread: None,
+                local: false,
+            },
+            Action::Write {
+                repo: Repo::Laptop,
+                thread: None,
+                local: true,
+            },
+            Action::Move {
+                repo: Repo::Laptop,
+                comment: 1,
+                local: true,
+            },
+            Action::Move {
+                repo: Repo::Laptop,
+                comment: 1,
+                local: false,
             },
             Action::Sync {
                 repo: Repo::Laptop,

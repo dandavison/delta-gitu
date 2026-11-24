@@ -4,6 +4,7 @@ expression: ctx.redact_buffer()
 ---
 ▌Root (bindings.root)                                                                                                                                 |
 ▌ x                 toggle-viewed          Tick or untick the PR file's Viewed checkbox on GitHub                                                     |
+▌ p                 toggle-local-only      Move the comment between your draft review, which sync posts, and local-only                               |
 ▌ o                 show-on-github         Open the PR file, hunk, line or comment on GitHub, to comment there                                        |
 ▌ i                 write-comment          Write a comment or a reply, or edit your own comment                                                       |
 ▌ Y                 show-refs              List branches and tags                                                                                     |
@@ -31,5 +32,4 @@ expression: ctx.redact_buffer()
 ▌ k up              move-up-line           Up a line, through a diff's lines too                                                                      |
 ▌ j down            move-down-line         Down a line, through a diff's lines too                                                                    |
 ▌ ctrl+k ctrl+up    move-up                Up, stopping only at file headers, hunk headers and commits                                                |
-▌ ctrl+j ctrl+down  move-down              Down, stopping only at file headers, hunk headers and commits                                              |
 styles_hash: e39343c74ddcf565

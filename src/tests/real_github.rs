@@ -57,6 +57,10 @@ impl RealPr {
         run(&dir, &["git", "checkout", "-q", "-b", &base, "origin/main"]);
         let lines: String = (1..=12).map(|n| format!("line {n}\n")).collect();
         commit(&dir, "lines.txt", &lines);
+        // Commits are made at a fixed time, so without a message of its own the PR's head would be
+        // the same commit in every run, and GitHub allows only 100 PRs with one head commit.
+        let message = format!("Add lines.txt for {name}-{nanos}");
+        run(&dir, &["git", "commit", "-q", "--amend", "-m", &message]);
         run(&dir, &["git", "push", "-q", "-u", "origin", &base]);
         run(&dir, &["git", "checkout", "-q", "-b", &head]);
         commit(&dir, "lines.txt", &lines.replace("line 5\n", "line five\n"));
@@ -282,10 +286,11 @@ impl RealPr {
         .to_owned()
     }
 
-    /// The PR's author pushes a commit to its branch that makes `lines.txt` `lines`, which the
-    /// clone's branch, behind, doesn't have. Returns once GitHub shows the commit as the PR's head.
-    fn author_pushes(&self, lines: &str) {
-        commit(&self.dir, "lines.txt", lines);
+    /// The PR's author pushes a commit to its branch that makes the file `path` `contents`, which
+    /// the clone's branch, behind, doesn't have. Returns once GitHub shows the commit as the PR's
+    /// head.
+    fn author_pushes(&self, path: &str, contents: &str) {
+        commit(&self.dir, path, contents);
         run(&self.dir, &["git", "push", "-q", "origin", &self.head]);
         let pushed = run(&self.dir, &["git", "rev-parse", "HEAD"])
             .trim()
@@ -817,7 +822,7 @@ fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
     .unwrap();
     // The author changes line 5 on GitHub.
     let lines = std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap();
-    pr.author_pushes(&lines.replace("line five\n", "line FIVE\n"));
+    pr.author_pushes("lines.txt", &lines.replace("line five\n", "line FIVE\n"));
 
     // The PR changed since the draft was written: nothing is posted, and the draft, whose line
     // has gone, is now on its file, for the user to see.
@@ -852,7 +857,7 @@ fn a_draft_written_before_the_pr_changed_is_moved_and_posted_only_at_the_next_sy
     .unwrap();
     // The author adds a line above it on GitHub.
     let lines = std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap();
-    pr.author_pushes(&format!("line 0\n{lines}"));
+    pr.author_pushes("lines.txt", &format!("line 0\n{lines}"));
 
     let error = pr.review(&["sync"], "").unwrap_err().to_string();
 
@@ -894,13 +899,13 @@ fn syncing_with_commits_github_doesnt_have_refuses_and_pushes_nothing() {
 }
 
 /// A branch behind GitHub's PR, as when its author has pushed since, is brought up to it by sync.
+/// Untracked files don't stop it.
 #[test]
 #[ignore = "against GitHub itself: run with cargo test-github"]
 fn syncing_fast_forwards_a_branch_behind_githubs_head() {
     let pr = RealPr::new(stdext::function_name!());
-    commit(&pr.dir, "more.txt", "more\n");
-    run(&pr.dir, &["git", "push", "-q", "origin", &pr.head]);
-    run(&pr.dir, &["git", "reset", "-q", "--hard", "HEAD~1"]);
+    pr.author_pushes("more.txt", "more\n");
+    std::fs::write(pr.dir.join("untracked.txt"), "untracked\n").unwrap();
 
     pr.review(&["sync"], "").unwrap();
 
@@ -908,6 +913,45 @@ fn syncing_fast_forwards_a_branch_behind_githubs_head() {
         run(&pr.dir, &["git", "rev-parse", "HEAD"]).trim(),
         pr.remote_head()
     );
+}
+
+/// Right after the PR's author pushes, the PR opens: GitHub's head for it and how many commits it
+/// has are read as of one moment, so that they agree.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn the_pr_opens_right_after_its_author_pushes() {
+    let pr = RealPr::new(stdext::function_name!());
+    commit(&pr.dir, "more.txt", "more\n");
+    run(&pr.dir, &["git", "push", "-q", "origin", &pr.head]);
+    run(&pr.dir, &["git", "reset", "-q", "--hard", "HEAD~1"]);
+
+    for _ in 0..5 {
+        pr.review(&["show"], "").unwrap();
+    }
+}
+
+/// A branch behind GitHub's PR is not brought up to it while tracked files have uncommitted
+/// changes, which the incoming commits would be mixed into: sync says which files they are, and
+/// leaves the branch and the changes as they were.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn syncing_a_branch_behind_githubs_head_with_uncommitted_changes_refuses() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.author_pushes("more.txt", "more\n");
+    let before = run(&pr.dir, &["git", "rev-parse", "HEAD"]);
+    std::fs::write(pr.dir.join("lines.txt"), "uncommitted\n").unwrap();
+
+    let error = pr.review(&["sync"], "").unwrap_err().to_string();
+
+    assert!(error.contains("uncommitted changes"), "{error}");
+    assert!(error.contains("lines.txt"), "{error}");
+    assert_eq!(run(&pr.dir, &["git", "rev-parse", "HEAD"]), before);
+    assert_eq!(
+        std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap(),
+        "uncommitted\n"
+    );
+    // So that closing the PR can switch branches.
+    run(&pr.dir, &["git", "checkout", "--", "lines.txt"]);
 }
 
 /// A draft reply whose thread was deleted on GitHub can't be posted: sync posts nothing, and says
@@ -941,4 +985,37 @@ fn a_draft_reply_whose_thread_was_deleted_on_github_is_refused_and_kept() {
         .unwrap_or_else(|| panic!("{json}"));
     assert_eq!(orphan["deleted_on_github"], true, "{json}");
     assert_eq!(orphan["comments"][0]["body"], "and more", "{json}");
+}
+
+/// My comment in a submitted review is public: the review command line changes it on GitHub only
+/// when given --publish.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn editing_my_comment_in_a_submitted_review_needs_publish() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.submitted_thread("line: 4, side: RIGHT", "on four");
+    pr.review(&["sync"], "").unwrap();
+    let comment = pr.only_local_thread()["comments"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let error = pr
+        .review(&["edit", &comment], "on four, edited")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("--publish"), "{error}");
+    let github = pr.github_threads();
+    assert_eq!(
+        github[0]["comments"]["nodes"][0]["body"], "on four",
+        "{github:?}"
+    );
+
+    pr.review(&["edit", &comment, "--publish"], "on four, edited")
+        .unwrap();
+    let github = pr.github_threads();
+    assert_eq!(
+        github[0]["comments"]["nodes"][0]["body"], "on four, edited",
+        "{github:?}"
+    );
 }

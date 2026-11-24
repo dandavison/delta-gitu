@@ -12,6 +12,7 @@ pub(crate) mod github;
 pub(crate) mod lifecycle;
 pub(crate) mod local;
 pub(crate) mod post;
+pub(crate) mod remote;
 
 use crate::screen::review::CommentOptions;
 use crate::text_area::TextArea;
@@ -54,12 +55,24 @@ pub(crate) trait Backend {
     /// user.
     fn comment(&self, path: &str, line: (Side, u32), body: &str) -> Res<&'static str>;
     /// Change what the comment `comment_id`, in the thread `thread_id`, says to `body`,
-    /// returning what to tell the user. Only a comment in a draft review can be changed.
-    fn edit_comment(&self, thread_id: &str, comment_id: &str, body: &str) -> Res<&'static str>;
+    /// returning what to tell the user. A local comment can be changed, and the user's own on
+    /// GitHub, publicly only with `consent` (see [`remote::write`]).
+    fn edit_comment(
+        &self,
+        thread_id: &str,
+        comment_id: &str,
+        body: &str,
+        consent: remote::Consent,
+    ) -> Res<&'static str>;
     /// Delete the comment `comment_id`, in the thread `thread_id`, and the thread with it if it
-    /// was the thread's only comment, returning what to tell the user. Only a comment in a draft
-    /// review can be deleted.
-    fn delete_comment(&self, thread_id: &str, comment_id: &str) -> Res<&'static str>;
+    /// was the thread's only comment, returning what to tell the user, as
+    /// [`Backend::edit_comment`] changes one.
+    fn delete_comment(
+        &self,
+        thread_id: &str,
+        comment_id: &str,
+        consent: remote::Consent,
+    ) -> Res<&'static str>;
     /// Read what the backend copies from elsewhere again, as `g r` asks.
     fn refresh(&self) -> Res<()> {
         Ok(())
@@ -148,14 +161,16 @@ pub(crate) struct Comment {
     pub created_at: chrono::DateTime<chrono::FixedOffset>,
     /// Whether the comment is in a draft review, which only its reviewer sees.
     pub draft: bool,
+    /// Whether the comment is local-only: in no review, so that sync never posts it.
+    pub local_only: bool,
     /// Whether the comment is in a submitted review, which everyone who can see the PR sees.
     pub submitted: bool,
-    /// Whether `i` on it edits it, rather than replying: the user's own comment, in a draft
-    /// review or in a review on GitHub, when the PR's backend can change that, and not written by
-    /// an agent.
+    /// Whether `i` on it edits it, rather than replying: the user's own comment, local (in the
+    /// draft review, or local-only) or in a review on GitHub, when the PR's backend can change
+    /// that, and not written by an agent.
     pub editable: bool,
-    /// Whether the user can delete it: any comment in a draft review, or their own comment in a
-    /// review on GitHub, when the PR's backend can change that.
+    /// Whether the user can delete it: any local comment, in the draft review or local-only, or
+    /// their own comment in a review on GitHub, when the PR's backend can change that.
     pub deletable: bool,
 }
 
@@ -360,11 +375,17 @@ pub(crate) mod cli {
                 line,
                 side,
                 agent,
+                local,
+                draft,
                 head,
                 base,
             } => {
                 let body = read_body(input, "comment")?;
-                let pr = pr_by(repo, Rc::clone(&github), head, base, agent)?;
+                let pr = with_bucket(
+                    pr_by(repo, Rc::clone(&github), head, base, agent)?,
+                    *local,
+                    *draft,
+                );
                 let (side, old) = match side {
                     ReviewSide::New => (Side::New, ""),
                     ReviewSide::Old => (Side::Old, " (old side)"),
@@ -380,31 +401,51 @@ pub(crate) mod cli {
             ReviewCommand::Reply {
                 thread,
                 agent,
+                local,
+                draft,
                 head,
                 base,
             } => {
                 let body = read_body(input, "reply")?;
-                let pr = pr_by(repo, Rc::clone(&github), head, base, agent)?;
+                let pr = with_bucket(
+                    pr_by(repo, Rc::clone(&github), head, base, agent)?,
+                    *local,
+                    *draft,
+                );
                 pr.reply(thread, &body)?;
                 Ok(())
             }
+            ReviewCommand::Move {
+                comment,
+                local,
+                head,
+                base,
+                ..
+            } => pr_by(repo, Rc::clone(&github), head, base, &None)?.move_comment(comment, *local),
             ReviewCommand::Fetch { head, base } => {
                 let pr = pr_by(repo, Rc::clone(&github), head, base, &None)?;
                 pr.fetch(&github_backend(&pr, github)?)
             }
             ReviewCommand::Edit {
                 comment,
+                publish,
                 head,
                 base,
             } => {
                 let body = read_body(input, "comment")?;
-                pr_by(repo, Rc::clone(&github), head, base, &None)?.edit(comment, &body)
+                pr_by(repo, Rc::clone(&github), head, base, &None)?.edit(
+                    comment,
+                    &body,
+                    consent(*publish),
+                )
             }
             ReviewCommand::Delete {
                 comment,
+                publish,
                 head,
                 base,
-            } => pr_by(repo, Rc::clone(&github), head, base, &None)?.delete(comment),
+            } => pr_by(repo, Rc::clone(&github), head, base, &None)?
+                .delete(comment, consent(*publish)),
             ReviewCommand::Show {
                 format: ShowFormat::Json,
                 head,
@@ -460,6 +501,16 @@ pub(crate) mod cli {
         })
     }
 
+    /// `pr`, writing local-only comments if `local`, and draft comments if `draft`; by default,
+    /// as [`LocalBackend::with_bucket`] says.
+    fn with_bucket(pr: LocalBackend, local: bool, draft: bool) -> LocalBackend {
+        match (local, draft) {
+            (true, _) => pr.with_bucket(true),
+            (_, true) => pr.with_bucket(false),
+            _ => pr,
+        }
+    }
+
     /// The local PR `head` into `base`, saying on stderr if it wasn't checked against GitHub.
     fn local_pr(
         repo: Repository,
@@ -473,6 +524,15 @@ pub(crate) mod cli {
             eprintln!("{unchecked}");
         }
         Ok(pr)
+    }
+
+    /// The consent `--publish` gives.
+    fn consent(publish: bool) -> super::remote::Consent {
+        if publish {
+            super::remote::Consent::Publish
+        } else {
+            super::remote::Consent::Private
+        }
     }
 
     /// A comment or reply, `what`, read from `input`, without the newline it ends with.

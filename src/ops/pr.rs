@@ -12,6 +12,7 @@ use crate::{
     review::{
         self, Backend, CommentEditor, EditorTarget, OpenPr, Side, ViewedState,
         local::{LocalBackend, NOT_DRAFT},
+        remote::Consent,
     },
     screen,
     style::Style,
@@ -274,6 +275,50 @@ impl OpTrait for ToggleViewed {
     }
 }
 
+/// Move a local comment to local-only, which sync never posts, or back to the draft review.
+pub(crate) struct ToggleLocalOnly;
+impl OpTrait for ToggleLocalOnly {
+    fn get_action(&self, target: &ItemData) -> Option<Action> {
+        let (thread_id, comment_id) = comment_of(target)?;
+        Some(Rc::new(move |app, _term| {
+            let Some(pr) = app.screen().pr.clone() else {
+                app.display_error(NO_REVIEW);
+                return Ok(());
+            };
+            let Some(local) = pr.backend.as_local() else {
+                app.display_error("Only a local PR's comments can be local-only");
+                return Ok(());
+            };
+            let Some(comment) = pr.comment(&thread_id, &comment_id) else {
+                app.display_error("The comment has been deleted");
+                return Ok(());
+            };
+            if !comment.draft && !comment.local_only {
+                app.display_error("Only a local comment can be moved: this one is on GitHub");
+                return Ok(());
+            }
+            let to_local = !comment.local_only;
+            local.move_comment(&comment_id, to_local)?;
+            pr.reread_threads()?;
+            app.screen_mut().redecorate();
+            app.display_info(if to_local {
+                "Moved the comment to local-only: sync won't post it"
+            } else {
+                "Moved the comment to your draft review: sync will post it"
+            });
+            Ok(())
+        }))
+    }
+
+    fn is_target_op(&self) -> bool {
+        true
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Toggle local-only".into()
+    }
+}
+
 pub(crate) struct ShowOnGithub;
 impl OpTrait for ShowOnGithub {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
@@ -462,7 +507,12 @@ impl OpTrait for WriteComment {
     }
 }
 
-/// Delete a comment in a draft review, once the user confirms.
+/// What to ask before changing a comment others can see.
+const PUBLIC_EDIT: &str = "This comment is public on GitHub: change it there? [y/n]";
+const PUBLIC_DELETE: &str = "This comment is public on GitHub: delete it there? [y/n]";
+
+/// Delete a comment, once the user confirms: one in a submitted review, which others can see, as
+/// such.
 pub(crate) fn delete_comment(thread_id: String, comment_id: String) -> Action {
     Rc::new(move |app, term| {
         let Some(pr) = app.screen().pr.clone() else {
@@ -476,8 +526,19 @@ pub(crate) fn delete_comment(thread_id: String, comment_id: String) -> Action {
             app.display_error(NOT_DRAFT);
             return Ok(());
         }
-        app.confirm(term, "Really delete the comment? [y/n]")?;
-        let message = pr.backend.delete_comment(&thread_id, &comment_id)?;
+        let public = pr
+            .comment(&thread_id, &comment_id)
+            .is_some_and(|c| c.submitted);
+        let consent = if public {
+            app.confirm(term, PUBLIC_DELETE)?;
+            Consent::Publish
+        } else {
+            app.confirm(term, "Really delete the comment? [y/n]")?;
+            Consent::Private
+        };
+        let message = pr
+            .backend
+            .delete_comment(&thread_id, &comment_id, consent)?;
         pr.reread_threads()?;
         app.screen_mut().redecorate();
         app.display_info(message);
@@ -513,7 +574,7 @@ pub(crate) fn editor_has_focus(app: &App) -> bool {
 }
 
 /// Edit the comment box that has focus as `key` says, or leave it.
-pub(crate) fn handle_editor_key(app: &mut App, _term: &mut Term, key: KeyEvent) -> Res<()> {
+pub(crate) fn handle_editor_key(app: &mut App, term: &mut Term, key: KeyEvent) -> Res<()> {
     let Some(pr) = app.screen().pr.clone() else {
         return Ok(());
     };
@@ -531,7 +592,7 @@ pub(crate) fn handle_editor_key(app: &mut App, _term: &mut Term, key: KeyEvent) 
     };
     match outcome {
         Outcome::Edited | Outcome::Moved | Outcome::Leave => show_editor(app),
-        Outcome::Submit => post_comment(app)?,
+        Outcome::Submit => post_comment(app, term)?,
         Outcome::Ignored => {}
     }
     Ok(())
@@ -541,7 +602,7 @@ pub(crate) fn handle_editor_key(app: &mut App, _term: &mut Term, key: KeyEvent) 
 /// again to show it, with the box gone. A new comment is not posted while HEAD is not the PR's
 /// head on GitHub, which its line is numbered against. What was written is kept if it is not
 /// posted.
-fn post_comment(app: &mut App) -> Res<()> {
+fn post_comment(app: &mut App, term: &mut Term) -> Res<()> {
     let Some(pr) = app.screen().pr.clone() else {
         return Ok(());
     };
@@ -571,7 +632,20 @@ fn post_comment(app: &mut App) -> Res<()> {
         EditorTarget::Edit {
             thread_id,
             comment_id,
-        } => pr.backend.edit_comment(thread_id, comment_id, &body)?,
+        } => {
+            // A comment in a submitted review is public: changing it is asked first.
+            let consent = if pr
+                .comment(thread_id, comment_id)
+                .is_some_and(|c| c.submitted)
+            {
+                app.confirm(term, PUBLIC_EDIT)?;
+                Consent::Publish
+            } else {
+                Consent::Private
+            };
+            pr.backend
+                .edit_comment(thread_id, comment_id, &body, consent)?
+        }
     };
     *pr.editor.borrow_mut() = None;
     pr.reread_threads()?;

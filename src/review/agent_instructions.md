@@ -18,33 +18,40 @@ opens the current branch's PR with `O O`.
   your name as a label on your comments.
 - **Review**: one author's comments on a PR. A review is in one of these states:
   - **draft**: in this repository only, and can be changed. There is one, and both your comments
-    and the person's go into it.
+    and the person's go into it, unless they are local-only.
   - **pending**: the person's draft review on GitHub, which only they can see.
   - **submitted**: on GitHub, for everyone to see. Later it may be **dismissed**.
+- **Local-only comment**: a comment in no review, which is never posted to GitHub. Your
+  conversations with the person are local-only.
 - **Thread**: a first comment on a line of the diff, and the replies to it.
-- **Sync**: the draft review's comments, yours included, are added to the person's pending review
-  on GitHub, and the reviews on GitHub are copied into the local PR.
+- **Sync**: the person's command to bring the branch up to its GitHub PR's head, add the draft
+  review's comments, yours included, to their pending review on GitHub, and copy the reviews on
+  GitHub into the local PR. Local-only comments are never posted.
 - **Fetch**: copy the reviews on the branch's GitHub PR into the local PR, which sync also does.
   The copies can't be changed locally, except the person's own comments, which are changed on
   GitHub.
 
-How a review goes: your comments go into the draft review, which only this repository has. The
-person reads them in `delta --tui`, replies, and edits or deletes what they don't want. When they
-sync, the draft review's comments, yours included, go into their pending review on GitHub, under
-their name, which they submit there. For the states and how a review moves between them,
-see `delta --tui --pr-state-machine-diagram=d2`.
+How a review goes: your review comments go into the draft review, which only this repository has.
+The person reads them in `delta --tui`, discusses them with you in local-only replies, and edits
+or deletes what they don't want. When they sync, the draft review's comments, yours included, go
+into their pending review on GitHub, under their name, which they submit there. For the states and
+how a review moves between them, see `delta --tui --pr-state-machine-diagram=d2`.
 
 Rules:
 
 - Pass `--agent <your-name>` to `review comment` and `review reply`. Without it, your comments
   look like the person's.
-- Don't sync with GitHub (`delta --tui review sync`) unless the person asks you to. Syncing
-  pushes the branch and adds the draft comments to the person's pending review on GitHub. On a
-  branch with no GitHub PR it needs `--create-pr`, which creates a draft PR that everyone who can
-  see the repository can see: give it only if the person asks for a PR.
+- Write your side of a conversation with the person as local-only: pass `--local` to `review
+  comment` and `review reply`. Use the draft review only for comments meant for GitHub, such as a
+  review of the branch. A reply is local-only by default when its thread's first comment is.
+- Never sync (`delta --tui review sync`) unless the person asks you to. Sync posts the draft
+  comments to the person's pending review on GitHub, and can fast-forward the branch. On a branch
+  with no GitHub PR it needs `--create-pr`, which pushes the branch and creates a draft PR that
+  everyone who can see the repository can see: give it only if the person asks for a PR.
 - Start each comment with 🤖. Posted comments appear on GitHub under the person's name, where
   only the 🤖 shows that an agent wrote them.
-- Edit and delete only your own comments, though nothing stops you changing the person's.
+- Edit, delete and move only your own comments, unless the person asks you to, though nothing
+  stops you changing theirs.
 
 The commands act on the current branch's local PR. Its base is the base of the branch's GitHub
 PR, or else the repository's default branch on GitHub, as gh gives them, which needs the network.
@@ -103,33 +110,34 @@ delta --tui review show --head <branch> --base <branch>
    This prints each thread under a heading with its file and line, such as `## src/main.rs:42`,
    or `(old side)` for a removed line. Then come its id (`Thread id: ...`), the lines it is on with
    its line marked `>`, and its comments in order. Each comment starts with its author (or the
-   agent's name, for one an agent wrote), whether it is in a draft review, and when it was
-   written: `**dan** (draft, 2026-11-22 10:15)`.
+   agent's name, for one an agent wrote), whether it is in the draft review or local-only, and
+   when it was written: `**dan** (draft, 2026-11-22 10:15)`.
 
    Threads follow their lines as the code changes. A thread whose line has gone says so in its
    heading: `## src/main.rs (outdated: was line 42)`.
 
    The same, as JSON, with the ids of comments and reviews, each comment's `agent` (the name of
-   the agent that wrote it, or `null`), and each review's author and state (draft, pending,
-   submitted or dismissed):
+   the agent that wrote it, or `null`) and `local_only`, and each review's author and state
+   (draft, pending, submitted or dismissed):
 
    ```sh
    delta --tui review show --format json
    ```
 
 2. For each thread, find the person's comments that no later comment of yours answers. Answer each
-   one. If a comment asks for a change, make it and commit it, then reply saying what you changed:
+   one, local-only. If a comment asks for a change, make it and commit it, then reply saying what
+   you changed:
 
    ```sh
-   delta --tui review reply <thread-id> --agent <your-name> <<'EOF'
+   delta --tui review reply <thread-id> --agent <your-name> --local <<'EOF'
    🤖 Done in the latest commit: the lock is now released before returning.
    EOF
    ```
 
    If you disagree, reply saying why, and don't make the change.
 
-3. To delete a comment of yours that is still a draft, find its id in
-   `delta --tui review show --format json`, and:
+3. To delete a comment of yours that is still local, in the draft review or local-only, find its
+   id in `delta --tui review show --format json`, and:
 
    ```sh
    delta --tui review delete <comment-id>
@@ -138,13 +146,23 @@ delta --tui review show --head <branch> --base <branch>
    A thread's first comment can't be deleted while the thread has replies: delete the replies
    first. Your comments are those whose `agent` is your name.
 
-   To edit a comment of yours that is still a draft, with its new text on stdin:
+   To edit a comment of yours that is still local, with its new text on stdin:
 
    ```sh
    delta --tui review edit <comment-id> <<'EOF'
    🤖 This returns before the lock is released, on the error path.
    EOF
    ```
+
+   To move a comment of yours between the draft review and local-only:
+
+   ```sh
+   delta --tui review move <comment-id> --local
+   delta --tui review move <comment-id> --draft
+   ```
+
+   A reply in the draft review whose thread's first comment is local-only stops the person's
+   sync: move one or the other.
 
 4. To resolve a thread: [NOT YET BUILT: resolving threads.] Leave resolving to the person.
 
@@ -154,7 +172,23 @@ delta --tui review show --head <branch> --base <branch>
    delta --tui review fetch
    ```
 
-   Then `delta --tui review show` prints them with the local ones, and your replies go into the
-   draft review, for the person to read before they sync. Fetch again to see changes made on
-   GitHub. Don't edit or delete comments in the copies of reviews on GitHub: those that can be
-   changed are the person's, and are changed on GitHub.
+   Then `delta --tui review show` prints them with the local ones. Fetch again to see changes
+   made on GitHub. Don't edit or delete comments in the copies of reviews on GitHub: those that
+   can be changed are the person's, and are changed on GitHub.
+
+## 3. Post your review as a review of its own
+
+Sync posts the whole draft review, the person's comments with yours, into one pending review. When
+the person asks for your review to be posted on its own, do this, syncing only because they asked:
+
+1. Move each of the person's comments in the draft review to local-only, with `review move
+   <comment-id> --local`. Their comments are those whose `agent` is `null`.
+2. Sync:
+
+   ```sh
+   delta --tui review sync
+   ```
+
+3. Tell the person to submit the pending review on GitHub, with a body such as "Review by an
+   agent".
+4. Once they have, move their comments back with `review move <comment-id> --draft`.

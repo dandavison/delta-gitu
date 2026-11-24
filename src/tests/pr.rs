@@ -52,6 +52,23 @@ pub(super) struct FakeGitHub {
     pub(super) unreviewed: RefCell<Vec<String>>,
     /// How many commits GitHub says the PR has: by default, the 2 that `setup`'s `feature` has.
     pub(super) commits: RefCell<usize>,
+    /// Whether the submitted review is mine rather than alice's.
+    pub(super) submitted_by_me: RefCell<bool>,
+    /// How many of the next threads and replies GitHub adds but whose reply is lost, as when the
+    /// network fails just after GitHub has made the change.
+    pub(super) loses_replies: RefCell<usize>,
+}
+
+impl FakeGitHub {
+    /// An error, once GitHub has made the change, if its reply is to be lost.
+    fn reply_lost(&self) -> Result<(), Error> {
+        let mut lost = self.loses_replies.borrow_mut();
+        if *lost == 0 {
+            return Ok(());
+        }
+        *lost -= 1;
+        Err(Error::Gh("error connecting to api.github.com".to_owned()))
+    }
 }
 
 impl GitHub for FakeGitHub {
@@ -92,12 +109,13 @@ impl GitHub for FakeGitHub {
                 .map(|c| c.id.clone())
                 .collect()
         };
+        let mine = *self.submitted_by_me.borrow();
         let mut reviews = vec![GitHubReview {
             id: "submitted".into(),
-            author: "alice".into(),
+            author: if mine { "me" } else { "alice" }.into(),
             state: GitHubReviewState::Submitted,
             comments: comments(false),
-            mine: false,
+            mine,
         }];
         let pending = self.pending.borrow().clone();
         if pending.is_some() || !comments(true).is_empty() {
@@ -180,8 +198,10 @@ impl GitHub for FakeGitHub {
         new.comments[0].draft = true;
         new.comments[0].editable = true;
         new.comments[0].deletable = true;
+        new.comments[0].created_at = chrono::Utc::now().fixed_offset();
         let comment_id = new.comments[0].id.clone();
         self.threads.borrow_mut().push(new);
+        self.reply_lost()?;
         Ok(comment_id)
     }
 
@@ -199,13 +219,16 @@ impl GitHub for FakeGitHub {
             author: "me".into(),
             body: body.to_owned(),
             url: Some(format!("{PR_URL}#reply")),
-            created_at: two_hours_ago(),
+            created_at: chrono::Utc::now().fixed_offset(),
             draft: true,
             editable: true,
             deletable: true,
             submitted: false,
+            local_only: false,
             agent: None,
         });
+        drop(threads);
+        self.reply_lost()?;
         Ok("reply".to_owned())
     }
 
@@ -292,6 +315,8 @@ impl FakeGitHub {
             refuses_threads: RefCell::new(false),
             unreviewed: RefCell::new(vec![]),
             commits: RefCell::new(2),
+            submitted_by_me: RefCell::new(false),
+            loses_replies: RefCell::new(0),
         }
     }
 }
@@ -388,6 +413,7 @@ pub(super) fn thread(
                 editable: false,
                 deletable: false,
                 submitted: true,
+                local_only: false,
                 agent: None,
             })
             .collect(),
@@ -1763,7 +1789,7 @@ fn k_on_a_comment_not_in_a_draft_review_says_it_cannot_be_changed() {
 
     let screen = ctx.redact_buffer();
     assert!(
-        screen.contains("Only a comment in a draft review can be changed"),
+        screen.contains("Only a local comment, or your own on GitHub, can be changed"),
         "{screen}"
     );
     assert!(screen.contains("Why new?"), "{screen}");
@@ -1836,6 +1862,60 @@ fn i_on_my_comment_on_github_edits_it_there() {
     let screen = ctx.redact_buffer();
     assert!(screen.contains("Why new? really"), "{screen}");
     assert!(screen.contains("Comment updated"), "{screen}");
+}
+
+/// Changing my comment in a submitted review changes what others see, so it is asked first.
+#[test]
+fn editing_my_comment_in_a_submitted_review_asks_first() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.submitted_by_me.borrow_mut() = true;
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("me", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO/Why new<enter>i<space>really<ctrl+s>"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("public on GitHub"), "{screen}");
+
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/Why new<enter>i<space>really<ctrl+s>n"));
+    assert!(github.edited.borrow().is_empty());
+
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/Why new<enter>i<space>really<ctrl+s>y"));
+    assert_eq!(
+        *github.edited.borrow(),
+        vec![("t1_0".to_owned(), "Why new? really".to_owned())]
+    );
+}
+
+/// Deleting my comment in a submitted review changes what others see, so it is asked first, as
+/// such.
+#[test]
+fn deleting_my_comment_in_a_submitted_review_asks_first() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.submitted_by_me.borrow_mut() = true;
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?"), ("me", "Because")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO/Because<enter>K"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("public on GitHub"), "{screen}");
+
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/Because<enter>Ky"));
+    assert_eq!(*github.deleted.borrow(), vec!["t1_1".to_owned()]);
 }
 
 #[test]

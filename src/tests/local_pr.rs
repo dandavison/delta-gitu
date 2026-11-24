@@ -907,6 +907,287 @@ fn os_on_a_branch_with_no_github_pr_asks_before_creating_one() {
     assert!(github.posted.borrow().is_empty());
 }
 
+/// Uncommitted changes don't stop a sync that doesn't need to move the branch.
+#[test]
+fn syncing_a_branch_at_githubs_head_with_uncommitted_changes_posts() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    std::fs::write(ctx.dir.join("lines.txt"), "uncommitted\n").unwrap();
+    let github = github_at_head(&ctx);
+
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+
+    assert_eq!(github.posted.borrow().len(), 1);
+}
+
+/// The comment in the review file whose text is `body`.
+fn stored_comment(ctx: &TestContext, body: &str) -> serde_json::Value {
+    let file = review_file(ctx);
+    file["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|t| t["comments"].as_array().unwrap())
+        .find(|c| c["body"] == body)
+        .unwrap_or_else(|| panic!("no comment {body}: {file}"))
+        .clone()
+}
+
+/// The id of the comment whose text is `body`, as the review command line takes it.
+fn comment_id(ctx: &TestContext, body: &str) -> String {
+    stored_comment(ctx, body)["id"].as_str().unwrap().to_owned()
+}
+
+/// A local-only comment is in no review, and sync never posts it.
+#[test]
+fn a_local_only_comment_is_never_posted() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    review_cli_with_input(
+        &ctx.dir,
+        &["comment", "--path", "lines.txt", "--line", "2", "--local"],
+        "just between us",
+    )
+    .unwrap();
+    let github = github_at_head(&ctx);
+
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+
+    assert!(github.posted.borrow().is_empty());
+    assert_eq!(
+        stored_comment(&ctx, "just between us")["review"],
+        serde_json::Value::Null
+    );
+    let show = &["show", "--format", "json"];
+    let json = review_cli_with_github(&ctx.dir, show, "", Rc::clone(&github)).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let comment = &json["threads"][0]["comments"][0];
+    assert_eq!(comment["local_only"], true, "{json}");
+}
+
+/// A reply in a thread whose first comment is local-only is local-only too, unless said.
+#[test]
+fn a_reply_in_a_local_only_thread_is_local_only_unless_said() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    review_cli_with_input(
+        &ctx.dir,
+        &["comment", "--path", "lines.txt", "--line", "2", "--local"],
+        "just between us",
+    )
+    .unwrap();
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    review_cli_with_input(&ctx.dir, &["reply", &thread], "agreed").unwrap();
+    review_cli_with_input(&ctx.dir, &["reply", &thread, "--draft"], "for GitHub").unwrap();
+
+    assert_eq!(
+        stored_comment(&ctx, "agreed")["review"],
+        serde_json::Value::Null
+    );
+    assert_ne!(
+        stored_comment(&ctx, "for GitHub")["review"],
+        serde_json::Value::Null
+    );
+}
+
+/// A comment moves between the draft review and local-only, and sync posts it only from the
+/// draft review.
+#[test]
+fn review_move_moves_a_comment_between_the_draft_review_and_local_only() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let id = comment_id(&ctx, "hello");
+    let github = github_at_head(&ctx);
+
+    review_cli_with_input(&ctx.dir, &["move", &id, "--local"], "").unwrap();
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+    assert!(github.posted.borrow().is_empty());
+
+    review_cli_with_github(&ctx.dir, &["move", &id, "--draft"], "", Rc::clone(&github)).unwrap();
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+    assert_eq!(github.posted.borrow().len(), 1);
+}
+
+/// A draft reply in a thread whose first comment is local-only can't reach GitHub before its
+/// thread: sync posts nothing, and says which reply it is.
+#[test]
+fn a_draft_reply_in_a_local_only_thread_blocks_sync() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    review_cli_with_input(
+        &ctx.dir,
+        &["comment", "--path", "lines.txt", "--line", "2", "--local"],
+        "just between us",
+    )
+    .unwrap();
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    review_cli_with_input(&ctx.dir, &["reply", &thread, "--draft"], "for GitHub").unwrap();
+    let github = github_at_head(&ctx);
+
+    let error = review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("local-only"), "{error}");
+    assert!(error.contains("for GitHub"), "{error}");
+    assert!(github.posted.borrow().is_empty());
+}
+
+/// p on a comment moves it between the draft review and local-only, and the screen says which
+/// it is in.
+#[test]
+fn p_moves_a_comment_to_local_only_and_back() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/hello<enter>"));
+
+    ctx.update(&mut app, keys("p"));
+    assert!(
+        line_with(&ctx, "CI [").contains("local-only"),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert_eq!(
+        stored_comment(&ctx, "hello")["review"],
+        serde_json::Value::Null
+    );
+
+    ctx.update(&mut app, keys("p"));
+    assert!(
+        line_with(&ctx, "CI [").contains("draft"),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert_ne!(
+        stored_comment(&ctx, "hello")["review"],
+        serde_json::Value::Null
+    );
+}
+
+/// A comment GitHub added, though its reply was lost, as when the network fails just after GitHub
+/// has made the change, is not posted again by the next sync: it is found in the pending review.
+#[test]
+fn a_comment_whose_reply_from_github_was_lost_is_not_posted_twice() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    comment_with_base(&ctx, None);
+    *github.loses_replies.borrow_mut() = 1;
+
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap_err();
+    assert_eq!(github.posted.borrow().len(), 1);
+
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+
+    assert_eq!(github.posted.borrow().len(), 1);
+    let file = review_file(&ctx);
+    let comments = file["threads"][0]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1, "{file}");
+    assert_eq!(comments[0]["github"], "new0_0", "{file}");
+}
+
+/// A comment a sync was posting when it stopped may be in the pending review on GitHub already. It
+/// can't be edited, deleted or moved to local-only until a sync finishes: the next sync would not
+/// find it there and would post it twice, or it would be left there.
+#[test]
+fn a_comment_a_stopped_sync_was_posting_cant_be_changed_until_a_sync_finishes() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    comment_with_base(&ctx, None);
+    *github.loses_replies.borrow_mut() = 1;
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap_err();
+    let id = comment_id(&ctx, "hello");
+
+    for args in [
+        vec!["edit", id.as_str()],
+        vec!["delete", id.as_str()],
+        vec!["move", id.as_str(), "--local"],
+    ] {
+        let error = review_cli_with_github(&ctx.dir, &args, "changed", Rc::clone(&github))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("sync again"), "{args:?}: {error}");
+    }
+    assert_ne!(
+        stored_comment(&ctx, "hello")["review"],
+        serde_json::Value::Null
+    );
+
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+    assert_eq!(github.posted.borrow().len(), 1);
+}
+
+/// Of two identical draft comments on a line, one posted though its reply was lost, the other
+/// is still posted: only a comment from an attempt that didn't finish is looked for.
+#[test]
+fn two_identical_drafts_are_both_posted_after_a_lost_reply() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    comment_with_base(&ctx, None);
+    comment_with_base(&ctx, None);
+    *github.loses_replies.borrow_mut() = 1;
+
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap_err();
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+
+    let posted = github.posted.borrow();
+    assert_eq!(posted.len(), 2, "{posted:?}");
+    assert!(posted.iter().all(|(_, body)| body == "hello"), "{posted:?}");
+}
+
+/// Changing my comment in a submitted review changes what others see: the review command line
+/// does it only when given --publish.
+#[test]
+fn review_edit_of_my_comment_in_a_submitted_review_needs_publish() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    *github.submitted_by_me.borrow_mut() = true;
+    *github.threads.borrow_mut() = vec![super::pr::thread(
+        "t1",
+        Some((crate::review::Side::New, 2)),
+        false,
+        &[("me", "Why new?")],
+    )];
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
+
+    let refused = review_cli_with_github(
+        &ctx.dir,
+        &["edit", "github-t1_0"],
+        "Why new? really",
+        Rc::clone(&github),
+    );
+
+    let error = refused.unwrap_err().to_string();
+    assert!(error.contains("--publish"), "{error}");
+    assert!(github.edited.borrow().is_empty());
+
+    review_cli_with_github(
+        &ctx.dir,
+        &["edit", "github-t1_0", "--publish"],
+        "Why new? really",
+        Rc::clone(&github),
+    )
+    .unwrap();
+    assert_eq!(
+        *github.edited.borrow(),
+        vec![("t1_0".to_owned(), "Why new? really".to_owned())]
+    );
+}
+
 /// Sync never pushes: a branch with commits GitHub's PR doesn't have is refused, with nothing
 /// pushed or posted.
 #[test]
