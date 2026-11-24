@@ -629,6 +629,19 @@ fn refresh_reads_the_checkboxes_again() {
     assert!(line_with(&ctx, "added.txt").contains("[x]"));
 }
 
+/// o on the PR's summary, atop its screen, opens the PR's page on GitHub.
+#[test]
+fn o_on_the_summary_opens_the_pr_on_github() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OOgg"));
+
+    ctx.update(&mut app, keys("o"));
+
+    assert_eq!(*github.opened.borrow(), vec![PR_URL.to_owned()]);
+}
+
 #[test]
 fn o_opens_an_added_line_on_github() {
     let mut ctx = setup_clone!();

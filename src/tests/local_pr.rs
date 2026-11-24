@@ -921,6 +921,23 @@ fn syncing_a_branch_at_githubs_head_with_uncommitted_changes_posts() {
     assert_eq!(github.posted.borrow().len(), 1);
 }
 
+/// o on the summary of a PR not on GitHub says so.
+#[test]
+fn o_on_the_summary_of_a_pr_not_on_github_says_so() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OOgg"));
+
+    ctx.update(&mut app, keys("o"));
+
+    assert!(
+        ctx.redact_buffer().contains("This PR is not on GitHub"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
 /// The comment in the review file whose text is `body`.
 fn stored_comment(ctx: &TestContext, body: &str) -> serde_json::Value {
     let file = review_file(ctx);
