@@ -24,6 +24,7 @@ use std::{rc::Rc, sync::Arc};
 
 const NO_REVIEW: &str = "No PR here: O opens one";
 const NOT_ON_GITHUB: &str = "This PR's comments are not on GitHub";
+const PR_NOT_ON_GITHUB: &str = "This PR is not on GitHub";
 
 /// Open the current branch's PR: its local PR, linked to its GitHub PR if it has one (see
 /// [`LocalBackend::new`]). Nothing is checked out.
@@ -322,6 +323,21 @@ impl OpTrait for ToggleLocalOnly {
 pub(crate) struct ShowOnGithub;
 impl OpTrait for ShowOnGithub {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
+        if let ItemData::PrSummary = target {
+            return Some(Rc::new(|app, _term| {
+                let Some(pr) = app.screen().pr.clone() else {
+                    app.display_error(NO_REVIEW);
+                    return Ok(());
+                };
+                match pr.backend.url() {
+                    Some(url) => app.state.github.open(&url),
+                    None => {
+                        app.display_error(PR_NOT_ON_GITHUB);
+                        Ok(())
+                    }
+                }
+            }));
+        }
         if let ItemData::ReviewThread { url, .. } | ItemData::ReviewComment { url, .. } = target {
             let url = url.clone();
             return Some(Rc::new(move |app, _term| match &url {
@@ -424,6 +440,9 @@ impl OpTrait for WriteComment {
                 thread_id: thread_id.clone(),
             }),
             ItemData::CommentEditor { .. } => None,
+            // The PR's summary has no line to comment on, but from it `i` goes back to a box
+            // being written, as from a file's row.
+            ItemData::PrSummary => None,
             // A file's row has no line to comment on, but from it, as from any row of a diff,
             // `i` goes back to a box being written.
             _ => {

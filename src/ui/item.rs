@@ -37,6 +37,8 @@ pub(crate) fn layout_item<'a>(
         ItemData::Raw(content) => {
             layout_span(layout, (content.as_str().into(), base));
         }
+        // The PR's screen gives its summary as rendered, so it is drawn above.
+        ItemData::PrSummary => {}
         ItemData::AllUnstaged(count) => {
             layout_span(
                 layout,

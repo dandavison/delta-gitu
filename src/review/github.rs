@@ -127,6 +127,10 @@ impl Backend for GitHubBackend {
     fn file_url(&self, path: &str, line: Option<(Side, u32)>) -> Option<String> {
         Some(file_url(&self.pr, path, line))
     }
+
+    fn url(&self) -> Option<String> {
+        Some(self.pr.url.clone())
+    }
 }
 
 pub(crate) trait GitHub {

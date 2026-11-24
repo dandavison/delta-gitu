@@ -2004,6 +2004,10 @@ impl Backend for LocalBackend {
             .as_ref()
             .and_then(|linked| linked.file_url(path, line))
     }
+
+    fn url(&self) -> Option<String> {
+        self.linked.as_ref().and_then(|linked| linked.url())
+    }
 }
 
 /// The version of [`PrFile`] this gitu writes. Version 1 had a draft review for each author,

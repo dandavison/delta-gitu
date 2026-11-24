@@ -92,6 +92,8 @@ pub(crate) trait Backend {
     /// The page showing the file at `path` in the PR's diff, at `line` when given, or `None`
     /// when the backend has no pages.
     fn file_url(&self, path: &str, line: Option<(Side, u32)>) -> Option<String>;
+    /// The PR's page, or `None` when the backend has no pages.
+    fn url(&self) -> Option<String>;
 }
 
 /// The Viewed checkbox on each file of a PR. Each reviewer has their own.

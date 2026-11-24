@@ -109,7 +109,7 @@ pub(crate) fn with_threads(
     let mut out = Vec::with_capacity(items.len());
     if let Some(summary) = pr.summary.borrow().clone() {
         out.push(Item {
-            unselectable: true,
+            data: ItemData::PrSummary,
             rendered: Some(Rc::new(vec![(summary, summary_style)])),
             ..Default::default()
         });

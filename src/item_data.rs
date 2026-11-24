@@ -53,6 +53,8 @@ pub(crate) enum ItemData {
         index: usize,
     },
     Header(SectionHeader),
+    /// The summary of the PR atop its screen.
+    PrSummary,
     /// The upstream of the current branch, and how far ahead of and behind it
     /// the branch is.
     BranchStatus(String, u32, u32),
@@ -115,6 +117,7 @@ impl ItemData {
             ItemData::Hunk { .. } => "Hunk",
             ItemData::Stash { .. } => "Stash",
             ItemData::Header(_) => "Section",
+            ItemData::PrSummary => "PR",
             ItemData::BranchStatus(..) => "Branch",
             ItemData::Error(_) => "Error",
             ItemData::ReviewThread { .. }
