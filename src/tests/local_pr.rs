@@ -1437,7 +1437,7 @@ fn a_pr_not_handled_yet_says_how_to_see_its_drafts() {
 
     assert!(error.contains("no longer has open"), "{error}");
     assert!(
-        error.contains("delta --tui review show --head feature --base main"),
+        error.contains("delta tui review show --head feature --base main"),
         "{error}"
     );
 }
@@ -1456,11 +1456,11 @@ fn two_local_prs_for_a_branch_say_how_to_see_each_ones_drafts() {
         .to_string();
 
     assert!(
-        error.contains("delta --tui review show --head feature --base main"),
+        error.contains("delta tui review show --head feature --base main"),
         "{error}"
     );
     assert!(
-        error.contains("delta --tui review show --head feature --base release"),
+        error.contains("delta tui review show --head feature --base release"),
         "{error}"
     );
 }

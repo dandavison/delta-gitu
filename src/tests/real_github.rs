@@ -94,7 +94,7 @@ impl RealPr {
         })
     }
 
-    /// What `delta --tui review <args>` prints, with `input` on stdin.
+    /// What `delta tui review <args>` prints, with `input` on stdin.
     fn review(&self, args: &[&str], input: &str) -> Result<String, Error> {
         use clap::Parser;
         let args = crate::cli::Args::try_parse_from(["gitu", "review"].iter().chain(args))

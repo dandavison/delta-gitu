@@ -5,7 +5,7 @@
 //! command it runs here changes a repository's refs, HEAD or working tree, or the remote's refs.
 //!
 //! Three repositories, each a clone of one remote: my laptop (where my agent writes too, as me),
-//! my desktop, and my colleague's. Everyone acts as an agent would, through `delta --tui review`;
+//! my desktop, and my colleague's. Everyone acts as an agent would, through `delta tui review`;
 //! on my laptop, every other comment is written with `--agent`, which must change nothing the
 //! model sees. GitHub is [`Server`], a fake that keeps reviews for several users, and
 //! that can fail part way through a post.
@@ -459,7 +459,7 @@ impl World {
         }
     }
 
-    /// What `delta --tui review <args>` prints in `store`, with `input` on stdin.
+    /// What `delta tui review <args>` prints in `store`, with `input` on stdin.
     fn review(&self, store: Store, args: &[&str], input: &str) -> Result<String, Error> {
         use clap::Parser;
         let args = crate::cli::Args::try_parse_from(["gitu", "review"].iter().chain(args))
@@ -901,7 +901,7 @@ fn review_bodies(m: &Model, review: Id) -> Vec<String> {
     bodies
 }
 
-/// A repository's local PR, as `delta --tui review show --format json` prints it.
+/// A repository's local PR, as `delta tui review show --format json` prints it.
 fn seen_store(json: &serde_json::Value) -> SeenStore {
     let mut by_review: BTreeMap<String, Vec<SeenComment>> = BTreeMap::new();
     let mut local = vec![];

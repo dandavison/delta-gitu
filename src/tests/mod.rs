@@ -847,11 +847,11 @@ fn outside_a_repository_says_where_to_run() {
 
     assert_eq!(
         error.to_string(),
-        "Not in a git repository: run delta --tui inside one"
+        "Not in a git repository: run delta tui inside one"
     );
 }
 
-/// With its output not a terminal (`delta --tui > file`), there is nowhere to
+/// With its output not a terminal (`delta tui > file`), there is nowhere to
 /// draw, and gitu says what to use instead.
 #[test]
 fn output_that_is_not_a_terminal_says_what_to_use() {
@@ -859,7 +859,7 @@ fn output_that_is_not_a_terminal_says_what_to_use() {
 
     assert_eq!(
         error.to_string(),
-        "delta --tui needs a terminal to draw in. To write a diff to a file or a pipe, use delta without --tui"
+        "delta tui needs a terminal to draw in. To write a diff to a file or a pipe, use delta, not delta tui"
     );
     assert!(crate::needs_terminal(true).is_ok());
 }

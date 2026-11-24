@@ -1,4 +1,4 @@
-//! `delta --tui --agent-instructions` prints a skill for an AI agent: markdown with YAML front
+//! `delta tui --agent-instructions` prints a skill for an AI agent: markdown with YAML front
 //! matter, describing commands that exist.
 
 use crate::{cli::Args, review::AGENT_INSTRUCTIONS};
@@ -20,14 +20,14 @@ fn agent_instructions_are_a_skill_with_a_name_and_description() {
     assert!(front_matter.contains("\ndescription: "), "{front_matter}");
 }
 
-/// Each `delta --tui review` command in the instructions' code blocks is one delta accepts, with
+/// Each `delta tui review` command in the instructions' code blocks is one delta accepts, with
 /// its placeholders, such as `<thread-id>` or `<line>`, filled in with `1`.
 #[test]
 fn every_review_command_in_the_agent_instructions_is_accepted() {
     let commands: Vec<&str> = AGENT_INSTRUCTIONS
         .lines()
         .map(str::trim)
-        .filter_map(|line| line.strip_prefix("delta --tui "))
+        .filter_map(|line| line.strip_prefix("delta tui "))
         .collect();
     assert!(commands.len() >= 4, "{AGENT_INSTRUCTIONS}");
     for command in commands {
@@ -49,7 +49,7 @@ fn every_review_command_in_the_agent_instructions_is_accepted() {
         let result = Args::try_parse_from(std::iter::once("gitu").chain(words));
         assert!(
             result.is_ok(),
-            "delta --tui {command}: {}",
+            "delta tui {command}: {}",
             result.unwrap_err()
         );
     }
