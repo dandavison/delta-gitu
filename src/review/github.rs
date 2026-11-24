@@ -204,7 +204,10 @@ const THREADS_QUERY: &str = "query($id: ID!, $endCursor: String) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id isResolved path line diffSide
-          comments(first: 100) { nodes { id author { login } body url createdAt state } }
+          comments(first: 100) {
+            totalCount
+            nodes { id author { login } body url createdAt state }
+          }
         }
       }
     }
@@ -216,7 +219,10 @@ const REVIEWS_QUERY: &str = "query($id: ID!, $endCursor: String) {
     ... on PullRequest {
       reviews(first: 100, after: $endCursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { id state viewerDidAuthor author { login } comments(first: 100) { nodes { id } } }
+        nodes {
+          id state viewerDidAuthor author { login }
+          comments(first: 100) { totalCount nodes { id } }
+        }
       }
     }
   }
@@ -607,7 +613,7 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
         path: String,
         line: Option<u32>,
         diff_side: String,
-        comments: Nodes<CommentNode>,
+        comments: Counted<CommentNode>,
     }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -627,46 +633,43 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
 
     let mut threads = vec![];
     for page in serde_json::Deserializer::from_str(output).into_iter::<Page>() {
-        threads.extend(
-            page?
-                .data
-                .node
-                .review_threads
-                .nodes
-                .into_iter()
-                .map(|node| {
-                    let side = if node.diff_side == "LEFT" {
-                        Side::Old
-                    } else {
-                        Side::New
-                    };
-                    Thread {
-                        id: node.id,
-                        path: node.path,
-                        line: node.line.map(|line| (side, line)),
-                        resolved: node.is_resolved,
-                        comments: node
-                            .comments
-                            .nodes
-                            .into_iter()
-                            .map(|comment| Comment {
-                                id: comment.id,
-                                author: comment
-                                    .author
-                                    .map_or_else(|| "ghost".to_owned(), |author| author.login),
-                                body: comment.body,
-                                url: Some(comment.url),
-                                created_at: comment.created_at,
-                                draft: comment.state.as_deref() == Some("PENDING"),
-                                editable: comment.state.as_deref() == Some("PENDING"),
-                                deletable: comment.state.as_deref() == Some("PENDING"),
-                                submitted: comment.state.as_deref() != Some("PENDING"),
-                                agent: None,
-                            })
-                            .collect(),
-                    }
-                }),
-        );
+        let nodes = page?.data.node.review_threads.nodes;
+        for node in &nodes {
+            node.comments
+                .check(&format!("The thread {} on {}", node.id, node.path))?;
+        }
+        threads.extend(nodes.into_iter().map(|node| {
+            let side = if node.diff_side == "LEFT" {
+                Side::Old
+            } else {
+                Side::New
+            };
+            Thread {
+                id: node.id,
+                path: node.path,
+                line: node.line.map(|line| (side, line)),
+                resolved: node.is_resolved,
+                comments: node
+                    .comments
+                    .nodes
+                    .into_iter()
+                    .map(|comment| Comment {
+                        id: comment.id,
+                        author: comment
+                            .author
+                            .map_or_else(|| "ghost".to_owned(), |author| author.login),
+                        body: comment.body,
+                        url: Some(comment.url),
+                        created_at: comment.created_at,
+                        draft: comment.state.as_deref() == Some("PENDING"),
+                        editable: comment.state.as_deref() == Some("PENDING"),
+                        deletable: comment.state.as_deref() == Some("PENDING"),
+                        submitted: comment.state.as_deref() != Some("PENDING"),
+                        agent: None,
+                    })
+                    .collect(),
+            }
+        }));
     }
     Ok(threads)
 }
@@ -696,7 +699,7 @@ fn parse_reviews(output: &str) -> serde_json::Result<Vec<GitHubReview>> {
         state: String,
         viewer_did_author: bool,
         author: Option<Author>,
-        comments: Nodes<Id>,
+        comments: Counted<Id>,
     }
     #[derive(Deserialize)]
     struct Author {
@@ -710,6 +713,7 @@ fn parse_reviews(output: &str) -> serde_json::Result<Vec<GitHubReview>> {
     let mut reviews = vec![];
     for page in serde_json::Deserializer::from_str(output).into_iter::<Page>() {
         for node in page?.data.node.reviews.nodes {
+            node.comments.check(&format!("The review {}", node.id))?;
             let state = match node.state.as_str() {
                 "PENDING" => GitHubReviewState::Pending,
                 "COMMENTED" | "APPROVED" | "CHANGES_REQUESTED" => GitHubReviewState::Submitted,
@@ -733,6 +737,29 @@ fn parse_reviews(output: &str) -> serde_json::Result<Vec<GitHubReview>> {
         }
     }
     Ok(reviews)
+}
+
+/// The first of a list GitHub gives a page at a time, and how many there are in all.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Counted<T> {
+    total_count: usize,
+    nodes: Vec<T>,
+}
+
+impl<T> Counted<T> {
+    /// An error unless the list is whole: gitu reads only its first page, so `what`, with more,
+    /// is refused rather than read without the rest.
+    fn check<E: serde::de::Error>(&self, what: &str) -> Result<(), E> {
+        if self.total_count > self.nodes.len() {
+            return Err(E::custom(format!(
+                "{what} has {} comments, but gitu reads only the first {}: not handled yet",
+                self.total_count,
+                self.nodes.len()
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// The lines `path<TAB>state` that [`Gh::viewed`] has gh print. A line it can't read is an
