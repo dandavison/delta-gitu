@@ -285,7 +285,7 @@ fn warning_row() -> Item {
 
 /// The delta options gitu draws comments with. delta's config sets them, as it sets its own,
 /// so that a delta feature can.
-pub(crate) const OPTION_NAMES: [&str; 9] = [
+pub(crate) const OPTION_NAMES: [&str; 10] = [
     "comment-style",
     "comment-author-style",
     "comment-timestamp-style",
@@ -295,6 +295,7 @@ pub(crate) const OPTION_NAMES: [&str; 9] = [
     "comment-editor-style",
     "comment-editor-decoration-style",
     "comment-submitted-style",
+    "comment-link-style",
 ];
 
 /// How comments are drawn, from the delta options in [`OPTION_NAMES`].
@@ -319,6 +320,8 @@ pub(crate) struct CommentOptions {
     /// What a comment in a submitted review, which everyone can see, is drawn in over `text`,
     /// if set.
     pub submitted: Option<Style>,
+    /// What a markdown link's text is drawn in over the comment's text.
+    pub link: Style,
     /// An option whose value is not a style, as what to tell the user. Its default is used.
     pub errors: Vec<String>,
     /// Whether delta draws the diff side by side, which decides the panel a comment goes in.
@@ -353,6 +356,7 @@ impl CommentOptions {
         let timestamp = style(2, "dim", false).style;
         let count = style(3, "blue", false).style;
         let decoration = style(4, "blue", true);
+        let link = style(9, "ul", false).style;
         let mut set_style = |i: usize, decoration: bool| {
             let value = values.get(i).cloned().flatten()?;
             parse_delta_style(&value, decoration)
@@ -366,6 +370,7 @@ impl CommentOptions {
             editor_text,
             editor_decoration,
             submitted,
+            link,
             text,
             author,
             timestamp,
@@ -805,35 +810,126 @@ fn comment_rows(
         header.push((notes.to_owned(), text.patch(options.decoration.style)));
     }
     let mut rows = vec![padded(header)];
+    let link = text.patch(options.link);
     for line in comment.body.lines() {
-        for row in wrap(line, width, width) {
-            rows.push(padded(vec![(row, text)]));
+        for row in wrap(&shown(line), width, width) {
+            rows.push(padded(spans(&row, text, link)));
         }
     }
     rows
 }
 
+/// A character of a comment as it is shown, with the URL of the markdown link whose text it is in,
+/// if it is in one.
+type Shown<'a> = (char, Option<&'a str>);
+
+/// `line` as it is shown: a markdown link, `[text](url)`, as its text, each character of which
+/// has its URL. A link in a code span is code, and is shown as written.
+fn shown(line: &str) -> Vec<Shown<'_>> {
+    let mut out = vec![];
+    let mut rest = line;
+    while let Some(c) = rest.chars().next() {
+        // A code span runs to the next backtick; without one, a backtick is just text.
+        if c == '`'
+            && let Some(end) = rest[1..].find('`')
+        {
+            out.extend(rest[..end + 2].chars().map(|c| (c, None)));
+            rest = &rest[end + 2..];
+            continue;
+        }
+        if c == '['
+            && let Some((text, url, len)) = link_at(rest)
+        {
+            out.extend(text.chars().map(|c| (c, Some(url))));
+            rest = &rest[len..];
+            continue;
+        }
+        out.push((c, None));
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
+/// The markdown link `[text](url)` at the start of `s`, as its text, its URL and its length in
+/// bytes. Its text may have code spans, and brackets in pairs; its URL has no spaces, and
+/// parentheses only in pairs, so that a link with a title, `[text](url "title")`, is not one.
+fn link_at(s: &str) -> Option<(&str, &str, usize)> {
+    let mut depth = 0;
+    let mut in_code = false;
+    let mut close = None;
+    for (i, c) in s.char_indices().skip(1) {
+        match c {
+            '`' => in_code = !in_code,
+            '[' if !in_code => depth += 1,
+            ']' if !in_code && depth == 0 => {
+                close = Some(i);
+                break;
+            }
+            ']' if !in_code => depth -= 1,
+            _ => {}
+        }
+    }
+    let close = close?;
+    let text = &s[1..close];
+    let target = s[close + 1..].strip_prefix('(')?;
+    let mut depth = 0;
+    for (i, c) in target.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => {
+                let url = &target[..i];
+                return (!text.is_empty() && !url.is_empty()).then_some((
+                    text,
+                    url,
+                    close + 2 + i + 1,
+                ));
+            }
+            ')' => depth -= 1,
+            c if c.is_whitespace() => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `row` as spans: its text in `text`, and a link's text in `link`, linked to its URL.
+fn spans(row: &[Shown], text: Style, link: Style) -> Row {
+    let mut spans: Row = vec![];
+    for chunk in row.chunk_by(|a, b| a.1 == b.1) {
+        let shown: String = chunk.iter().map(|(c, _)| c).collect();
+        spans.push(match chunk[0].1 {
+            Some(url) => (crate::ui::osc8_hyperlink(&shown, url), link),
+            None => (shown, text),
+        });
+    }
+    spans
+}
+
 /// `text` split into rows at spaces, the first at most `first` columns wide and
 /// the rest at most `rest`. A word wider than a row is split where the row
-/// ends.
-fn wrap(text: &str, first: usize, rest: usize) -> Vec<String> {
+/// ends. Each character keeps what it has with it, such as a link.
+fn wrap<T: Clone>(text: &[(char, T)], first: usize, rest: usize) -> Vec<Vec<(char, T)>> {
+    let width =
+        |chars: &[(char, T)]| -> usize { chars.iter().map(|(c, _)| c.width().unwrap_or(0)).sum() };
+    let spaces: Vec<&(char, T)> = text.iter().filter(|(c, _)| *c == ' ').collect();
     let mut rows = vec![];
-    let mut row = String::new();
+    let mut row = vec![];
     let mut room = first;
-    for word in text.split(' ') {
-        if !row.is_empty() && row.width() + 1 + word.width() > room {
+    for (i, word) in text.split(|(c, _)| *c == ' ').enumerate() {
+        if !row.is_empty() && width(&row) + 1 + width(word) > room {
             rows.push(std::mem::take(&mut row));
             room = rest;
         }
         if !row.is_empty() {
-            row.push(' ');
+            // The space before the word, which is not the first.
+            row.push(spaces[i - 1].clone());
         }
-        for c in word.chars() {
-            if row.width() + c.width().unwrap_or(0) > room {
+        for c in word {
+            if width(&row) + c.0.width().unwrap_or(0) > room {
                 rows.push(std::mem::take(&mut row));
                 room = rest;
             }
-            row.push(c);
+            row.push(c.clone());
         }
     }
     rows.push(row);
@@ -842,13 +938,70 @@ fn wrap(text: &str, first: usize, rest: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap;
+    use super::{link_at, shown, wrap};
+
+    fn wrapped(text: &str, first: usize, rest: usize) -> Vec<String> {
+        let chars: Vec<(char, ())> = text.chars().map(|c| (c, ())).collect();
+        wrap(&chars, first, rest)
+            .into_iter()
+            .map(|row| row.into_iter().map(|(c, _)| c).collect())
+            .collect()
+    }
 
     #[test]
     fn wrap_breaks_at_spaces_and_splits_a_word_wider_than_a_row() {
-        assert_eq!(wrap("aa bb cc", 5, 5), ["aa bb", "cc"]);
-        assert_eq!(wrap("aa bb cc", 2, 5), ["aa", "bb cc"]);
-        assert_eq!(wrap("abcdefg", 3, 3), ["abc", "def", "g"]);
-        assert_eq!(wrap("", 3, 3), [""]);
+        assert_eq!(wrapped("aa bb cc", 5, 5), ["aa bb", "cc"]);
+        assert_eq!(wrapped("aa bb cc", 2, 5), ["aa", "bb cc"]);
+        assert_eq!(wrapped("abcdefg", 3, 3), ["abc", "def", "g"]);
+        assert_eq!(wrapped("", 3, 3), [""]);
+    }
+
+    /// The text shown for a line, with the URL of each run of it that is a link's text.
+    fn links(line: &str) -> (String, Vec<(String, &str)>) {
+        let shown = shown(line);
+        let text = shown.iter().map(|(c, _)| c).collect();
+        let links = shown
+            .chunk_by(|a, b| a.1 == b.1)
+            .filter_map(|run| Some((run.iter().map(|(c, _)| c).collect(), run[0].1?)))
+            .collect();
+        (text, links)
+    }
+
+    #[test]
+    fn a_markdown_link_is_shown_as_its_text_with_its_url() {
+        assert_eq!(
+            links("See [the check](https://e.com/a), here"),
+            (
+                "See the check, here".to_owned(),
+                vec![("the check".to_owned(), "https://e.com/a")]
+            )
+        );
+        assert_eq!(
+            links("[`f`](https://e.com/f_(x)) and [`g`](https://e.com/g)"),
+            (
+                "`f` and `g`".to_owned(),
+                vec![
+                    ("`f`".to_owned(), "https://e.com/f_(x)"),
+                    ("`g`".to_owned(), "https://e.com/g")
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_markdown_link_is_shown_as_written() {
+        for line in [
+            "`[text](https://e.com)`",
+            "[text](https://e.com \"title\")",
+            "[text] (https://e.com)",
+            "[](https://e.com)",
+            "[text]()",
+            "[text](https://e.com",
+            "[text",
+            "a ` b [text](c",
+        ] {
+            assert_eq!(links(line), (line.to_owned(), vec![]), "{line}");
+        }
+        assert_eq!(link_at("[a [b] c](u)"), Some(("a [b] c", "u", 12)));
     }
 }
