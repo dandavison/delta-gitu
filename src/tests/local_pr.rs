@@ -1514,10 +1514,11 @@ fn oo_without_github_or_a_local_pr_is_an_error() {
     );
 }
 
-/// The status view shows the current branch's local PR: its base, whether it is on GitHub, its
-/// draft comments, and its commits, which are the PR's log.
+/// The status view shows the current branch's local PR, as one line: its base, whether it is on
+/// GitHub, and how many commits and draft comments it has. Its commits are not listed: they are
+/// in its log.
 #[test]
-fn the_status_view_shows_the_branchs_pr_and_its_commits() {
+fn the_status_view_shows_the_branchs_pr_as_a_summary() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     comment_with_base(&ctx, None);
@@ -1535,8 +1536,53 @@ fn the_status_view_shows_the_branchs_pr_and_its_commits() {
         .iter()
         .position(|line| line.contains("PR into main"))
         .unwrap();
-    assert!(lines[at + 1].contains("add added.txt"), "{screen}");
-    assert!(lines[at + 2].contains("modify lines.txt"), "{screen}");
+    assert!(!lines[at + 1].contains("add added.txt"), "{screen}");
+}
+
+/// The PR's screen starts with the same summary of the PR.
+#[test]
+fn the_pr_screen_starts_with_a_summary_of_the_pr() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    let first = screen.lines().next().unwrap();
+    assert!(
+        first.contains("PR into main · not on GitHub · 2 commits · 1 draft comment"),
+        "{screen}"
+    );
+}
+
+/// On the PR's screen, the log is the PR's: its commits, as the user's log arguments show them,
+/// on top of the PR's screen.
+#[test]
+fn ll_on_the_pr_screen_shows_the_prs_log() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    ctx.config().general.log_args = vec!["--format=logged %s".to_owned()];
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO"));
+
+    ctx.update(&mut app, keys("ll"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("logged add added.txt"), "{screen}");
+    assert!(screen.contains("logged modify lines.txt"), "{screen}");
+    assert!(!screen.contains("logged add lines.txt"), "{screen}");
+    let screens = app.state.screens.len();
+
+    ctx.update(&mut app, keys("q"));
+
+    assert_eq!(app.state.screens.len(), screens - 1);
+    assert!(
+        ctx.redact_buffer().contains("added: added.txt"),
+        "{}",
+        ctx.redact_buffer()
+    );
 }
 
 /// A local PR linked to a GitHub PR shows the GitHub PR's number in the status view.
