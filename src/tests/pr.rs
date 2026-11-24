@@ -1551,10 +1551,10 @@ fn a_markdown_link_in_a_comment_shows_its_text_linked_to_its_url() {
     assert!(!s.modifier.contains(Modifier::UNDERLINED));
 }
 
-/// Under a comment are its reactions: each emoji, with who reacted, each linked to their page,
-/// and how many more reacted than GitHub gave.
+/// Under a comment are its reactions: an emoji for each person who reacted with it, linked to
+/// their page, without their name, and how many more reacted than GitHub gave.
 #[test]
-fn reactions_show_who_reacted_each_linked_to_their_page() {
+fn each_reaction_links_to_the_page_of_who_reacted() {
     use crate::review::{Reaction, Reactor};
     let reactor = |login: &str| Reactor {
         login: login.to_owned(),
@@ -1581,19 +1581,30 @@ fn reactions_show_who_reacted_each_linked_to_their_page() {
     ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
-    assert!(
-        screen.contains("👍 bob, carol  🎉 dave and 11 more"),
-        "{screen}"
-    );
-    assert_eq!(
-        cell(&ctx, "bob, carol", 'b').link.as_deref(),
-        Some("https://github.com/bob")
-    );
-    assert_eq!(
-        cell(&ctx, "bob, carol", 'v').link.as_deref(),
-        Some("https://github.com/dave")
-    );
-    assert_eq!(cell(&ctx, "bob, carol", 'm').link, None, "more");
+    assert!(screen.contains("👍👍  🎉 +11"), "{screen}");
+    assert!(!screen.contains("bob"), "{screen}");
+    let crate::term::TermBackend::Test { buffer, .. } = &ctx.term else {
+        unreachable!();
+    };
+    let row = buffer
+        .cells
+        .chunks(buffer.width as usize)
+        .find(|row| {
+            row.iter()
+                .map(|c| c.symbol.as_str())
+                .collect::<String>()
+                .contains("+11")
+        })
+        .unwrap();
+    let links = |emoji: &str| -> Vec<Option<String>> {
+        row.iter()
+            .filter(|c| c.symbol == emoji)
+            .map(|c| c.link.clone())
+            .collect()
+    };
+    let page = |login: &str| Some(format!("https://github.com/{login}"));
+    assert_eq!(links("👍"), [page("bob"), page("carol")]);
+    assert_eq!(links("🎉"), [page("dave")]);
 }
 
 /// A link's text wraps as other words do, each row of it linked, however long its URL.
