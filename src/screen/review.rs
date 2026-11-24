@@ -844,15 +844,16 @@ fn comment_rows(
         }
     }
     if !comment.reactions.is_empty() {
+        // Linked, but not drawn as links are, which would underline the emoji.
         for row in wrap(&reactions_shown(&comment.reactions), width, width) {
-            rows.push(padded(spans(&row, text, link)));
+            rows.push(padded(spans(&row, text, text)));
         }
     }
     rows
 }
 
-/// A comment's reactions as they are shown: each emoji, with who reacted, each linked to their
-/// page, and how many more reacted than GitHub gave.
+/// A comment's reactions as they are shown: the emoji once for each person who reacted with it,
+/// linked to their page, and how many more reacted than GitHub gave.
 fn reactions_shown(reactions: &[review::Reaction]) -> Vec<Shown<'_>> {
     let plain = |out: &mut Vec<Shown>, text: &str| out.extend(text.chars().map(|c| (c, None)));
     let mut out = vec![];
@@ -860,21 +861,21 @@ fn reactions_shown(reactions: &[review::Reaction]) -> Vec<Shown<'_>> {
         if i > 0 {
             plain(&mut out, "  ");
         }
-        plain(&mut out, &reaction.emoji);
-        plain(&mut out, " ");
         if reaction.people.is_empty() {
-            plain(&mut out, &reaction.count.to_string());
+            plain(&mut out, &format!("{} {}", reaction.emoji, reaction.count));
             continue;
         }
-        for (j, person) in reaction.people.iter().enumerate() {
-            if j > 0 {
-                plain(&mut out, ", ");
-            }
-            out.extend(person.login.chars().map(|c| (c, Some(person.url.as_str()))));
+        for person in &reaction.people {
+            out.extend(
+                reaction
+                    .emoji
+                    .chars()
+                    .map(|c| (c, Some(person.url.as_str()))),
+            );
         }
         let more = reaction.count.saturating_sub(reaction.people.len());
         if more > 0 {
-            plain(&mut out, &format!(" and {more} more"));
+            plain(&mut out, &format!(" +{more}"));
         }
     }
     out
