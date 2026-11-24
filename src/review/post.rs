@@ -10,7 +10,11 @@ use super::{
 };
 use crate::{Res, error::Error};
 use git2::Repository;
-use std::{collections::HashMap, process::Command, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    process::Command,
+    rc::Rc,
+};
 
 /// What [`sync`] did.
 pub(crate) enum Synced {
@@ -94,8 +98,8 @@ pub(crate) fn push_command(repo: &Repository, head: &str) -> Res<Command> {
 /// deleted on GitHub, or starts with a local-only comment. If posting stops part way, as when the
 /// network fails, each comment posted is recorded as it is, so that syncing again posts the rest
 /// into the same pending review, the only one the user can have; one GitHub added but whose reply
-/// was lost is found there, and not posted again. Each thread's first comment is posted before
-/// its replies.
+/// was lost is found among the user's comments, even once they have submitted it, and not posted
+/// again. Each thread's first comment is posted before its replies.
 pub(crate) fn sync(
     local: &LocalBackend,
     github: Rc<dyn GitHub>,
@@ -170,8 +174,8 @@ pub(crate) fn sync(
     post(local, github, pr, to_post)
 }
 
-/// Post `to_post` into the user's pending review on `pr`, which is started if they have none,
-/// and then fetch the PR's reviews.
+/// Post `to_post` into the user's pending review on `pr`, which is started if they have none and
+/// a comment is to be added, and then fetch the PR's reviews.
 fn post(
     local: &LocalBackend,
     github: Rc<dyn GitHub>,
@@ -180,38 +184,33 @@ fn post(
 ) -> Res<Synced> {
     check_pr(local, &pr).map_err(|e| Error::Gh(format!("Couldn't post: {e}")))?;
     local.record_link(&pr)?;
-    let review = match github.pending_review(&pr)? {
-        Some(pending) => pending,
-        None => {
-            let change = Change::StartReview { pr: &pr };
-            remote::write(github.as_ref(), change, Consent::Private)?.id()?
-        }
-    };
+    // Started only when a comment is to be added to it, as every one may be on GitHub already.
+    let mut review = github.pending_review(&pr)?;
     // What an earlier attempt that didn't finish may have added, though gitu never heard back.
-    let mut pending = if to_post.iter().any(|c| c.posting_since.is_some()) {
-        pending_comments(github.as_ref(), &pr)?
+    let mut added = if to_post.iter().any(|c| c.posting_since.is_some()) {
+        my_comments(github.as_ref(), &pr)?
     } else {
         vec![]
     };
     let (mut threads, mut replies) = (0, 0);
     let mut started: HashMap<String, String> = HashMap::new();
     for comment in to_post {
-        let found = |at: &At, pending: &mut Vec<Pending>| {
+        let found = |at: &At, added: &mut Vec<Added>| {
             comment
                 .posting_since
-                .and_then(|since| take_added(pending, at, &comment.body, since))
+                .and_then(|since| take_added(added, at, &comment.body, since))
         };
         if let Some(place) = comment.starts {
             let at = At::Thread {
                 path: comment.path.clone(),
                 place,
             };
-            let first = match found(&at, &mut pending) {
+            let first = match found(&at, &mut added) {
                 Some(added) => added,
                 None => {
                     local.mark_posting(&comment.id)?;
                     let change = Change::AddThread {
-                        review: &review,
+                        review: &pending_review(github.as_ref(), &pr, &mut review)?,
                         path: &comment.path,
                         place,
                         body: &comment.body,
@@ -231,10 +230,10 @@ fn post(
                 })?
                 .clone();
             let at = At::Reply { to: first.clone() };
-            if found(&at, &mut pending).is_none() {
+            if found(&at, &mut added).is_none() {
                 local.mark_posting(&comment.id)?;
                 let change = Change::AddReply {
-                    review: &review,
+                    review: &pending_review(github.as_ref(), &pr, &mut review)?,
                     to: &first,
                     body: &comment.body,
                 };
@@ -257,9 +256,19 @@ fn post(
 /// machine's clock and GitHub's differ.
 const CLOCK_SKEW: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
 
-/// A comment in the user's pending review on GitHub, as an attempt to post a draft comment that
-/// didn't finish may have added it.
-struct Pending {
+/// The id of the user's pending review on `pr`: `review`, or one started if they have none.
+fn pending_review(github: &dyn GitHub, pr: &GitHubPr, review: &mut Option<String>) -> Res<String> {
+    if let Some(id) = review {
+        return Ok(id.clone());
+    }
+    let id = remote::write(github, Change::StartReview { pr }, Consent::Private)?.id()?;
+    *review = Some(id.clone());
+    Ok(id)
+}
+
+/// A comment of the user's on GitHub, as an attempt to post a draft comment that didn't finish
+/// may have added it.
+struct Added {
     id: String,
     at: At,
     body: String,
@@ -274,10 +283,16 @@ enum At {
     Reply { to: String },
 }
 
-/// The comments in the user's pending review on `pr`, which only they can see, so that any of
-/// them was added by the user.
-fn pending_comments(github: &dyn GitHub, pr: &GitHubPr) -> Res<Vec<Pending>> {
-    let mut pending = vec![];
+/// The user's comments on `pr`, in their pending review or in one they have submitted since an
+/// attempt added them.
+fn my_comments(github: &dyn GitHub, pr: &GitHubPr) -> Res<Vec<Added>> {
+    let mine: HashSet<String> = github
+        .reviews(pr)?
+        .into_iter()
+        .filter(|review| review.mine)
+        .flat_map(|review| review.comments)
+        .collect();
+    let mut added = vec![];
     for thread in github.threads(pr)? {
         let place = match (thread.subject, thread.line) {
             (Subject::File, _) => Some(Place::File),
@@ -289,7 +304,7 @@ fn pending_comments(github: &dyn GitHub, pr: &GitHubPr) -> Res<Vec<Pending>> {
             continue;
         };
         for (i, comment) in thread.comments.into_iter().enumerate() {
-            if !comment.draft {
+            if !mine.contains(&comment.id) {
                 continue;
             }
             let at = match (i, place) {
@@ -300,7 +315,7 @@ fn pending_comments(github: &dyn GitHub, pr: &GitHubPr) -> Res<Vec<Pending>> {
                 (0, None) => continue,
                 _ => At::Reply { to: first.clone() },
             };
-            pending.push(Pending {
+            added.push(Added {
                 id: comment.id,
                 at,
                 body: comment.body,
@@ -308,21 +323,21 @@ fn pending_comments(github: &dyn GitHub, pr: &GitHubPr) -> Res<Vec<Pending>> {
             });
         }
     }
-    Ok(pending)
+    Ok(added)
 }
 
-/// The id of the comment in `pending` that an attempt begun at `since` added at `at` saying
-/// `body`, if there is one, taken from `pending` so that each is found once.
+/// The id of the comment in `added` that an attempt begun at `since` added at `at` saying
+/// `body`, if there is one, taken from `added` so that each is found once.
 fn take_added(
-    pending: &mut Vec<Pending>,
+    added: &mut Vec<Added>,
     at: &At,
     body: &str,
     since: chrono::DateTime<chrono::FixedOffset>,
 ) -> Option<String> {
-    let i = pending.iter().position(|p| {
-        p.at == *at && p.body.trim_end() == body.trim_end() && p.created_at >= since - CLOCK_SKEW
+    let i = added.iter().position(|a| {
+        a.at == *at && a.body.trim_end() == body.trim_end() && a.created_at >= since - CLOCK_SKEW
     })?;
-    Some(pending.remove(i).id)
+    Some(added.remove(i).id)
 }
 
 /// Bring `local`'s branch up to `pr`'s head on GitHub, with `gh pr checkout`, which only fast-
