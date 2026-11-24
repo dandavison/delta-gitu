@@ -188,7 +188,7 @@ pub(crate) fn d2() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::lifecycle::{Action, Person, Repo};
+    use crate::review::lifecycle::{Action, Person, Store};
 
     /// The diagram's edge for each of the state machine's actions, or `None` for one that
     /// changes no review's state. The match has no wildcard, so that a new action can't be added
@@ -230,30 +230,32 @@ mod tests {
     fn every_action_that_changes_a_reviews_state_is_in_the_diagram() {
         let actions = [
             Action::Write {
-                repo: Repo::Laptop,
+                store: Store::Laptop,
                 thread: None,
                 local: false,
             },
             Action::Write {
-                repo: Repo::Laptop,
+                store: Store::Laptop,
                 thread: None,
                 local: true,
             },
             Action::Move {
-                repo: Repo::Laptop,
+                store: Store::Laptop,
                 comment: 1,
                 local: true,
             },
             Action::Move {
-                repo: Repo::Laptop,
+                store: Store::Laptop,
                 comment: 1,
                 local: false,
             },
             Action::Sync {
-                repo: Repo::Laptop,
+                store: Store::Laptop,
                 stop_after: None,
             },
-            Action::Fetch { repo: Repo::Laptop },
+            Action::Fetch {
+                store: Store::Laptop,
+            },
             Action::Submit { user: Person::Me },
             Action::BrowserComment { user: Person::Me },
             Action::Dismiss { review: 1 },

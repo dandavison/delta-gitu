@@ -20,7 +20,7 @@ use crate::{
     review::{
         Comment, Place, Side, Subject, Thread, ViewedState,
         github::{GitHub, GitHubPr, GitHubReview, GitHubReviewState},
-        lifecycle::{Action, CommentRef, Id, Model, Person, Repo, ReviewState, Rules},
+        lifecycle::{Action, CommentRef, Id, Model, Person, ReviewState, Rules, Store},
     },
 };
 use std::{
@@ -384,14 +384,14 @@ impl GitHub for User {
 #[derive(Debug, PartialEq, Eq)]
 struct Seen {
     github: Vec<SeenReview>,
-    repos: BTreeMap<Repo, SeenRepo>,
+    stores: BTreeMap<Store, SeenStore>,
 }
 
 type SeenComment = (String, Option<u32>);
 type SeenReview = (String, String, Vec<SeenComment>);
 
 #[derive(Debug, PartialEq, Eq)]
-struct SeenRepo {
+struct SeenStore {
     /// The draft reviews, by author.
     drafts: BTreeMap<String, Vec<SeenComment>>,
     /// The local-only comments.
@@ -403,7 +403,7 @@ struct SeenRepo {
 /// The repositories, the fake GitHub, and which line each of the model's threads is on.
 struct World {
     _ctx: TestContext,
-    dirs: BTreeMap<Repo, PathBuf>,
+    dirs: BTreeMap<Store, PathBuf>,
     server: Rc<RefCell<Server>>,
     lines: BTreeMap<Id, u32>,
     next_line: u32,
@@ -422,9 +422,9 @@ impl World {
         commit(&laptop, FILE, &new);
         run(&laptop, &["git", "push", "-u", "origin", "feature"]);
         run(&laptop, &["git", "config", "user.name", "me"]);
-        let mut dirs = BTreeMap::from([(Repo::Laptop, laptop)]);
-        for (repo, user) in [(Repo::Desktop, "me"), (Repo::Colleague, "colleague")] {
-            let dir = ctx.dir.parent().unwrap().join(format!("{repo:?}"));
+        let mut dirs = BTreeMap::from([(Store::Laptop, laptop)]);
+        for (store, user) in [(Store::Desktop, "me"), (Store::Colleague, "colleague")] {
+            let dir = ctx.dir.parent().unwrap().join(format!("{store:?}"));
             let url = url::Url::from_file_path(&ctx.remote_dir)
                 .unwrap()
                 .to_string();
@@ -435,7 +435,7 @@ impl World {
             run(&dir, &["git", "config", "user.name", user]);
             run(&dir, &["git", "config", "user.email", "ci@example.com"]);
             run(&dir, &["git", "checkout", "feature"]);
-            dirs.insert(repo, dir);
+            dirs.insert(store, dir);
         }
         for dir in dirs.values() {
             run(dir, &["git", "remote", "set-head", "origin", "main"]);
@@ -457,8 +457,8 @@ impl World {
         }
     }
 
-    /// What `delta --tui review <args>` prints in `repo`, with `input` on stdin.
-    fn review(&self, repo: Repo, args: &[&str], input: &str) -> Result<String, Error> {
+    /// What `delta --tui review <args>` prints in `store`, with `input` on stdin.
+    fn review(&self, store: Store, args: &[&str], input: &str) -> Result<String, Error> {
         use clap::Parser;
         let args = crate::cli::Args::try_parse_from(["gitu", "review"].iter().chain(args))
             .unwrap_or_else(|e| panic!("{e}"));
@@ -467,13 +467,13 @@ impl World {
         };
         let github = Rc::new(User {
             server: Rc::clone(&self.server),
-            login: login(repo.github_user()),
+            login: login(store.owner()),
         });
         let mut out = vec![];
         let before = self.git_state();
         let result = crate::review::cli::run(
             &command,
-            git2::Repository::open(&self.dirs[&repo]).unwrap(),
+            git2::Repository::open(&self.dirs[&store]).unwrap(),
             github,
             &mut input.as_bytes(),
             &mut out,
@@ -483,7 +483,7 @@ impl World {
         assert_eq!(
             self.git_state(),
             before,
-            "{command:?} in {repo:?} changed more than review data"
+            "{command:?} in {store:?} changed more than review data"
         );
         result?;
         Ok(String::from_utf8(out).unwrap())
@@ -518,31 +518,31 @@ impl World {
         state
     }
 
-    fn json(&self, repo: Repo) -> serde_json::Value {
+    fn json(&self, store: Store) -> serde_json::Value {
         let out = self
-            .review(repo, &["show", "--format", "json"], "")
-            .unwrap_or_else(|e| panic!("show --format json in {repo:?}: {e}"));
+            .review(store, &["show", "--format", "json"], "")
+            .unwrap_or_else(|e| panic!("show --format json in {store:?}: {e}"));
         serde_json::from_str(&out).unwrap()
     }
 
-    /// The id, in `repo`'s local PR, of the comment whose text is `body`.
-    fn comment_id(&self, repo: Repo, body: &str) -> String {
-        let json = self.json(repo);
+    /// The id, in `store`'s local PR, of the comment whose text is `body`.
+    fn comment_id(&self, store: Store, body: &str) -> String {
+        let json = self.json(store);
         json["threads"]
             .as_array()
             .unwrap()
             .iter()
             .flat_map(|t| t["comments"].as_array().unwrap())
             .find(|c| model_text(c["body"].as_str().unwrap()) == body)
-            .unwrap_or_else(|| panic!("no comment {body} in {repo:?}: {json}"))["id"]
+            .unwrap_or_else(|| panic!("no comment {body} in {store:?}: {json}"))["id"]
             .as_str()
             .unwrap()
             .to_owned()
     }
 
-    /// The id, in `repo`'s local PR, of the thread with a comment whose text is one of `bodies`.
-    fn thread_id(&self, repo: Repo, bodies: &[String]) -> String {
-        let json = self.json(repo);
+    /// The id, in `store`'s local PR, of the thread with a comment whose text is one of `bodies`.
+    fn thread_id(&self, store: Store, bodies: &[String]) -> String {
+        let json = self.json(store);
         json["threads"]
             .as_array()
             .unwrap()
@@ -554,7 +554,7 @@ impl World {
                         .any(|b| model_text(c["body"].as_str().unwrap()) == b)
                 })
             })
-            .unwrap_or_else(|| panic!("no thread with {bodies:?} in {repo:?}: {json}"))["id"]
+            .unwrap_or_else(|| panic!("no thread with {bodies:?} in {store:?}: {json}"))["id"]
             .as_str()
             .unwrap()
             .to_owned()
@@ -591,11 +591,11 @@ impl World {
             .collect();
         github.sort();
         drop(server);
-        let repos = Repo::ALL
+        let stores = Store::ALL
             .into_iter()
-            .map(|repo| (repo, seen_repo(&self.json(repo))))
+            .map(|store| (store, seen_store(&self.json(store))))
             .collect();
-        Seen { github, repos }
+        Seen { github, stores }
     }
 
     /// Do `action`, which the model takes from `before` to `after`, or refuses when `after` is
@@ -604,7 +604,7 @@ impl World {
         match (action, after) {
             (
                 Action::Write {
-                    repo,
+                    store,
                     thread,
                     local,
                 },
@@ -612,7 +612,7 @@ impl World {
             ) => {
                 let cid = *after.written.last().unwrap();
                 let body = cid.to_string();
-                let mut agent: Vec<&str> = if *repo == Repo::Laptop && cid % 2 == 0 {
+                let mut agent: Vec<&str> = if *store == Store::Laptop && cid % 2 == 0 {
                     vec!["--agent", "agent"]
                 } else {
                     vec![]
@@ -626,11 +626,11 @@ impl World {
                         let line = line.to_string();
                         let mut args = vec!["comment", "--path", FILE, "--line", &line];
                         args.extend(&agent);
-                        self.review(*repo, &args, &body).unwrap();
+                        self.review(*store, &args, &body).unwrap();
                     }
                     Some(t) => {
                         // As the repository last fetched them.
-                        let copied = &before.repos[repo].copied_edits;
+                        let copied = &before.stores[store].copied_edits;
                         let bodies: Vec<String> = before.threads[t]
                             .comments
                             .iter()
@@ -641,41 +641,41 @@ impl World {
                                 }
                             })
                             .collect();
-                        let thread = self.thread_id(*repo, &bodies);
+                        let thread = self.thread_id(*store, &bodies);
                         let mut args = vec!["reply", thread.as_str()];
                         args.extend(&agent);
-                        self.review(*repo, &args, &body).unwrap();
+                        self.review(*store, &args, &body).unwrap();
                     }
                 }
             }
             (Action::Write { .. }, None) => {}
             (
                 Action::Move {
-                    repo,
+                    store,
                     comment,
                     local,
                 },
                 after,
             ) => {
-                let id = self.comment_id(*repo, &comment.to_string());
+                let id = self.comment_id(*store, &comment.to_string());
                 let to = if *local { "--local" } else { "--draft" };
-                let result = self.review(*repo, &["move", &id, to], "");
+                let result = self.review(*store, &["move", &id, to], "");
                 assert_eq!(result.is_ok(), after.is_some(), "{action}: {result:?}");
             }
-            (Action::Delete { repo, comment }, after) => {
-                let id = self.comment_id(*repo, &comment.to_string());
-                let result = self.review(*repo, &["delete", &id], "");
+            (Action::Delete { store, comment }, after) => {
+                let id = self.comment_id(*store, &comment.to_string());
+                let result = self.review(*store, &["delete", &id], "");
                 assert_eq!(result.is_ok(), after.is_some(), "{action}: {result:?}");
             }
-            (Action::Sync { repo, stop_after }, after) => {
+            (Action::Sync { store, stop_after }, after) => {
                 self.server.borrow_mut().fail_after = *stop_after;
-                let result = self.review(*repo, &["sync"], "");
+                let result = self.review(*store, &["sync"], "");
                 self.server.borrow_mut().fail_after = None;
-                let finished = after.is_some_and(|after| after.repos[repo].draft.is_none());
+                let finished = after.is_some_and(|after| after.stores[store].draft.is_none());
                 assert_eq!(result.is_ok(), finished, "{action}: {result:?}");
             }
-            (Action::Fetch { repo }, _) => {
-                self.review(*repo, &["fetch"], "").unwrap();
+            (Action::Fetch { store }, _) => {
+                self.review(*store, &["fetch"], "").unwrap();
             }
             (Action::Submit { user }, Some(_)) => {
                 let mut server = self.server.borrow_mut();
@@ -722,13 +722,13 @@ impl World {
             }
             (Action::ChangeCode { thread }, Some(_)) => {
                 let line = self.lines[thread];
-                let laptop = &self.dirs[&Repo::Laptop];
+                let laptop = &self.dirs[&Store::Laptop];
                 let text = std::fs::read_to_string(laptop.join(FILE)).unwrap();
                 let text = text.replace(&format!("new{line}\n"), &format!("changed{line}\n"));
                 commit(laptop, FILE, &text);
                 run(laptop, &["git", "push", "origin", "feature"]);
-                for repo in [Repo::Desktop, Repo::Colleague] {
-                    run(&self.dirs[&repo], &["git", "pull", "--ff-only"]);
+                for store in [Store::Desktop, Store::Colleague] {
+                    run(&self.dirs[&store], &["git", "pull", "--ff-only"]);
                 }
                 for t in &mut self.server.borrow_mut().threads {
                     if t.line == line {
@@ -738,37 +738,37 @@ impl World {
             }
             (
                 Action::EditOnGitHub {
-                    repo,
+                    store,
                     comment,
                     publish,
                 },
                 after,
             ) => {
-                let body = text(before, *comment, before.repos[repo].copied_edits[comment]);
+                let body = text(before, *comment, before.stores[store].copied_edits[comment]);
                 let edited = github_body(before, *comment) + "+";
-                let id = self.comment_id(*repo, &body);
+                let id = self.comment_id(*store, &body);
                 let mut args = vec!["edit", id.as_str()];
                 if *publish {
                     args.push("--publish");
                 }
-                let result = self.review(*repo, &args, &edited);
+                let result = self.review(*store, &args, &edited);
                 assert_eq!(result.is_ok(), after.is_some(), "{action}: {result:?}");
             }
             (
                 Action::DeleteOnGitHub {
-                    repo,
+                    store,
                     comment,
                     publish,
                 },
                 after,
             ) => {
-                let body = text(before, *comment, before.repos[repo].copied_edits[comment]);
-                let id = self.comment_id(*repo, &body);
+                let body = text(before, *comment, before.stores[store].copied_edits[comment]);
+                let id = self.comment_id(*store, &body);
                 let mut args = vec!["delete", id.as_str()];
                 if *publish {
                     args.push("--publish");
                 }
-                let result = self.review(*repo, &args, "");
+                let result = self.review(*store, &args, "");
                 assert_eq!(result.is_ok(), after.is_some(), "{action}: {result:?}");
             }
             (Action::Submit { .. } | Action::BrowserComment { .. }, None)
@@ -804,10 +804,10 @@ impl World {
         let now = |g: Id| m.gh_comments[&g].edits;
         let mut github: Vec<SeenReview> = m.gh_reviews.values().map(|r| review(r, &now)).collect();
         github.sort();
-        let repos = m
-            .repos
+        let stores = m
+            .stores
             .iter()
-            .map(|(repo, r)| {
+            .map(|(store, r)| {
                 let drafts = r
                     .draft
                     .iter()
@@ -818,7 +818,7 @@ impl World {
                             .map(|c| (c.to_string(), line(r.comments[c].thread)))
                             .collect();
                         comments.sort();
-                        (login(repo.github_user()).to_owned(), comments)
+                        (login(store.owner()).to_owned(), comments)
                     })
                     .collect();
                 let mut local: Vec<SeenComment> = r
@@ -837,8 +837,8 @@ impl World {
                     .collect();
                 copies.sort();
                 (
-                    *repo,
-                    SeenRepo {
+                    *store,
+                    SeenStore {
                         drafts,
                         local,
                         copies,
@@ -846,7 +846,7 @@ impl World {
                 )
             })
             .collect();
-        Seen { github, repos }
+        Seen { github, stores }
     }
 }
 
@@ -900,7 +900,7 @@ fn review_bodies(m: &Model, review: Id) -> Vec<String> {
 }
 
 /// A repository's local PR, as `delta --tui review show --format json` prints it.
-fn seen_repo(json: &serde_json::Value) -> SeenRepo {
+fn seen_store(json: &serde_json::Value) -> SeenStore {
     let mut by_review: BTreeMap<String, Vec<SeenComment>> = BTreeMap::new();
     let mut local = vec![];
     for thread in json["threads"].as_array().unwrap() {
@@ -935,7 +935,7 @@ fn seen_repo(json: &serde_json::Value) -> SeenRepo {
     }
     assert!(by_review.is_empty(), "comments in no review: {json}");
     copies.sort();
-    SeenRepo {
+    SeenStore {
         drafts,
         local,
         copies,
