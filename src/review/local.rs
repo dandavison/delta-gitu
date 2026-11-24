@@ -221,34 +221,52 @@ impl LocalBackend {
         walk.try_fold(0, |n, oid| oid.map(|_| n + 1)).map_err(error)
     }
 
-    /// Why the local PR is not the GitHub PR `github_pr`, if it isn't: one whose base is not GitHub's
-    /// base, or, while the branch is where GitHub has the PR's head, whose commits are not as
-    /// many as GitHub says the PR has.
+    /// Why the local PR is not the GitHub PR `github_pr`, if it isn't: one that doesn't branch
+    /// from its base where GitHub's does, or, while the branch is where GitHub has the PR's head,
+    /// whose commits are not as many as GitHub says the PR has. GitHub's base for a PR is where
+    /// the base branch was when the PR was last updated, which the base branch may since have
+    /// moved on from, so the base here need only have it.
     pub(crate) fn check_against(&self, github_pr: &GitHubPr) -> Res<()> {
-        let in_repository = Oid::from_str(&github_pr.base_oid)
+        let githubs_base = Oid::from_str(&github_pr.base_oid)
             .ok()
-            .is_some_and(|oid| self.repo.find_commit(oid).is_ok());
-        if !in_repository {
-            return Err(Error::Gh(missing_commit(
-                "base",
-                &github_pr.base_oid,
-                &github_pr.base_ref,
-            )));
-        }
+            .filter(|oid| self.repo.find_commit(*oid).is_ok())
+            .ok_or_else(|| {
+                Error::Gh(missing_commit(
+                    "base",
+                    &github_pr.base_oid,
+                    &github_pr.base_ref,
+                ))
+            })?;
         // The base as this repository has it, not as the link to GitHub gives it.
         let base = ref_commit(&self.repo, &self.base_ref)?.ok_or_else(|| {
             Error::LocalPr(format!("Couldn't find the PR's base, {}", self.base_ref))
         })?;
-        if base.to_string() != github_pr.base_oid {
+        let error = |e: git2::Error| Error::LocalPr(format!("Couldn't compare with GitHub: {e}"));
+        let has_githubs = base == githubs_base
+            || self
+                .repo
+                .graph_descendant_of(base, githubs_base)
+                .map_err(error)?;
+        if !has_githubs {
             return Err(Error::Gh(format!(
-                "GitHub's {} is at {}, but {} is at {}. Fetch, so that they agree",
+                "GitHub's {} is at {}, which {} doesn't have. Fetch, so that it does",
                 self.base,
                 short(&github_pr.base_oid),
                 short_ref(&self.base_ref),
-                short(&base.to_string()),
             )));
         }
         let head = self.head_commit()?;
+        let here = self.repo.merge_base(base, head).map_err(error)?;
+        let on_github = self.repo.merge_base(githubs_base, head).map_err(error)?;
+        if here != on_github {
+            return Err(Error::Gh(format!(
+                "The PR branched from {} at {} here, but at {} on GitHub, so its diff here \
+                 would not be GitHub's",
+                short_ref(&self.base_ref),
+                short(&here.to_string()),
+                short(&on_github.to_string()),
+            )));
+        }
         if head.to_string() != github_pr.head_oid {
             return Ok(());
         }
