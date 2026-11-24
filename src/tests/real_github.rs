@@ -282,6 +282,40 @@ impl RealPr {
         .to_owned()
     }
 
+    /// The PR's author pushes a commit to its branch that makes `lines.txt` `lines`, which the
+    /// clone's branch, behind, doesn't have. Returns once GitHub shows the commit as the PR's head.
+    fn author_pushes(&self, lines: &str) {
+        commit(&self.dir, "lines.txt", lines);
+        run(&self.dir, &["git", "push", "-q", "origin", &self.head]);
+        let pushed = run(&self.dir, &["git", "rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        run(&self.dir, &["git", "reset", "-q", "--hard", "HEAD~1"]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let view = gh(
+                &self.dir,
+                &[
+                    "pr",
+                    "view",
+                    &self.head,
+                    "--json",
+                    "headRefOid",
+                    "--jq",
+                    ".headRefOid",
+                ],
+            );
+            if view.trim() == pushed {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "GitHub never had {pushed}"
+            );
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+
     /// The one thread of the local PR, as `review show --format json` gives it.
     fn only_local_thread(&self) -> serde_json::Value {
         let json = self.json();
@@ -783,13 +817,14 @@ fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
     .unwrap();
     // The author changes line 5 on GitHub.
     let lines = std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap();
-    commit(
-        &pr.dir,
-        "lines.txt",
-        &lines.replace("line five\n", "line FIVE\n"),
-    );
-    run(&pr.dir, &["git", "push", "-q", "origin", &pr.head]);
-    run(&pr.dir, &["git", "reset", "-q", "--hard", "HEAD~1"]);
+    pr.author_pushes(&lines.replace("line five\n", "line FIVE\n"));
+
+    // The PR changed since the draft was written: nothing is posted, and the draft, whose line
+    // has gone, is now on its file, for the user to see.
+    let error = pr.review(&["sync"], "").unwrap_err().to_string();
+    assert!(error.contains("changed since"), "{error}");
+    assert!(pr.pending_comments().is_empty());
+    assert_eq!(pr.only_local_thread()["subject"], "file");
 
     pr.review(&["sync"], "").unwrap();
 
@@ -800,8 +835,39 @@ fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
         github[0]["comments"]["nodes"][0]["body"], "On line 5: `line five`\n\non five",
         "{github:?}"
     );
-    let thread = pr.only_local_thread();
-    assert_eq!(thread["subject"], "file", "{thread}");
+    assert_eq!(pr.only_local_thread()["subject"], "file");
+}
+
+/// The lease: a draft written before the PR changed on GitHub is not posted at the next sync,
+/// which moves it with its line, for the user to see where it now is; the sync after posts it
+/// there.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_draft_written_before_the_pr_changed_is_moved_and_posted_only_at_the_next_sync() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.review(
+        &["comment", "--path", "lines.txt", "--line", "3"],
+        "on three",
+    )
+    .unwrap();
+    // The author adds a line above it on GitHub.
+    let lines = std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap();
+    pr.author_pushes(&format!("line 0\n{lines}"));
+
+    let error = pr.review(&["sync"], "").unwrap_err().to_string();
+
+    assert!(error.contains("changed since"), "{error}");
+    assert!(pr.pending_comments().is_empty());
+    assert_eq!(pr.only_local_thread()["line"], 4);
+
+    pr.review(&["sync"], "").unwrap();
+
+    let github = pr.github_threads();
+    assert_eq!(github[0]["line"], 4, "{github:?}");
+    assert_eq!(
+        github[0]["comments"]["nodes"][0]["body"], "on three",
+        "{github:?}"
+    );
 }
 
 // Sync deals with comments, never with the PR's code: it doesn't push.

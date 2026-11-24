@@ -95,6 +95,9 @@ pub(crate) struct Draft {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct LocalComment {
     pub thread: Id,
+    /// For a comment that starts its thread, the head of the PR its line was found in when it was
+    /// written, or since moved to; a reply has no line of its own.
+    pub written_at: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -130,10 +133,12 @@ pub(crate) enum Action {
     Write { repo: Repo, thread: Option<Id> },
     /// Delete a local draft comment.
     Delete { repo: Repo, comment: Id },
-    /// `O s`: sync. Post the repository's draft review into its author's pending review, which
-    /// is started if they have none, stopping after `stop_after` comments if given, as when the
-    /// network fails part way; once all of it is posted, fetch. With no draft comments, it only
-    /// fetches. A thread whose line has gone is posted as a comment on its file.
+    /// `O s`: sync. Fetch, then post the repository's draft review into its author's pending
+    /// review, which is started if they have none, stopping after `stop_after` comments if given,
+    /// as when the network fails part way; once all of it is posted, fetch again. A thread whose
+    /// line has gone is posted as a comment on its file. With a draft thread written against
+    /// another head of the PR than its head now, nothing is posted: the drafts are moved to the
+    /// PR's head, for the user to see, and sync again.
     Sync {
         repo: Repo,
         stop_after: Option<usize>,
@@ -146,7 +151,8 @@ pub(crate) enum Action {
     BrowserComment { user: Person },
     /// On GitHub: dismiss a submitted review.
     Dismiss { review: Id },
-    /// A commit removes a thread's line from the diff.
+    /// A commit, pushed to the PR on GitHub, removes a thread's line from the diff, and moves the
+    /// PR's head.
     ChangeCode { thread: Id },
     /// Edit my own comment in a review on GitHub, from a repository whose copy has it. The edit
     /// is made on GitHub, and the repository fetches again.
@@ -208,6 +214,8 @@ pub(crate) struct Model {
     pub orphaned: Vec<Id>,
     /// Replies posted before their thread was on GitHub, which GitHub refuses.
     pub replies_before_thread: Vec<Id>,
+    /// The PR's head on GitHub: how many times it has moved, as when its author pushes.
+    pub head: u32,
     next: Id,
 }
 
@@ -227,6 +235,7 @@ impl Default for Model {
             submitted_part_way: vec![],
             orphaned: vec![],
             replies_before_thread: vec![],
+            head: 0,
             next: 1,
         }
     }
@@ -319,7 +328,8 @@ impl Model {
                 let cid = m.new_id();
                 let new_draft = m.new_id();
                 let r = m.repos.get_mut(&repo).unwrap();
-                r.comments.insert(cid, LocalComment { thread });
+                let written_at = (!self.threads.contains_key(&thread)).then_some(self.head);
+                r.comments.insert(cid, LocalComment { thread, written_at });
                 let draft = r.draft.get_or_insert(Draft {
                     id: new_draft,
                     comments: vec![],
@@ -357,11 +367,28 @@ impl Model {
             }
             Action::Sync { repo, stop_after } => {
                 let user = repo.github_user();
+                // What is on GitHub comes in first.
+                m.refresh_copy(repo);
                 let r = &self.repos[&repo];
                 let Some(draft) = r.draft.as_ref().filter(|d| !d.comments.is_empty()) else {
-                    m.refresh_copy(repo);
                     return Some(m);
                 };
+                // The lease: draft threads written against another head of the PR than its head
+                // now are moved to its head, for the user to see where they are, and nothing is
+                // posted.
+                let stale: Vec<Id> = draft
+                    .comments
+                    .iter()
+                    .copied()
+                    .filter(|c| r.comments[c].written_at.is_some_and(|at| at != self.head))
+                    .collect();
+                if !stale.is_empty() {
+                    let r = m.repos.get_mut(&repo).unwrap();
+                    for c in stale {
+                        r.comments.get_mut(&c).unwrap().written_at = Some(self.head);
+                    }
+                    return Some(m);
+                }
                 // A thread whose line has gone is posted as a comment on its file.
                 let pending = match self.pending_of(user) {
                     Some(p) => p,
@@ -487,6 +514,7 @@ impl Model {
                     return None;
                 }
                 m.threads.get_mut(&thread).unwrap().placeable = false;
+                m.head += 1;
             }
             Action::EditOnGitHub { repo, comment } | Action::DeleteOnGitHub { repo, comment } => {
                 let user = repo.github_user();
