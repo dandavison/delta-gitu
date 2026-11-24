@@ -24,7 +24,9 @@ struct RealPr {
 }
 
 impl RealPr {
-    /// A PR of a new branch, which adds `lines.txt` with 12 lines, into a new branch at `main`.
+    /// A PR of a new branch, which changes line 5 of `lines.txt` to `line five`, into a new branch
+    /// that adds `lines.txt`, of 12 lines `line 1` to `line 12`, to `main`. The PR's diff has
+    /// lines 2 to 8 of each side.
     fn new(test_name: &str) -> Self {
         helpers::set_env_vars();
         let name = test_name.rsplit("::").next().unwrap();
@@ -53,10 +55,11 @@ impl RealPr {
         let base = format!("gitu-test/{name}-{nanos}/base");
         let head = format!("gitu-test/{name}-{nanos}/head");
         run(&dir, &["git", "checkout", "-q", "-b", &base, "origin/main"]);
-        run(&dir, &["git", "push", "-q", "-u", "origin", &base]);
-        run(&dir, &["git", "checkout", "-q", "-b", &head]);
         let lines: String = (1..=12).map(|n| format!("line {n}\n")).collect();
         commit(&dir, "lines.txt", &lines);
+        run(&dir, &["git", "push", "-q", "-u", "origin", &base]);
+        run(&dir, &["git", "checkout", "-q", "-b", &head]);
+        commit(&dir, "lines.txt", &lines.replace("line 5\n", "line five\n"));
         run(&dir, &["git", "push", "-q", "-u", "origin", &head]);
         gh(
             &dir,
@@ -162,6 +165,100 @@ impl Drop for RealPr {
                 Err(e) => eprintln!("Couldn't {what} of {}: {e}", self.head),
             }
         }
+    }
+}
+
+impl RealPr {
+    /// GitHub's reply to the GraphQL `query`, with the string variables `strings` and the typed
+    /// variables `typed`, which must succeed.
+    fn graphql(
+        &self,
+        query: &str,
+        strings: &[(&str, &str)],
+        typed: &[(&str, &str)],
+    ) -> serde_json::Value {
+        let mut args = vec![
+            "api".to_owned(),
+            "graphql".to_owned(),
+            "-f".to_owned(),
+            format!("query={query}"),
+        ];
+        for (name, value) in strings {
+            args.extend(["-f".to_owned(), format!("{name}={value}")]);
+        }
+        for (name, value) in typed {
+            args.extend(["-F".to_owned(), format!("{name}={value}")]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let reply: serde_json::Value = serde_json::from_str(&gh(&self.dir, &args)).unwrap();
+        assert!(reply.get("errors").is_none(), "{reply}");
+        reply
+    }
+
+    /// The PR's id on GitHub.
+    fn node_id(&self) -> String {
+        gh(
+            &self.dir,
+            &["pr", "view", &self.head, "--json", "id", "--jq", ".id"],
+        )
+        .trim()
+        .to_owned()
+    }
+
+    /// A review submitted on GitHub, as in the browser, with one thread, whose `place` is the
+    /// fields of `addPullRequestReviewThread`'s input that say where it is, as GraphQL writes
+    /// them, such as `line: 3, side: RIGHT`. Returns the thread's id on GitHub.
+    fn submitted_thread(&self, place: &str, body: &str) -> String {
+        let review = self.graphql(
+            "mutation($id: ID!) { addPullRequestReview(input: {pullRequestId: $id}) { pullRequestReview { id } } }",
+            &[("id", &self.node_id())],
+            &[],
+        )["data"]["addPullRequestReview"]["pullRequestReview"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let thread = self.graphql(
+            &format!(
+                "mutation($review: ID!, $body: String!) {{ addPullRequestReviewThread(input: {{pullRequestReviewId: $review, path: \"lines.txt\", body: $body, {place}}}) {{ thread {{ id }} }} }}"
+            ),
+            &[("review", &review), ("body", body)],
+            &[],
+        )["data"]["addPullRequestReviewThread"]["thread"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("GitHub added no thread at {place}"))
+            .to_owned();
+        self.graphql(
+            "mutation($review: ID!) { submitPullRequestReview(input: {pullRequestReviewId: $review, event: COMMENT}) { pullRequestReview { id } } }",
+            &[("review", &review)],
+            &[],
+        );
+        thread
+    }
+
+    /// The PR's review threads, as GitHub has them: for each, where it is, and its comments'
+    /// bodies.
+    fn github_threads(&self) -> Vec<serde_json::Value> {
+        self.graphql(
+            "query($id: ID!) { node(id: $id) { ... on PullRequest { reviewThreads(first: 100) { nodes { subjectType path line startLine diffSide isOutdated isResolved comments(first: 100) { nodes { body } } } } } } }",
+            &[("id", &self.node_id())],
+            &[],
+        )["data"]["node"]["reviewThreads"]["nodes"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    /// The one thread of the local PR, as `review show --format json` gives it.
+    fn only_local_thread(&self) -> serde_json::Value {
+        let json = self.json();
+        let threads = json["threads"].as_array().unwrap();
+        assert_eq!(threads.len(), 1, "{json}");
+        threads[0].clone()
+    }
+
+    /// The id, in the local PR, of its one thread.
+    fn only_local_thread_id(&self) -> String {
+        self.only_local_thread()["id"].as_str().unwrap().to_owned()
     }
 }
 
@@ -408,4 +505,250 @@ fn posting_from_a_branch_with_no_pr_creates_one_only_with_create_pr() {
         &["pr", "view", &head, "--json", "number", "--jq", ".number"],
     );
     gh(&pr.dir, &["pr", "close", number.trim(), "--delete-branch"]);
+}
+
+// Round trips: what is written here comes back, once synced, as it was written, and what is
+// written on GitHub comes back here as it is there, and takes replies.
+
+/// A thread written here comes back from GitHub on the same line, as the same local thread.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_thread_synced_comes_back_on_its_line_as_the_same_thread() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.review(
+        &["comment", "--path", "lines.txt", "--line", "3"],
+        "on three",
+    )
+    .unwrap();
+    let id = pr.only_local_thread_id();
+
+    pr.review(&["sync"], "").unwrap();
+
+    let thread = pr.only_local_thread();
+    assert_eq!(thread["id"], id.as_str(), "{thread}");
+    assert_eq!(thread["path"], "lines.txt", "{thread}");
+    assert_eq!(thread["side"], "new", "{thread}");
+    assert_eq!(thread["line"], 3, "{thread}");
+    assert_eq!(thread["subject"], "line", "{thread}");
+    assert_eq!(thread["comments"][0]["body"], "on three", "{thread}");
+    let github = pr.github_threads();
+    assert_eq!(github[0]["line"], 3, "{github:?}");
+    assert_eq!(github[0]["diffSide"], "RIGHT", "{github:?}");
+}
+
+/// A thread on a removed line goes to GitHub on the old side, and comes back there.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_thread_on_a_removed_line_comes_back_on_the_old_side() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.review(
+        &[
+            "comment",
+            "--path",
+            "lines.txt",
+            "--line",
+            "5",
+            "--side",
+            "old",
+        ],
+        "was five",
+    )
+    .unwrap();
+
+    pr.review(&["sync"], "").unwrap();
+
+    let github = pr.github_threads();
+    assert_eq!(github[0]["line"], 5, "{github:?}");
+    assert_eq!(github[0]["diffSide"], "LEFT", "{github:?}");
+    let thread = pr.only_local_thread();
+    assert_eq!(thread["side"], "old", "{thread}");
+    assert_eq!(thread["line"], 5, "{thread}");
+}
+
+/// An agent's comment reaches GitHub as it was written, under the user's name: its agent's name
+/// is a label kept only here.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn an_agents_comment_reaches_github_as_written() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.review(
+        &[
+            "comment",
+            "--path",
+            "lines.txt",
+            "--line",
+            "3",
+            "--agent",
+            "claude",
+        ],
+        "🤖 on three",
+    )
+    .unwrap();
+
+    pr.review(&["sync"], "").unwrap();
+
+    assert_eq!(pr.pending_comments(), ["🤖 on three"]);
+    let comment = &pr.only_local_thread()["comments"][0];
+    assert_eq!(comment["body"], "🤖 on three", "{comment}");
+    assert_eq!(comment["agent"], serde_json::Value::Null, "{comment}");
+}
+
+/// A thread written on GitHub shows here on its line and side, and a reply written here goes
+/// into it on GitHub.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_thread_from_github_shows_on_its_line_and_takes_a_reply() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.submitted_thread("line: 4, side: RIGHT", "on four");
+
+    pr.review(&["sync"], "").unwrap();
+    let thread = pr.only_local_thread();
+    assert_eq!(thread["line"], 4, "{thread}");
+    assert_eq!(thread["side"], "new", "{thread}");
+    assert_eq!(thread["subject"], "line", "{thread}");
+    let id = thread["id"].as_str().unwrap().to_owned();
+    pr.review(&["reply", &id], "and more").unwrap();
+    pr.review(&["sync"], "").unwrap();
+
+    let github = pr.github_threads();
+    assert_eq!(github.len(), 1, "{github:?}");
+    let bodies: Vec<&str> = github[0]["comments"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, ["on four", "and more"]);
+    let thread = pr.only_local_thread();
+    assert_eq!(thread["id"], id.as_str(), "{thread}");
+    assert_eq!(thread["comments"].as_array().unwrap().len(), 2, "{thread}");
+}
+
+/// A thread resolved on GitHub is resolved here.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_thread_resolved_on_github_is_resolved_here() {
+    let pr = RealPr::new(stdext::function_name!());
+    let thread = pr.submitted_thread("line: 4, side: RIGHT", "on four");
+    pr.graphql(
+        "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { id } } }",
+        &[("id", &thread)],
+        &[],
+    );
+
+    pr.review(&["sync"], "").unwrap();
+
+    assert_eq!(pr.only_local_thread()["resolved"], true);
+}
+
+/// A thread whose line GitHub has as outdated, once the line changed, is outdated here: on no
+/// line, and not a file comment.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_thread_outdated_on_github_is_outdated_here() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.submitted_thread("line: 5, side: RIGHT", "on five");
+    let lines = std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap();
+    commit(
+        &pr.dir,
+        "lines.txt",
+        &lines.replace("line five\n", "line FIVE\n"),
+    );
+    run(&pr.dir, &["git", "push", "-q", "origin", &pr.head]);
+    // GitHub works out what is outdated after a push, not at once.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while pr.github_threads()[0]["isOutdated"] != true {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "GitHub never had the thread outdated"
+        );
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+
+    pr.review(&["sync"], "").unwrap();
+
+    let thread = pr.only_local_thread();
+    assert_eq!(thread["line"], serde_json::Value::Null, "{thread}");
+    assert_eq!(thread["subject"], "line", "{thread}");
+}
+
+/// A comment on a whole file on GitHub shows here under the file, as a file comment, and takes a
+/// reply written here.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_file_comment_from_github_shows_as_one_and_takes_a_reply() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.submitted_thread("subjectType: FILE", "on the file");
+
+    pr.review(&["sync"], "").unwrap();
+    let thread = pr.only_local_thread();
+    assert_eq!(thread["subject"], "file", "{thread}");
+    assert_eq!(thread["line"], serde_json::Value::Null, "{thread}");
+    let markdown = pr.review(&["show"], "").unwrap();
+    assert!(markdown.contains("\n## lines.txt (file)\n"), "{markdown}");
+    let id = thread["id"].as_str().unwrap().to_owned();
+    pr.review(&["reply", &id], "and more").unwrap();
+    pr.review(&["sync"], "").unwrap();
+
+    let github = pr.github_threads();
+    assert_eq!(github[0]["subjectType"], "FILE", "{github:?}");
+    let bodies: Vec<&str> = github[0]["comments"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, ["on the file", "and more"]);
+}
+
+/// A comment on several lines on GitHub shows here at its last line, and the local PR records
+/// its first.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_comment_on_several_lines_shows_at_its_last_with_its_first_recorded() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.submitted_thread(
+        "startLine: 3, startSide: RIGHT, line: 6, side: RIGHT",
+        "on three to six",
+    );
+
+    pr.review(&["sync"], "").unwrap();
+
+    let thread = pr.only_local_thread();
+    assert_eq!(thread["line"], 6, "{thread}");
+    assert_eq!(thread["start_line"], 3, "{thread}");
+    let markdown = pr.review(&["show"], "").unwrap();
+    assert!(markdown.contains("\n## lines.txt:3-6\n"), "{markdown}");
+}
+
+/// A draft thread whose line has gone since it was written is posted as a comment on its file,
+/// and comes back as one.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
+    let pr = RealPr::new(stdext::function_name!());
+    pr.review(
+        &["comment", "--path", "lines.txt", "--line", "5"],
+        "on five",
+    )
+    .unwrap();
+    let lines = std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap();
+    commit(
+        &pr.dir,
+        "lines.txt",
+        &lines.replace("line five\n", "line FIVE\n"),
+    );
+    assert_eq!(pr.only_local_thread()["line"], serde_json::Value::Null);
+
+    pr.review(&["sync"], "").unwrap();
+
+    let github = pr.github_threads();
+    assert_eq!(github.len(), 1, "{github:?}");
+    assert_eq!(github[0]["subjectType"], "FILE", "{github:?}");
+    assert_eq!(
+        github[0]["comments"]["nodes"][0]["body"], "on five",
+        "{github:?}"
+    );
+    let thread = pr.only_local_thread();
+    assert_eq!(thread["subject"], "file", "{thread}");
 }
