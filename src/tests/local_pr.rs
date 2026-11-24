@@ -1557,6 +1557,28 @@ fn the_pr_screen_starts_with_a_summary_of_the_pr() {
     );
 }
 
+/// The summary atop the PR's screen is drawn in `pr-summary-style`, and followed by a blank line.
+#[test]
+fn the_pr_summary_is_drawn_in_its_style_and_followed_by_a_blank_line() {
+    let ctx = setup_clone!();
+    let mut ctx =
+        super::delta_config::with_delta_config(ctx, "[delta]\n\tpr-summary-style = red\n");
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    let lines: Vec<&str> = screen.lines().collect();
+    assert!(lines[0].contains("PR into main"), "{screen}");
+    assert!(lines[1].trim_end_matches('|').trim().is_empty(), "{screen}");
+    assert_eq!(
+        super::pr::cell(&ctx, "PR into main", 'P').fg,
+        crate::style::Color::Red
+    );
+}
+
 /// On the PR's screen, the log is the PR's: its commits, as the user's log arguments show them,
 /// on top of the PR's screen.
 #[test]

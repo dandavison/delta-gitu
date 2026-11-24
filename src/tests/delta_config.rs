@@ -3,7 +3,7 @@
 use super::*;
 
 /// `ctx`'s config resolved from git config holding `gitconfig`, as delta would resolve it.
-fn with_delta_config(mut ctx: TestContext, gitconfig: &str) -> TestContext {
+pub(super) fn with_delta_config(mut ctx: TestContext, gitconfig: &str) -> TestContext {
     let path = ctx.dir.join(".git").join("delta.gitconfig");
     fs::write(&path, gitconfig).unwrap();
     crate::config::told_about(ctx.config(), path);

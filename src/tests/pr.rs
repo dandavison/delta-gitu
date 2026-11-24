@@ -902,7 +902,7 @@ fn a_long_comment_wraps_under_the_bar() {
 }
 
 /// The cell drawn for the first `c` on the screen's row that shows `text`.
-fn cell(ctx: &TestContext, text: &str, c: char) -> crate::term::TestCell {
+pub(super) fn cell(ctx: &TestContext, text: &str, c: char) -> crate::term::TestCell {
     let crate::term::TermBackend::Test { buffer, .. } = &ctx.term else {
         unreachable!();
     };
