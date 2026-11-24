@@ -1581,14 +1581,14 @@ fn reactions_show_who_reacted_each_linked_to_their_page() {
         "{screen}"
     );
     assert_eq!(
-        cell(&ctx, "👍 bob", 'b').link.as_deref(),
+        cell(&ctx, "bob, carol", 'b').link.as_deref(),
         Some("https://github.com/bob")
     );
     assert_eq!(
-        cell(&ctx, "👍 bob", 'v').link.as_deref(),
+        cell(&ctx, "bob, carol", 'v').link.as_deref(),
         Some("https://github.com/dave")
     );
-    assert_eq!(cell(&ctx, "👍 bob", 'm').link, None, "more");
+    assert_eq!(cell(&ctx, "bob, carol", 'm').link, None, "more");
 }
 
 /// A link's text wraps as other words do, each row of it linked, however long its URL.

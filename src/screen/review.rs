@@ -816,7 +816,41 @@ fn comment_rows(
             rows.push(padded(spans(&row, text, link)));
         }
     }
+    if !comment.reactions.is_empty() {
+        for row in wrap(&reactions_shown(&comment.reactions), width, width) {
+            rows.push(padded(spans(&row, text, link)));
+        }
+    }
     rows
+}
+
+/// A comment's reactions as they are shown: each emoji, with who reacted, each linked to their
+/// page, and how many more reacted than GitHub gave.
+fn reactions_shown(reactions: &[review::Reaction]) -> Vec<Shown<'_>> {
+    let plain = |out: &mut Vec<Shown>, text: &str| out.extend(text.chars().map(|c| (c, None)));
+    let mut out = vec![];
+    for (i, reaction) in reactions.iter().enumerate() {
+        if i > 0 {
+            plain(&mut out, "  ");
+        }
+        plain(&mut out, &reaction.emoji);
+        plain(&mut out, " ");
+        if reaction.people.is_empty() {
+            plain(&mut out, &reaction.count.to_string());
+            continue;
+        }
+        for (j, person) in reaction.people.iter().enumerate() {
+            if j > 0 {
+                plain(&mut out, ", ");
+            }
+            out.extend(person.login.chars().map(|c| (c, Some(person.url.as_str()))));
+        }
+        let more = reaction.count.saturating_sub(reaction.people.len());
+        if more > 0 {
+            plain(&mut out, &format!(" and {more} more"));
+        }
+    }
+    out
 }
 
 /// A character of a comment as it is shown, with the URL of the markdown link whose text it is in,

@@ -3,7 +3,7 @@
 //! until they submit it on GitHub.
 
 use super::{
-    Backend, Comment, Place, Side, Subject, Thread, ViewedState,
+    Backend, Comment, Place, Reaction, Reactor, Side, Subject, Thread, ViewedState,
     remote::{self, Change, Consent, WriteToken},
 };
 use crate::{Res, error::Error};
@@ -237,9 +237,26 @@ const THREADS_QUERY: &str = "query($id: ID!, $endCursor: String) {
           id isResolved path line startLine diffSide subjectType
           comments(first: 100) {
             totalCount
-            nodes { id author { login } body url createdAt state }
+            nodes {
+              id author { login } body url createdAt state
+              reactionGroups { content reactors { totalCount } }
+            }
           }
         }
+      }
+    }
+  }
+}";
+
+/// Who reacted to the comments `ids`, at most 100. The threads' query only counts reactions:
+/// asking it who reacted would cost a hundred times as much of GitHub's rate limit.
+const REACTORS_QUERY: &str = "query($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on PullRequestReviewComment {
+      id
+      reactionGroups {
+        content
+        reactors(first: 10) { totalCount nodes { ... on Actor { login url } } }
       }
     }
   }
@@ -366,6 +383,47 @@ fn required_id(response: &str, pointer: &str, what: &str) -> Res<String> {
 }
 
 impl Gh {
+    /// Who reacted to the comments in `threads` that have reactions, which [`THREADS_QUERY`]
+    /// only counts.
+    fn add_reactors(&self, threads: &mut [Thread]) -> Res<()> {
+        let ids: Vec<String> = threads
+            .iter()
+            .flat_map(|t| &t.comments)
+            .filter(|c| !c.reactions.is_empty())
+            .map(|c| c.id.clone())
+            .collect();
+        let mut reactions = HashMap::new();
+        for chunk in ids.chunks(100) {
+            let mut args = vec![
+                "api".to_owned(),
+                "graphql".to_owned(),
+                "-f".to_owned(),
+                format!("query={REACTORS_QUERY}"),
+            ];
+            for id in chunk {
+                args.extend(["-f".to_owned(), format!("ids[]={id}")]);
+            }
+            let output = self.run(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+            reactions.extend(
+                parse_reactors(&output).map_err(|e| {
+                    Error::Gh(format!("Couldn't read who reacted to comments: {e}"))
+                })?,
+            );
+        }
+        for comment in threads.iter_mut().flat_map(|t| &mut t.comments) {
+            if comment.reactions.is_empty() {
+                continue;
+            }
+            comment.reactions = reactions.remove(&comment.id).ok_or_else(|| {
+                Error::Gh(format!(
+                    "Couldn't read who reacted to comment {}: GitHub gave nothing for it",
+                    comment.id
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
     /// Run the GraphQL `query` with the string variables `strings` and the typed variables
     /// `typed` (such as numbers), printing what `jq`, if given, picks out of the result.
     fn graphql(
@@ -482,8 +540,10 @@ impl GitHub for Gh {
             "-f",
             &format!("id={}", pr.id),
         ])?;
-        parse_threads(&output)
-            .map_err(|e| Error::Gh(format!("Couldn't read gh's review threads: {e}")))
+        let mut threads = parse_threads(&output)
+            .map_err(|e| Error::Gh(format!("Couldn't read gh's review threads: {e}")))?;
+        self.add_reactors(&mut threads)?;
+        Ok(threads)
     }
 
     fn reviews(&self, pr: &GitHubPr) -> Res<Vec<GitHubReview>> {
@@ -733,6 +793,8 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
         created_at: chrono::DateTime<chrono::FixedOffset>,
         /// PENDING for a comment in the user's pending review.
         state: Option<String>,
+        #[serde(default)]
+        reaction_groups: Vec<ReactionGroupNode>,
     }
     #[derive(Deserialize)]
     struct Author {
@@ -745,6 +807,7 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
         for node in &nodes {
             node.comments
                 .check(&format!("The thread {} on {}", node.id, node.path))?;
+
             if !matches!(node.subject_type.as_str(), "LINE" | "FILE") {
                 return Err(serde::de::Error::custom(format!(
                     "The thread {} on {} is on a {}, which gitu doesn't know",
@@ -752,13 +815,13 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
                 )));
             }
         }
-        threads.extend(nodes.into_iter().map(|node| {
+        for node in nodes {
             let side = if node.diff_side == "LEFT" {
                 Side::Old
             } else {
                 Side::New
             };
-            Thread {
+            threads.push(Thread {
                 id: node.id,
                 path: node.path,
                 line: node.line.map(|line| (side, line)),
@@ -774,27 +837,110 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
                     .comments
                     .nodes
                     .into_iter()
-                    .map(|comment| Comment {
-                        id: comment.id,
-                        author: comment
-                            .author
-                            .map_or_else(|| "ghost".to_owned(), |author| author.login),
-                        body: comment.body,
-                        url: Some(comment.url),
-                        created_at: comment.created_at,
-                        draft: comment.state.as_deref() == Some("PENDING"),
-                        editable: comment.state.as_deref() == Some("PENDING"),
-                        deletable: comment.state.as_deref() == Some("PENDING"),
-                        submitted: comment.state.as_deref() != Some("PENDING"),
-                        local_only: false,
-                        reactions: vec![],
-                        agent: None,
+                    .map(|comment| {
+                        Ok(Comment {
+                            reactions: reactions(&comment.reaction_groups)
+                                .map_err(serde::de::Error::custom)?,
+                            id: comment.id,
+                            author: comment
+                                .author
+                                .map_or_else(|| "ghost".to_owned(), |author| author.login),
+                            body: comment.body,
+                            url: Some(comment.url),
+                            created_at: comment.created_at,
+                            draft: comment.state.as_deref() == Some("PENDING"),
+                            editable: comment.state.as_deref() == Some("PENDING"),
+                            deletable: comment.state.as_deref() == Some("PENDING"),
+                            submitted: comment.state.as_deref() != Some("PENDING"),
+                            local_only: false,
+                            agent: None,
+                        })
                     })
-                    .collect(),
-            }
-        }));
+                    .collect::<serde_json::Result<_>>()?,
+            });
+        }
     }
     Ok(threads)
+}
+
+/// A comment's reactions with one emoji, as GitHub gives them.
+#[derive(Deserialize)]
+struct ReactionGroupNode {
+    content: String,
+    reactors: ReactorsNode,
+}
+
+/// Who reacted with one emoji: how many, and as many of them as were asked for.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReactorsNode {
+    total_count: usize,
+    #[serde(default)]
+    nodes: Vec<Reactor>,
+}
+
+/// The reactions in `groups` that anyone reacted with, or what gitu doesn't know.
+fn reactions(groups: &[ReactionGroupNode]) -> Result<Vec<Reaction>, String> {
+    groups
+        .iter()
+        .filter(|group| group.reactors.total_count > 0)
+        .map(|group| {
+            Ok(Reaction {
+                emoji: reaction_emoji(&group.content)
+                    .ok_or_else(|| {
+                        format!(
+                            "GitHub gave a reaction gitu doesn't know: {}",
+                            group.content
+                        )
+                    })?
+                    .to_owned(),
+                people: group.reactors.nodes.clone(),
+                count: group.reactors.total_count,
+            })
+        })
+        .collect()
+}
+
+/// The emoji GitHub shows for the reaction its API calls `content`.
+fn reaction_emoji(content: &str) -> Option<&'static str> {
+    Some(match content {
+        "THUMBS_UP" => "👍",
+        "THUMBS_DOWN" => "👎",
+        "LAUGH" => "😄",
+        "HOORAY" => "🎉",
+        "CONFUSED" => "😕",
+        // Without the variation selector for an emoji, with which terminals disagree on its width.
+        "HEART" => "❤",
+        "ROCKET" => "🚀",
+        "EYES" => "👀",
+        _ => return None,
+    })
+}
+
+/// Who reacted to each comment that [`REACTORS_QUERY`] asked about, by the comment's id.
+fn parse_reactors(output: &str) -> Result<HashMap<String, Vec<Reaction>>, String> {
+    #[derive(Deserialize)]
+    struct Page {
+        data: Data,
+    }
+    #[derive(Deserialize)]
+    struct Data {
+        nodes: Vec<Option<Node>>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Node {
+        id: String,
+        reaction_groups: Vec<ReactionGroupNode>,
+    }
+    let page: Page = serde_json::from_str(output).map_err(|e| e.to_string())?;
+    page.data
+        .nodes
+        .into_iter()
+        // A comment deleted since the threads were read.
+        .flatten()
+        .map(|node| Ok((node.id, reactions(&node.reaction_groups)?)))
+        .collect()
 }
 
 /// The pages of reviews [`Gh::reviews`] has gh print: a JSON document a page.
@@ -964,6 +1110,25 @@ mod tests {
         assert_eq!(threads[0].line, Some((Side::Old, 3)));
         assert_eq!(threads[0].comments[0].author, "ghost");
         assert_eq!(threads[1].line, None);
+    }
+
+    /// The threads' query counts each comment's reactions, for the emoji anyone reacted with,
+    /// and refuses one gitu doesn't know.
+    #[test]
+    fn parse_threads_reads_reactions_and_refuses_one_it_does_not_know() {
+        let page = |content: &str| {
+            format!(
+                r#"{{"data":{{"node":{{"reviewThreads":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{{"id":"t1","isResolved":false,"path":"a.txt","line":3,"diffSide":"RIGHT","subjectType":"LINE","comments":{{"totalCount":1,"nodes":[{{"id":"c1","author":null,"body":"hm","url":"u","createdAt":"2026-11-20T10:00:00Z","reactionGroups":[{{"content":"{content}","reactors":{{"totalCount":2}}}},{{"content":"EYES","reactors":{{"totalCount":0}}}}]}}]}}}}]}}}}}}}}"#
+            )
+        };
+
+        let threads = parse_threads(&page("HEART")).unwrap();
+        let reactions = &threads[0].comments[0].reactions;
+        assert_eq!(reactions.len(), 1);
+        assert_eq!((reactions[0].emoji.as_str(), reactions[0].count), ("❤", 2));
+
+        let error = parse_threads(&page("SPARKLES")).unwrap_err().to_string();
+        assert!(error.contains("SPARKLES"), "{error}");
     }
 
     #[test]

@@ -3,8 +3,8 @@
 //! so that every worktree of the repository sees it (see [`Store`]).
 
 use super::{
-    ADDED_TO_DRAFT as ADDED, Backend, Comment, PendingReview, Place, Side, Subject, Thread,
-    ViewedState,
+    ADDED_TO_DRAFT as ADDED, Backend, Comment, PendingReview, Place, Reaction, Side, Subject,
+    Thread, ViewedState,
     github::{GitHub, GitHubBackend, GitHubPr, GitHubReviewState},
     missing_commit,
     remote::{self, Change, Consent},
@@ -794,6 +794,7 @@ impl LocalBackend {
                         github: Some(c.id.clone()),
                         url: c.url.clone(),
                         posting_since: None,
+                        reactions: c.reactions.clone(),
                     })
                     .collect();
                 let Some(first) = thread.comments.first().map(|c| c.id.clone()) else {
@@ -880,6 +881,11 @@ impl LocalBackend {
                         "agent": c.agent,
                         "body": c.body,
                         "created_at": c.created_at,
+                        "reactions": c.reactions.iter().map(|r| serde_json::json!({
+                            "emoji": r.emoji,
+                            "count": r.count,
+                            "people": r.people.iter().map(|p| &p.login).collect::<Vec<_>>(),
+                        })).collect::<Vec<_>>(),
                     })).collect::<Vec<_>>(),
                 })
             })
@@ -1093,6 +1099,7 @@ impl LocalBackend {
                 github: None,
                 url: None,
                 posting_since: None,
+                reactions: vec![],
             };
             added = add(&mut file.threads, comment);
             if added && !local && draft.is_none() {
@@ -1873,7 +1880,7 @@ impl Backend for LocalBackend {
                         created_at: comment.created_at,
                         draft: draft(&comment.review),
                         local_only: comment.review.is_none(),
-                        reactions: vec![],
+                        reactions: comment.reactions.clone(),
                         // In the TUI the user edits their own comments, and replies to an
                         // agent's; they can delete any local comment.
                         editable: (local(&comment.review) && comment.agent.is_none())
@@ -2133,6 +2140,9 @@ struct StoredComment {
     /// may have added it though gitu never heard back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     posting_since: Option<chrono::DateTime<chrono::FixedOffset>>,
+    /// For a copy of a comment on GitHub, the reactions to it there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reactions: Vec<Reaction>,
 }
 
 /// Where a thread is: a line of a file, on the old or the new side of the diff, numbered as in

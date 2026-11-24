@@ -179,7 +179,7 @@ pub(crate) struct Comment {
 }
 
 /// The people who reacted to a comment on GitHub with one emoji.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Reaction {
     pub emoji: String,
     /// Who reacted, as many as GitHub gave.
@@ -189,7 +189,7 @@ pub(crate) struct Reaction {
 }
 
 /// Someone who reacted to a comment, and their page on GitHub.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Reactor {
     pub login: String,
     pub url: String,
