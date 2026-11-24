@@ -803,7 +803,7 @@ mod tests {
     fn parse_threads_reads_every_page() {
         let page = |id: &str, line: &str, side: &str| {
             format!(
-                r#"{{"data":{{"node":{{"reviewThreads":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{{"id":"{id}","isResolved":false,"path":"a.txt","line":{line},"diffSide":"{side}","comments":{{"nodes":[{{"id":"c1","author":null,"body":"hm","url":"u","createdAt":"2026-11-20T10:00:00Z"}}]}}}}]}}}}}}}}"#
+                r#"{{"data":{{"node":{{"reviewThreads":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{{"id":"{id}","isResolved":false,"path":"a.txt","line":{line},"diffSide":"{side}","comments":{{"totalCount":1,"nodes":[{{"id":"c1","author":null,"body":"hm","url":"u","createdAt":"2026-11-20T10:00:00Z"}}]}}}}]}}}}}}}}"#
             )
         };
         let output = format!("{}{}", page("t1", "3", "LEFT"), page("t2", "null", "RIGHT"));
@@ -818,7 +818,7 @@ mod tests {
 
     #[test]
     fn parse_threads_reads_a_pending_comment_as_a_draft() {
-        let output = r#"{"data":{"node":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"t1","isResolved":false,"path":"a.txt","line":3,"diffSide":"RIGHT","comments":{"nodes":[{"id":"c1","author":{"login":"a"},"body":"x","url":"u","createdAt":"2026-11-20T10:00:00Z","state":"SUBMITTED"},{"id":"c2","author":{"login":"me"},"body":"y","url":"u","createdAt":"2026-11-20T10:00:00Z","state":"PENDING"}]}}]}}}}"#;
+        let output = r#"{"data":{"node":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"t1","isResolved":false,"path":"a.txt","line":3,"diffSide":"RIGHT","comments":{"totalCount":2,"nodes":[{"id":"c1","author":{"login":"a"},"body":"x","url":"u","createdAt":"2026-11-20T10:00:00Z","state":"SUBMITTED"},{"id":"c2","author":{"login":"me"},"body":"y","url":"u","createdAt":"2026-11-20T10:00:00Z","state":"PENDING"}]}}]}}}}"#;
 
         let threads = parse_threads(output).unwrap();
 
@@ -830,7 +830,7 @@ mod tests {
     fn parse_reviews_reads_each_state_and_every_page() {
         let page = |id: &str, state: &str| {
             format!(
-                r#"{{"data":{{"node":{{"reviews":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{{"id":"{id}","state":"{state}","viewerDidAuthor":true,"author":{{"login":"a"}},"comments":{{"nodes":[{{"id":"c-{id}"}}]}}}}]}}}}}}}}"#
+                r#"{{"data":{{"node":{{"reviews":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{{"id":"{id}","state":"{state}","viewerDidAuthor":true,"author":{{"login":"a"}},"comments":{{"totalCount":1,"nodes":[{{"id":"c-{id}"}}]}}}}]}}}}}}}}"#
             )
         };
         let output = [
@@ -854,9 +854,30 @@ mod tests {
         assert_eq!(reviews[1].comments, ["c-r2"]);
     }
 
+    /// GitHub gives a thread's comments 100 at a time, and gitu reads only the first 100: a thread
+    /// with more is refused, rather than read without the rest.
+    #[test]
+    fn parse_threads_refuses_a_thread_with_more_comments_than_it_read() {
+        let output = r#"{"data":{"node":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"t1","isResolved":false,"path":"a.txt","line":3,"diffSide":"RIGHT","comments":{"totalCount":101,"nodes":[{"id":"c1","author":null,"body":"hm","url":"u","createdAt":"2026-11-20T10:00:00Z"}]}}]}}}}"#;
+
+        let error = parse_threads(output).unwrap_err().to_string();
+
+        assert!(error.contains("101 comments"), "{error}");
+    }
+
+    /// As [`parse_threads_refuses_a_thread_with_more_comments_than_it_read`], for a review.
+    #[test]
+    fn parse_reviews_refuses_a_review_with_more_comments_than_it_read() {
+        let output = r#"{"data":{"node":{"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"r1","state":"COMMENTED","viewerDidAuthor":true,"author":{"login":"a"},"comments":{"totalCount":101,"nodes":[{"id":"c1"}]}}]}}}}"#;
+
+        let error = parse_reviews(output).unwrap_err().to_string();
+
+        assert!(error.contains("101 comments"), "{error}");
+    }
+
     #[test]
     fn parse_reviews_refuses_a_state_it_does_not_know() {
-        let output = r#"{"data":{"node":{"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"r1","state":"PONDERING","viewerDidAuthor":true,"author":{"login":"a"},"comments":{"nodes":[]}}]}}}}"#;
+        let output = r#"{"data":{"node":{"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"r1","state":"PONDERING","viewerDidAuthor":true,"author":{"login":"a"},"comments":{"totalCount":0,"nodes":[]}}]}}}}"#;
 
         assert!(parse_reviews(output).is_err());
     }
