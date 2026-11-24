@@ -11,9 +11,7 @@ use crate::{
     item_data::ItemData,
     review::{
         self, Backend, CommentEditor, EditorTarget, OpenPr, Side, ViewedState,
-        github::GitHubBackend,
         local::{LocalBackend, NOT_DRAFT},
-        missing_commit,
     },
     screen,
     style::Style,
@@ -21,16 +19,17 @@ use crate::{
     text_area::{Outcome, TextArea},
 };
 use crossterm::event::KeyEvent;
-use git2::Oid;
 use std::{rc::Rc, sync::Arc};
 
 const NO_REVIEW: &str = "No PR here: O opens one";
 const NOT_ON_GITHUB: &str = "This PR's comments are not on GitHub";
 
+/// Open the current branch's PR: its local PR, linked to its GitHub PR if it has one (see
+/// [`LocalBackend::new`]). Nothing is checked out.
 pub(crate) struct PrCurrent;
 impl OpTrait for PrCurrent {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
-        Some(Rc::new(|app, term| open_pr(app, term, None)))
+        Some(Rc::new(|app, term| open_current(app, term, None)))
     }
 
     fn display(&self, _state: &State) -> String {
@@ -58,10 +57,8 @@ impl OpTrait for PrOther {
     }
 }
 
-/// Check out the PR `selector` refers to, or with none the current branch's,
-/// and open its diff as GitHub shows it: from where the PR branched from its
-/// base. Uncommitted changes stop it, rather than being carried onto the PR's
-/// branch.
+/// Check out the GitHub PR `selector` refers to, and open it as `O O` opens the current branch's.
+/// Uncommitted changes stop it, rather than being carried onto the PR's branch.
 fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
     let workdir = app.state.repo.workdir().ok_or(Error::NoRepoWorkdir)?;
     let uncommitted = git::status(workdir)?
@@ -75,26 +72,33 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
     let github = Rc::clone(&app.state.github);
     let pr = github.pr(selector)?;
     app.run_cmd(term, &[], github.checkout(&pr))?;
-    let has_base =
-        Oid::from_str(&pr.base_oid).is_ok_and(|oid| app.state.repo.find_commit(oid).is_ok());
-    if !has_base {
-        return Err(Error::Gh(missing_commit(
-            "base",
-            &pr.base_oid,
-            &pr.base_ref,
+    open_current(app, term, Some(pr.number))
+}
+
+/// Open the current branch's PR, which must be linked to the GitHub PR `expected` if given: its
+/// reviews are fetched from GitHub if it is linked, and a PR not checked against GitHub says so.
+fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>) -> Res<()> {
+    let local =
+        LocalBackend::for_current_branch(Rc::clone(&app.state.repo), Rc::clone(&app.state.github))?;
+    if let Some(expected) = expected
+        && local.linked_number() != Some(expected)
+    {
+        return Err(Error::Gh(format!(
+            "Couldn't open PR #{expected}: the branch checked out for it has {}",
+            match local.linked_number() {
+                Some(number) => format!("GitHub's PR #{number}"),
+                None => "no GitHub PR".to_owned(),
+            }
         )));
     }
-    let base = pr.base_ref.clone();
-    let local = LocalBackend::new(
-        Rc::clone(&app.state.repo),
-        Rc::clone(&github),
-        None,
-        Some(base),
-    )?
-    .with_linked_pr(GitHubBackend { github, pr })?;
     confirm_authors(app, term, &local)?;
     local.refresh()?;
-    show_pr(app, term, Rc::new(local))
+    let unchecked = local.unchecked().map(str::to_owned);
+    show_pr(app, term, Rc::new(local))?;
+    if let Some(unchecked) = unchecked {
+        app.display_error(unchecked);
+    }
+    Ok(())
 }
 
 /// Ask the user to go on if the PR's commits are by more than one author, as they would be if
@@ -112,25 +116,6 @@ fn confirm_authors(app: &mut App, term: &mut Term, local: &LocalBackend) -> Res<
         )?;
     }
     Ok(())
-}
-
-/// Review the current branch against `main` as a local PR.
-pub(crate) struct PrLocal;
-impl OpTrait for PrLocal {
-    fn get_action(&self, _target: &ItemData) -> Option<Action> {
-        Some(Rc::new(|app, term| {
-            let backend = LocalBackend::for_current_branch(
-                Rc::clone(&app.state.repo),
-                Rc::clone(&app.state.github),
-            )?;
-            confirm_authors(app, term, &backend)?;
-            show_pr(app, term, Rc::new(backend))
-        }))
-    }
-
-    fn display(&self, _state: &State) -> String {
-        "local".into()
-    }
 }
 
 /// Post the current branch's local PR to GitHub: push the branch, create a draft PR if it has

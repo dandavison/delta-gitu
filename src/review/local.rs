@@ -34,10 +34,13 @@ pub(crate) struct LocalBackend {
     /// GitHub, which gives the PR's base, and through which the user's own comments in reviews
     /// copied from GitHub are edited and deleted.
     github: Rc<dyn GitHub>,
-    /// The GitHub PR the local PR was opened from with `O O`, if it was: its reviews are fetched
-    /// on `g r`, its Viewed checkboxes and pages are GitHub's, and its diff is from where it
-    /// branched from its base on GitHub.
+    /// The GitHub PR the local PR is linked to, if gh gave one for the branch: its reviews are
+    /// fetched on `g r`, its Viewed checkboxes and pages are GitHub's, and its diff is from where
+    /// it branched from its base on GitHub.
     linked: Option<GitHubBackend>,
+    /// Why the PR was not checked against GitHub, when gh couldn't say what the branch's GitHub
+    /// PR is.
+    unchecked: Option<String>,
 }
 
 impl LocalBackend {
@@ -47,11 +50,10 @@ impl LocalBackend {
     }
 
     /// The branch `head` (by default, the current branch) as a local PR into the branch `base`,
-    /// or, if none is given, into the base gh gives: the base of the branch's GitHub PR, or else
-    /// the default branch of the repository gh would open a PR against. Without gh's answer, the
-    /// base must be given. The PR is diffed against `base` or its remote's branch (see
-    /// [`resolve_base`]). If gh gives a GitHub PR for the branch, the base must be at GitHub's
-    /// base, and the PR must have GitHub's commits (see [`LocalBackend::check_against`]).
+    /// or, if none is given, the branch's PR as [`find_pr`] finds it: linked to the branch's
+    /// GitHub PR if gh gives one, which is then recorded as its link. The PR is diffed against
+    /// `base` or its remote's branch (see [`resolve_base`]). A PR linked to a GitHub PR must
+    /// have its base and its commits (see [`LocalBackend::check_against`]).
     pub fn new(
         repo: Rc<Repository>,
         github: Rc<dyn GitHub>,
@@ -69,17 +71,6 @@ impl LocalBackend {
                 head_ref.shorthand().ok_or_else(not_on_branch)?.to_owned()
             }
         };
-        let (base, github_pr) = match base {
-            Some(base) => (base, None),
-            None => base_from_github(github.as_ref(), &head).map_err(|e| {
-                Error::LocalPr(format!(
-                    "Couldn't find the PR's base branch with gh: {e}. Give it with --base"
-                ))
-            })?,
-        };
-        if head == base {
-            return Err(no_pr(&format!("{base} is the base branch")));
-        }
         let reviewer = repo
             .config()
             .and_then(|config| config.get_string("user.name"))
@@ -88,6 +79,13 @@ impl LocalBackend {
                     "Set git's user.name: your comments in a local PR are by that name".to_owned(),
                 )
             })?;
+        let (base, github_pr, unchecked) = match base {
+            Some(base) => (base, None, None),
+            None => find_pr(&repo, github.as_ref(), &head, &reviewer)?,
+        };
+        if head == base {
+            return Err(no_pr(&format!("{base} is the base branch")));
+        }
         let store = Store::new(repo.commondir(), &head, &base, &reviewer);
         let base_ref = resolve_base(&repo, &base)?;
         let pr = Self {
@@ -98,14 +96,50 @@ impl LocalBackend {
             reviewer,
             agent: None,
             store,
-            github,
+            github: Rc::clone(&github),
             linked: None,
+            unchecked,
         };
         pr.check_commits()?;
-        if let Some(github_pr) = &github_pr {
-            pr.check_against(github_pr).map_err(opening)?;
-        }
+        let Some(github_pr) = github_pr else {
+            return Ok(pr);
+        };
+        let pr = pr.with_linked_pr(GitHubBackend {
+            github,
+            pr: github_pr.clone(),
+        })?;
+        pr.record_link(&github_pr)?;
         Ok(pr)
+    }
+
+    /// Why the PR was not checked against GitHub, if it wasn't.
+    pub fn unchecked(&self) -> Option<&str> {
+        self.unchecked.as_deref()
+    }
+
+    /// The number of the GitHub PR the local PR is linked to, if it is.
+    pub fn linked_number(&self) -> Option<u64> {
+        self.linked.as_ref().map(|linked| linked.pr.number)
+    }
+
+    /// Record that the local PR is linked to the GitHub PR `github_pr`, so that it stays that
+    /// PR's. A local PR already recorded as another GitHub PR's is an error.
+    pub fn record_link(&self, github_pr: &GitHubPr) -> Res<()> {
+        let link = GitHubLink {
+            number: github_pr.number,
+            url: github_pr.url.clone(),
+        };
+        let mut result = Ok(());
+        self.store.update(|file| match &file.github_pr {
+            Some(recorded) if recorded.number != link.number => {
+                result = Err(Error::LocalPr(format!(
+                    "Couldn't link {}'s local PR to GitHub's PR #{}: it is linked to #{}",
+                    self.head, link.number, recorded.number
+                )));
+            }
+            _ => file.github_pr = Some(link),
+        })?;
+        result
     }
 
     /// Refuse a PR with no commits to review, or whose branch is behind its remote's, so that
@@ -191,7 +225,20 @@ impl LocalBackend {
     /// base, or, while the branch is where GitHub has the PR's head, whose commits are not as
     /// many as GitHub says the PR has.
     pub(crate) fn check_against(&self, github_pr: &GitHubPr) -> Res<()> {
-        let base = self.base_commit()?;
+        let in_repository = Oid::from_str(&github_pr.base_oid)
+            .ok()
+            .is_some_and(|oid| self.repo.find_commit(oid).is_ok());
+        if !in_repository {
+            return Err(Error::Gh(missing_commit(
+                "base",
+                &github_pr.base_oid,
+                &github_pr.base_ref,
+            )));
+        }
+        // The base as this repository has it, not as the link to GitHub gives it.
+        let base = ref_commit(&self.repo, &self.base_ref)?.ok_or_else(|| {
+            Error::LocalPr(format!("Couldn't find the PR's base, {}", self.base_ref))
+        })?;
         if base.to_string() != github_pr.base_oid {
             return Err(Error::Gh(format!(
                 "GitHub's {} is at {}, but {} is at {}. Fetch, so that they agree",
@@ -1060,11 +1107,86 @@ fn locate(anchor: &Anchor, lines: &[String]) -> Option<u32> {
 
 /// The base of `head`'s GitHub PR, or else the default branch of the repository gh would open a
 /// PR against.
-fn base_from_github(github: &dyn GitHub, head: &str) -> Res<(String, Option<GitHubPr>)> {
-    match github.pr_for_branch(head)? {
-        Some(pr) => Ok((pr.base_ref.clone(), Some(pr))),
-        None => Ok((github.default_branch()?, None)),
+/// A branch name as part of a file name: `%` and `/` escaped.
+fn escape_branch(branch: &str) -> String {
+    branch.replace('%', "%25").replace('/', "%2F")
+}
+
+/// The base of the branch `head`'s PR, the GitHub PR it is linked to, and why it was not checked
+/// against GitHub. A branch has at most one PR. If gh gives a GitHub PR for the branch, that is
+/// the PR, and its local PR, if it has one, must be into the same base and not linked to another
+/// GitHub PR. If gh says GitHub has none, the PR is the branch's local PR, which must not be
+/// linked to a GitHub PR, or a new one into the repository's default branch on GitHub. If gh
+/// can't say, the PR is the branch's local PR, not checked against GitHub. What else there could
+/// be is an error, as not yet handled.
+fn find_pr(
+    repo: &Repository,
+    github: &dyn GitHub,
+    head: &str,
+    reviewer: &str,
+) -> Res<(String, Option<GitHubPr>, Option<String>)> {
+    let bases = Store::bases(repo.commondir(), head)?;
+    let local = match bases.as_slice() {
+        [] => None,
+        [base] => {
+            let link = Store::new(repo.commondir(), head, base, reviewer)
+                .read()?
+                .github_pr;
+            Some((base.clone(), link))
+        }
+        [many @ .., last] => {
+            return Err(not_handled(&format!(
+                "{head} has local PRs into {} and {last}",
+                many.join(", ")
+            )));
+        }
+    };
+    let github_pr = match github.pr_for_branch(head) {
+        Ok(github_pr) => github_pr,
+        Err(e) => {
+            return match local {
+                Some((base, _)) => {
+                    Ok((base, None, Some(format!("Not checked against GitHub: {e}"))))
+                }
+                None => Err(Error::LocalPr(format!(
+                    "Couldn't find {head}'s PR: there is none in this repository, and gh couldn't \
+                     say what GitHub has: {e}. The review command line can be given the base \
+                     with --base"
+                ))),
+            };
+        }
+    };
+    match (github_pr, local) {
+        (Some(pr), None) => Ok((pr.base_ref.clone(), Some(pr), None)),
+        (Some(pr), Some((base, link))) => {
+            if let Some(link) = link
+                && link.number != pr.number
+            {
+                return Err(not_handled(&format!(
+                    "{head}'s local PR is linked to #{}, but GitHub's PR for it is #{}",
+                    link.number, pr.number
+                )));
+            }
+            if base != pr.base_ref {
+                return Err(not_handled(&format!(
+                    "{head}'s local PR is into {base}, but GitHub's PR #{} is into {}",
+                    pr.number, pr.base_ref
+                )));
+            }
+            Ok((base, Some(pr), None))
+        }
+        (None, Some((_, Some(link)))) => Err(not_handled(&format!(
+            "{head}'s local PR is linked to #{}, which GitHub no longer has open",
+            link.number
+        ))),
+        (None, Some((base, None))) => Ok((base, None, None)),
+        (None, None) => Ok((github.default_branch()?, None, None)),
     }
+}
+
+/// An error for a case gitu doesn't handle yet.
+fn not_handled(case: &str) -> Error {
+    Error::LocalPr(format!("Not handled yet: {case}"))
 }
 
 /// The ref a local PR into the branch `base` is diffed against: `refs/heads/<base>`, or its
@@ -1370,8 +1492,9 @@ impl Backend for LocalBackend {
 }
 
 /// The version of [`PrFile`] this gitu writes. Version 1 had a draft review for each author,
-/// an agent's among them; version 2 has one, the reviewer's (see [`merge_drafts`]).
-const VERSION: u32 = 2;
+/// an agent's among them; version 2 has one, the reviewer's (see [`merge_drafts`]). Version 3
+/// records the GitHub PR the local PR is linked to, which a gitu writing version 2 would drop.
+const VERSION: u32 = 3;
 
 /// What is recorded about a local PR, as JSON.
 #[derive(Serialize, Deserialize)]
@@ -1387,6 +1510,16 @@ struct PrFile {
     reviews: Vec<StoredReview>,
     #[serde(default)]
     threads: Vec<StoredThread>,
+    /// The GitHub PR the local PR is linked to, once it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    github_pr: Option<GitHubLink>,
+}
+
+/// A GitHub PR, as a local PR's link to it records it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GitHubLink {
+    pub number: u64,
+    pub url: String,
 }
 
 /// One reviewer's comments on the PR, which are the comments that give its id. There is at most
@@ -1506,17 +1639,55 @@ impl Store {
     fn new(common_dir: &Path, head: &str, base: &str, reviewer: &str) -> Self {
         // `...` is not in any branch name, and `%` and `/` are escaped so that the name is one
         // file name, from which the branch names can be read back.
-        let escape = |branch: &str| branch.replace('%', "%25").replace('/', "%2F");
         Self {
-            path: common_dir.join("gitu").join("review").join(format!(
+            path: Self::dir(common_dir).join(format!(
                 "{}...{}.json",
-                escape(head),
-                escape(base)
+                escape_branch(head),
+                escape_branch(base)
             )),
             head: head.to_owned(),
             base: base.to_owned(),
             reviewer: reviewer.to_owned(),
         }
+    }
+
+    fn dir(common_dir: &Path) -> PathBuf {
+        common_dir.join("gitu").join("review")
+    }
+
+    /// The bases of the local PRs of the branch `head` recorded in `common_dir`, sorted.
+    fn bases(common_dir: &Path, head: &str) -> Res<Vec<String>> {
+        let dir = Self::dir(common_dir);
+        let error = |e: io::Error| {
+            Error::LocalPr(format!(
+                "Couldn't list the local PRs in {}: {e}",
+                dir.display()
+            ))
+        };
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(e) => return Err(error(e)),
+        };
+        let prefix = format!("{}...", escape_branch(head));
+        let mut bases = vec![];
+        for entry in entries {
+            let name = entry.map_err(error)?.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                Error::LocalPr(format!(
+                    "Couldn't list the local PRs in {}: a file's name is not UTF-8",
+                    dir.display()
+                ))
+            })?;
+            if let Some(base) = name
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(".json"))
+            {
+                bases.push(base.replace("%2F", "/").replace("%25", "%"));
+            }
+        }
+        bases.sort();
+        Ok(bases)
     }
 
     fn read(&self) -> Res<PrFile> {
@@ -1530,6 +1701,7 @@ impl Store {
                     viewed: BTreeMap::new(),
                     reviews: vec![],
                     threads: vec![],
+                    github_pr: None,
                 });
             }
             Err(e) => return Err(self.error("read", e)),

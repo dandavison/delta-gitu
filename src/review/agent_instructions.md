@@ -7,7 +7,7 @@ description: Review code with a person using delta. Write a review of a branch t
 
 `delta --tui` is a git interface in the terminal. It can show a branch as a local PR: the
 branch's diff against its base branch, with review threads under the lines they are on. The person
-opens the current branch's local PR with `O l`.
+opens the current branch's PR with `O O`.
 
 ## Concepts
 
@@ -87,7 +87,7 @@ delta --tui review show --head <branch> --base <branch>
    overall comment.]
 
 5. Run `delta --tui review show` to check what you wrote, then tell the person the review is
-   ready, and that `O l` in `delta --tui` shows it.
+   ready, and that `O O` in `delta --tui` shows it.
 
 ## 2. Read and answer a review
 

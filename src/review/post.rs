@@ -63,6 +63,7 @@ pub(crate) fn post(local: &LocalBackend, github: Rc<dyn GitHub>) -> Res<Posted> 
         None => github.create_pr(local.head(), local.base())?,
     };
     check_pr(local, &pr).map_err(|e| Error::Gh(format!("Couldn't post: {e}")))?;
+    local.record_link(&pr)?;
     let review = match (github.pending_review(&pr)?, &to_post.link) {
         (Some(pending), Some(link)) if pending == *link => pending,
         (Some(pending), _) => {

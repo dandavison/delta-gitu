@@ -400,6 +400,10 @@ pub(crate) mod cli {
         agent: &Option<String>,
     ) -> Res<LocalBackend> {
         let pr = LocalBackend::new(Rc::new(repo), github, head.clone(), base.clone())?;
+        // On stderr, which is not what a command prints, such as JSON.
+        if let Some(unchecked) = pr.unchecked() {
+            eprintln!("{unchecked}");
+        }
         Ok(match agent {
             Some(agent) => pr.with_agent(agent.clone()),
             None => pr,
