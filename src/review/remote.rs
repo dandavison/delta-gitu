@@ -1,10 +1,12 @@
 //! Every change gitu makes on GitHub goes through [`write`], which knows which changes others can
 //! see. A change only the user can see, such as to their pending review, is made. One that others
-//! can see is made only if the user said to publish it.
+//! can see is made only if the user said to publish it. Whether a change to a comment is one others
+//! can see is decided from the comment as GitHub has it when the change is made, not from a copy
+//! fetched before.
 
 use super::{
     Place,
-    github::{GitHub, GitHubPr},
+    github::{CommentNow, GitHub, GitHubPr},
 };
 use crate::{Res, error::Error};
 
@@ -25,14 +27,16 @@ pub(crate) enum Change<'a> {
         to: &'a str,
         body: &'a str,
     },
-    /// Edit the user's own comment, which is `public` if it is in a submitted or dismissed review.
+    /// Edit the user's own comment to say `body`. It said `was` when last fetched, and must still:
+    /// otherwise it was changed on GitHub since, and the edit would overwrite that.
     EditComment {
         comment: &'a str,
         body: &'a str,
-        public: bool,
+        was: &'a str,
     },
-    /// Delete the user's own comment, as [`Change::EditComment`] edits one.
-    DeleteComment { comment: &'a str, public: bool },
+    /// Delete the user's own comment, which said `was` when last fetched, as
+    /// [`Change::EditComment`] edits one.
+    DeleteComment { comment: &'a str, was: &'a str },
     /// Tick or untick a file's Viewed checkbox, which only the user sees.
     SetViewed {
         pr: &'a GitHubPr,
@@ -44,16 +48,42 @@ pub(crate) enum Change<'a> {
 }
 
 impl Change<'_> {
-    /// Whether the change is one others can see.
-    pub fn publishes(&self) -> bool {
+    /// Whether the change is one others can see, asking GitHub about a comment to be changed,
+    /// which must be the user's, and as it was when last fetched.
+    fn publishes(&self, github: &dyn GitHub) -> Res<bool> {
         match self {
-            Change::EditComment { public, .. } | Change::DeleteComment { public, .. } => *public,
-            Change::CreatePr { .. } => true,
+            Change::EditComment { comment, was, .. } | Change::DeleteComment { comment, was } => {
+                let now = self.as_fetched(github, comment, was)?;
+                Ok(now.public)
+            }
+            Change::CreatePr { .. } => Ok(true),
             Change::StartReview { .. }
             | Change::AddThread { .. }
             | Change::AddReply { .. }
-            | Change::SetViewed { .. } => false,
+            | Change::SetViewed { .. } => Ok(false),
         }
+    }
+
+    /// The comment `comment` as GitHub has it, if it is the user's and says `was`, as when last
+    /// fetched.
+    fn as_fetched(&self, github: &dyn GitHub, comment: &str, was: &str) -> Res<CommentNow> {
+        let refuse = |why: &str| Err(Error::Gh(format!("Couldn't {}: {why}", self.what())));
+        let Some(now) = github.comment_now(comment)? else {
+            return refuse(
+                "it was deleted on GitHub since delta last fetched. Fetch (g r, or review fetch) \
+                 to see the PR's reviews as they are",
+            );
+        };
+        if !now.mine {
+            return refuse("someone else wrote it");
+        }
+        if now.body != was {
+            return refuse(
+                "it was changed on GitHub since delta last fetched. Fetch (g r, or review fetch), \
+                 check it, then change it again",
+            );
+        }
+        Ok(now)
     }
 
     fn what(&self) -> String {
@@ -105,10 +135,11 @@ impl Made {
 
 /// Make `change` on GitHub, unless others would see it and the user hasn't said to publish it.
 pub(crate) fn write(github: &dyn GitHub, change: Change, consent: Consent) -> Res<Made> {
-    if change.publishes() && consent != Consent::Publish {
+    if change.publishes(github)? && consent != Consent::Publish {
         return Err(Error::Gh(format!(
             "Couldn't {}: others would see it on GitHub, so it needs your say-so: y when delta \
-             asks, or --publish",
+             asks, or --publish. If delta didn't ask, its review was submitted since delta last \
+             fetched: fetch first (g r, or review fetch)",
             change.what()
         )));
     }
@@ -142,44 +173,33 @@ mod tests {
     use super::*;
     use crate::tests::helpers::github::NoGitHub;
 
-    /// A change others would see is refused before GitHub is asked.
+    /// A change others would see is refused before GitHub is asked to make it. Whether a change
+    /// to a comment is one is GitHub's to say, which `tests::local_pr` tests with a fake GitHub.
     #[test]
     fn a_change_others_would_see_needs_consent() {
-        for change in [
-            Change::EditComment {
-                comment: "c",
-                body: "b",
-                public: true,
-            },
-            Change::DeleteComment {
-                comment: "c",
-                public: true,
-            },
-            Change::CreatePr {
-                head: "h",
-                base: "b",
-            },
-        ] {
-            let error = write(&NoGitHub, change, Consent::Private)
-                .err()
-                .unwrap()
-                .to_string();
-            assert!(error.contains("needs your say-so"), "{error}");
-        }
-    }
-
-    /// A change only the user sees needs no consent, so GitHub is asked.
-    #[test]
-    fn a_private_change_goes_to_github() {
-        let change = Change::EditComment {
-            comment: "c",
-            body: "b",
-            public: false,
+        let change = Change::CreatePr {
+            head: "h",
+            base: "b",
         };
         let error = write(&NoGitHub, change, Consent::Private)
             .err()
             .unwrap()
             .to_string();
-        assert!(!error.contains("needs your say-so"), "{error}");
+        assert!(error.contains("needs your say-so"), "{error}");
+    }
+
+    /// A change only the user sees needs no consent, so GitHub is asked.
+    #[test]
+    fn a_private_change_goes_to_github() {
+        let change = Change::AddReply {
+            review: "r",
+            to: "c",
+            body: "b",
+        };
+        let error = write(&NoGitHub, change, Consent::Private)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("This test has no GitHub"), "{error}");
     }
 }

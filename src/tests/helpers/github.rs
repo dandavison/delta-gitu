@@ -48,6 +48,10 @@ impl GitHub for NoGitHub {
     fn edit_comment(&self, _comment: &str, _body: &str) -> Res<()> {
         refused()
     }
+    fn comment_now(&self, _comment: &str) -> Res<Option<crate::review::github::CommentNow>> {
+        refused()
+    }
+
     fn delete_comment(&self, _comment: &str) -> Res<()> {
         refused()
     }

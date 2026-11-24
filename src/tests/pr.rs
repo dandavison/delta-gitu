@@ -246,6 +246,26 @@ impl GitHub for FakeGitHub {
         Ok(())
     }
 
+    fn comment_now(
+        &self,
+        comment_id: &str,
+    ) -> Result<Option<crate::review::github::CommentNow>, Error> {
+        let mine = *self.submitted_by_me.borrow();
+        Ok(self
+            .threads
+            .borrow()
+            .iter()
+            .flat_map(|t| &t.comments)
+            .find(|c| c.id == comment_id)
+            .map(|c| crate::review::github::CommentNow {
+                body: c.body.clone(),
+                // As `reviews` has it: a draft is in my pending review, and the rest in the
+                // submitted one, which is mine if `submitted_by_me`.
+                public: !c.draft,
+                mine: c.draft || mine,
+            }))
+    }
+
     fn delete_comment(&self, comment_id: &str) -> Result<(), Error> {
         self.deleted.borrow_mut().push(comment_id.to_owned());
         let mut threads = self.threads.borrow_mut();

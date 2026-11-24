@@ -968,7 +968,7 @@ impl LocalBackend {
                     ))
                 })?,
                 starts_thread: i == 0,
-                public: matches!(r.state, ReviewState::Submitted | ReviewState::Dismissed),
+                was: comment.body.clone(),
             }),
             _ => Err(Error::LocalPr(NOT_DRAFT.to_owned())),
         }
@@ -1236,11 +1236,11 @@ const HAS_REPLIES: &str =
 /// Where a comment that can be changed is, as [`LocalBackend::whose`] gives it.
 enum Changeable {
     Draft,
-    /// The user's own comment on GitHub, `public` if in a review others can see.
+    /// The user's own comment on GitHub, which said `was` when last fetched.
     OnGitHub {
         id: String,
         starts_thread: bool,
-        public: bool,
+        was: String,
     },
 }
 
@@ -1937,12 +1937,12 @@ impl Backend for LocalBackend {
         body: &str,
         consent: Consent,
     ) -> Res<&'static str> {
-        if let Changeable::OnGitHub { id, public, .. } = self.whose(thread_id, comment_id)? {
+        if let Changeable::OnGitHub { id, was, .. } = self.whose(thread_id, comment_id)? {
             let github = self.github_pr()?;
             let change = Change::EditComment {
                 comment: &id,
                 body,
-                public,
+                was: &was,
             };
             remote::write(github.github.as_ref(), change, consent)?;
             self.fetch(&github)?;
@@ -1966,7 +1966,7 @@ impl Backend for LocalBackend {
         if let Changeable::OnGitHub {
             id,
             starts_thread,
-            public,
+            was,
         } = self.whose(thread_id, comment_id)?
         {
             if starts_thread {
@@ -1979,7 +1979,7 @@ impl Backend for LocalBackend {
             let github = self.github_pr()?;
             let change = Change::DeleteComment {
                 comment: &id,
-                public,
+                was: &was,
             };
             remote::write(github.github.as_ref(), change, consent)?;
             self.fetch(&github)?;

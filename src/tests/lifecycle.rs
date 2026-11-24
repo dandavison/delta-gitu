@@ -305,6 +305,31 @@ impl GitHub for User {
         Ok(())
     }
 
+    fn comment_now(
+        &self,
+        comment_id: &str,
+    ) -> Result<Option<crate::review::github::CommentNow>, Error> {
+        let server = self.server.borrow();
+        let Some((_, author, body)) = server
+            .threads
+            .iter()
+            .flat_map(|t| &t.comments)
+            .find(|(id, ..)| id == comment_id)
+        else {
+            return Ok(None);
+        };
+        let review = server
+            .reviews
+            .iter()
+            .find(|r| r.comments.iter().any(|id| id == comment_id))
+            .expect("a comment in a review");
+        Ok(Some(crate::review::github::CommentNow {
+            body: body.clone(),
+            public: review.state != ReviewState::Pending,
+            mine: *author == self.login,
+        }))
+    }
+
     fn delete_comment(&self, comment_id: &str) -> Result<(), Error> {
         let mut server = self.server.borrow_mut();
         for thread in &mut server.threads {
@@ -494,7 +519,7 @@ impl World {
             .unwrap()
             .iter()
             .flat_map(|t| t["comments"].as_array().unwrap())
-            .find(|c| c["body"] == body)
+            .find(|c| model_text(c["body"].as_str().unwrap()) == body)
             .unwrap_or_else(|| panic!("no comment {body} in {repo:?}: {json}"))["id"]
             .as_str()
             .unwrap()
@@ -509,11 +534,11 @@ impl World {
             .unwrap()
             .iter()
             .find(|t| {
-                t["comments"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|c| bodies.iter().any(|b| c["body"] == b.as_str()))
+                t["comments"].as_array().unwrap().iter().any(|c| {
+                    bodies
+                        .iter()
+                        .any(|b| model_text(c["body"].as_str().unwrap()) == b)
+                })
             })
             .unwrap_or_else(|| panic!("no thread with {bodies:?} in {repo:?}: {json}"))["id"]
             .as_str()
@@ -539,7 +564,7 @@ impl World {
                             .find(|t| t.comments.iter().any(|(c, ..)| c == id))
                             .unwrap();
                         let (_, _, body) = thread.comments.iter().find(|(c, ..)| c == id).unwrap();
-                        (body.clone(), line_of(thread))
+                        (model_text(body).to_owned(), line_of(thread))
                     })
                     .collect();
                 comments.sort();
@@ -811,13 +836,21 @@ impl World {
 }
 
 fn server_threads_body(threads: &[ServerThread], id: &str) -> String {
-    threads
+    let (.., body) = threads
         .iter()
         .flat_map(|t| &t.comments)
         .find(|(c, ..)| c == id)
-        .unwrap()
-        .2
-        .clone()
+        .unwrap();
+    model_text(body).to_owned()
+}
+
+/// A comment's text as the model has it: without the note that gitu starts a comment with when
+/// it posts it on its file because its line has gone, which says what the line was.
+fn model_text(body: &str) -> &str {
+    match body.split_once("`\n\n") {
+        Some((note, text)) if note.starts_with("On line ") => text,
+        _ => body,
+    }
 }
 
 /// The text of a comment in the model.
@@ -858,7 +891,10 @@ fn seen_repo(json: &serde_json::Value) -> SeenRepo {
     for thread in json["threads"].as_array().unwrap() {
         let line = thread["line"].as_u64().map(|n| n as u32);
         for comment in thread["comments"].as_array().unwrap() {
-            let seen = (comment["body"].as_str().unwrap().to_owned(), line);
+            let seen = (
+                model_text(comment["body"].as_str().unwrap()).to_owned(),
+                line,
+            );
             // A local-only comment is in no review.
             match comment["review"].as_str() {
                 Some(review) => by_review.entry(review.to_owned()).or_default().push(seen),

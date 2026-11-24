@@ -589,9 +589,9 @@ impl Model {
                     return Some(m);
                 };
                 // A draft reply in a thread whose first comment is local-only can't reach GitHub
-                // before its thread: it blocks the sync.
+                // before its thread: it blocks the sync, which has fetched, and posts nothing.
                 if rules.block_replies_to_local_threads && !self.blocked_replies(repo).is_empty() {
-                    return None;
+                    return Some(m);
                 }
                 // The lease: draft threads written against another head of the PR than its head
                 // now are moved to its head, for the user to see where they are, and nothing is

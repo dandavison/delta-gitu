@@ -11,6 +11,16 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, path::PathBuf, process::Command, rc::Rc};
 
+/// A review comment as GitHub has it now.
+#[derive(Clone, Debug)]
+pub(crate) struct CommentNow {
+    pub body: String,
+    /// Whether others see it: whether its review is submitted or dismissed, rather than pending.
+    pub public: bool,
+    /// Whether the user wrote it.
+    pub mine: bool,
+}
+
 /// A PR, as GitHub describes it.
 #[derive(Clone, Debug)]
 pub(crate) struct GitHubPr {
@@ -156,6 +166,8 @@ pub(crate) trait GitHub {
     fn edit_comment(&self, comment_id: &str, body: &str) -> Res<()>;
     /// Delete the review comment `comment_id`.
     fn delete_comment(&self, comment_id: &str) -> Res<()>;
+    /// The review comment `comment_id` as GitHub has it now, or `None` if it has been deleted.
+    fn comment_now(&self, comment_id: &str) -> Res<Option<CommentNow>>;
     /// Tick or untick the checkbox of the file at `path`.
     fn set_viewed(&self, pr: &GitHubPr, path: &str, viewed: bool) -> Res<()>;
     /// Open `url` in the browser.
@@ -285,6 +297,13 @@ const UNMARK_VIEWED: &str = "mutation($id: ID!, $path: String!) {
 /// read one at a time, a push between them gives the old head with the new number of commits.
 const PR_COMMITS: &str = "query($id: ID!) {
   node(id: $id) { ... on PullRequest { baseRefOid headRefOid commits { totalCount } } }
+}";
+/// A review comment as GitHub has it now: what it says, whether the user wrote it, and whether its
+/// review is pending.
+const COMMENT_NOW: &str = "query($id: ID!) {
+  node(id: $id) {
+    ... on PullRequestReviewComment { body viewerDidAuthor pullRequestReview { state } }
+  }
 }";
 const BASE_OID: &str = "/data/node/baseRefOid";
 const HEAD_OID: &str = "/data/node/headRefOid";
@@ -573,6 +592,33 @@ impl GitHub for Gh {
     fn delete_comment(&self, comment_id: &str) -> Res<()> {
         let output = self.graphql(DELETE_COMMENT, &[("id", comment_id)], &[], None)?;
         required(&output, DELETED_COMMENT, "delete the comment").map(|_| ())
+    }
+
+    fn comment_now(&self, comment_id: &str) -> Res<Option<CommentNow>> {
+        let output = match self.graphql(COMMENT_NOW, &[("id", comment_id)], &[], None) {
+            Ok(output) => output,
+            // GitHub's reply for an id it no longer has.
+            Err(Error::Gh(message)) if message.contains("Could not resolve to a node") => {
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
+        let what = "read the comment as GitHub has it";
+        let body = required(&output, "/data/node/body", what)?;
+        let mine = required(&output, "/data/node/viewerDidAuthor", what)?;
+        let state = required(&output, "/data/node/pullRequestReview/state", what)?;
+        let (Some(body), Some(mine), Some(state)) = (body.as_str(), mine.as_bool(), state.as_str())
+        else {
+            return Err(Error::Gh(format!(
+                "Couldn't {what}: GitHub replied {}",
+                output.trim_end()
+            )));
+        };
+        Ok(Some(CommentNow {
+            body: body.to_owned(),
+            public: state != "PENDING",
+            mine,
+        }))
     }
 
     fn set_viewed(&self, pr: &GitHubPr, path: &str, viewed: bool) -> Res<()> {
