@@ -371,7 +371,7 @@ impl OpTrait for ShowOnGithub {
     }
 
     fn display(&self, _state: &State) -> String {
-        "Show on GitHub".into()
+        "Open in GitHub".into()
     }
 }
 

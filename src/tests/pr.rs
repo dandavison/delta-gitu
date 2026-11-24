@@ -2173,7 +2173,7 @@ fn the_help_lists_the_pr_keys_under_pr_on_a_prs_screen() {
     ctx.update(&mut app, keys(HELP));
 
     let pr = help_section(&ctx, "PR").join("\n");
-    for key in ["Toggle viewed", "Show on GitHub", "Write a comment"] {
+    for key in ["Toggle viewed", "Open in GitHub", "Write a comment"] {
         assert!(pr.contains(key), "{key} under PR:\n{}", ctx.redact_buffer());
     }
     let line = help_section(&ctx, "Line").join("\n");
@@ -2217,7 +2217,7 @@ fn the_help_lists_no_pr_keys_outside_a_pr() {
     let screen = ctx.redact_buffer();
     for key in [
         "Toggle viewed",
-        "Show on GitHub",
+        "Open in GitHub",
         "Write a comment",
         "Edit comment",
         "Reply",
