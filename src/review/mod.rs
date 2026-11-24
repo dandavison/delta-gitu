@@ -72,6 +72,10 @@ pub(crate) trait Backend {
     fn pending_review(&self) -> Res<Option<PendingReview>> {
         Ok(None)
     }
+    /// The PR in one line, as the top of its screen shows it, if the backend can say.
+    fn summary(&self) -> Res<Option<String>> {
+        Ok(None)
+    }
     /// The page showing the file at `path` in the PR's diff, at `line` when given, or `None`
     /// when the backend has no pages.
     fn file_url(&self, path: &str, line: Option<(Side, u32)>) -> Option<String>;
@@ -148,6 +152,8 @@ pub(crate) struct OpenPr {
     pub viewed: RefCell<HashMap<String, ViewedState>>,
     pub threads: RefCell<Vec<Thread>>,
     pub pending_review: RefCell<Option<PendingReview>>,
+    /// The PR in one line (see [`Backend::summary`]).
+    pub summary: RefCell<Option<String>>,
     /// The options comments were last drawn with, and the features in force they were asked
     /// with, as `DELTA_FEATURES` gives them; `None` until they are first asked for, and once the
     /// PR is read again, so that a change to delta's config counts.
@@ -194,16 +200,19 @@ impl OpenPr {
             viewed: RefCell::new(backend.viewed()?),
             threads: RefCell::new(backend.threads()?),
             pending_review: RefCell::new(backend.pending_review()?),
+            summary: RefCell::new(backend.summary()?),
             options: RefCell::new(None),
             editor: RefCell::new(None),
             backend,
         })
     }
 
-    /// Read the threads, and the user's pending review on GitHub, from the backend again.
+    /// Read the threads, the user's pending review on GitHub, and the summary of the PR from
+    /// the backend again.
     pub fn reread_threads(&self) -> Res<()> {
         *self.threads.borrow_mut() = self.backend.threads()?;
         *self.pending_review.borrow_mut() = self.backend.pending_review()?;
+        *self.summary.borrow_mut() = self.backend.summary()?;
         Ok(())
     }
 

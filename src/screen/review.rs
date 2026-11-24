@@ -15,8 +15,8 @@ use std::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// `items`, a PR's diff, under a warning when HEAD is not the commit the PR's lines are
-/// numbered against, and with each of the PR's threads under the line it is on. A thread whose
+/// `items`, a PR's diff, under a summary of the PR in `summary_style`, and under a warning when
+/// HEAD is not the commit the PR's lines are numbered against, and with each of the PR's threads under the line it is on. A thread whose
 /// line is not among the rows, as GitHub has it outdated or as its line is outside the diff's
 /// hunks, goes under its file's header. A thread on a file not among the rows is not shown, and a
 /// row at the top says so for one on a file not in the PR's diff, which can never be shown.
@@ -29,6 +29,7 @@ pub(crate) fn with_threads(
     repo: &Repository,
     layout: Layout,
     options: &CommentOptions,
+    summary_style: Style,
     error_style: Style,
 ) -> Vec<Item> {
     let items = with_comment_counts(items, pr, layout.width, options.count);
@@ -106,6 +107,13 @@ pub(crate) fn with_threads(
     };
 
     let mut out = Vec::with_capacity(items.len());
+    if let Some(summary) = pr.summary.borrow().clone() {
+        out.push(Item {
+            unselectable: true,
+            rendered: Some(Rc::new(vec![(summary, summary_style)])),
+            ..Default::default()
+        });
+    }
     for error in &options.errors {
         out.push(Item {
             unselectable: true,

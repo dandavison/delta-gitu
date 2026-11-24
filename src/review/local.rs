@@ -117,6 +117,12 @@ impl LocalBackend {
         self.unchecked.as_deref()
     }
 
+    /// The range of the PR's commits, as `git log` takes it: from where it branched from its base
+    /// to its head.
+    pub fn log_range(&self) -> Res<String> {
+        Ok(format!("{}..{}", self.merge_base()?, self.head_commit()?))
+    }
+
     /// The number of the GitHub PR the local PR is linked to, if it is.
     pub fn linked_number(&self) -> Option<u64> {
         self.linked.as_ref().map(|linked| linked.pr.number)
@@ -1232,9 +1238,6 @@ pub(crate) struct PrSummary {
     pub commits: usize,
     pub drafts: usize,
     pub pending: Option<PendingReview>,
-    pub head: Oid,
-    /// Where the PR branched from its base: its commits are the head's since.
-    pub merge_base: Oid,
 }
 
 /// The branch `head`'s local PR, as recorded in this repository, without asking GitHub; `None`
@@ -1259,9 +1262,13 @@ pub(crate) fn summary(repo: &Repository, head: &str) -> Res<Option<PrSummary>> {
             )
         })?;
     let file = Store::new(repo.commondir(), head, &base, &reviewer).read()?;
-    let base_ref = resolve_base(repo, &base)?;
+    summarize(repo, &file, &resolve_base(repo, &base)?, head).map(Some)
+}
+
+/// The local PR recorded in `file`, of the branch `head` into the base at `base_ref`.
+fn summarize(repo: &Repository, file: &PrFile, base_ref: &str, head: &str) -> Res<PrSummary> {
     let missing = |name: &str| Error::LocalPr(format!("Couldn't find {name}"));
-    let base_commit = ref_commit(repo, &base_ref)?.ok_or_else(|| missing(&base_ref))?;
+    let base_commit = ref_commit(repo, base_ref)?.ok_or_else(|| missing(base_ref))?;
     let head_ref = format!("refs/heads/{head}");
     let head_commit = ref_commit(repo, &head_ref)?.ok_or_else(|| missing(&head_ref))?;
     let error = |e: git2::Error| Error::LocalPr(format!("Couldn't read {head}'s PR: {e}"));
@@ -1284,15 +1291,42 @@ pub(crate) fn summary(repo: &Repository, head: &str) -> Res<Option<PrSummary>> {
                 .count()
         })
         .sum();
-    Ok(Some(PrSummary {
-        base: short_ref(&base_ref).to_owned(),
-        pending: pending_review(&file),
-        link: file.github_pr,
+    Ok(PrSummary {
+        base: short_ref(base_ref).to_owned(),
+        pending: pending_review(file),
+        link: file.github_pr.clone(),
         commits,
         drafts,
-        head: head_commit,
-        merge_base,
-    }))
+    })
+}
+
+impl PrSummary {
+    /// The PR in one line, as the status view and the PR's screen show it: its base, its GitHub
+    /// PR or that it is not on GitHub, and how many commits and draft comments it has, with the
+    /// user's pending review on GitHub if they have one.
+    pub fn line(&self) -> String {
+        let count = |n: usize, noun: &str| match n {
+            1 => format!("1 {noun}"),
+            n => format!("{n} {noun}s"),
+        };
+        let mut parts = vec![format!("PR into {}", self.base)];
+        parts.push(match &self.link {
+            Some(link) => format!("#{}", link.number),
+            None => "not on GitHub".to_owned(),
+        });
+        parts.push(count(self.commits, "commit"));
+        if self.drafts > 0 {
+            parts.push(count(self.drafts, "draft comment"));
+        }
+        if let Some(pending) = self.pending {
+            let comments = match pending.comments {
+                0 => "no comments".to_owned(),
+                n => count(n, "comment"),
+            };
+            parts.push(format!("pending review on GitHub with {comments}"));
+        }
+        parts.join(" · ")
+    }
 }
 
 /// An error for a case gitu doesn't handle yet.
@@ -1400,6 +1434,11 @@ impl Backend for LocalBackend {
 
     fn pending_review(&self) -> Res<Option<PendingReview>> {
         Ok(pending_review(&self.store.read()?))
+    }
+
+    fn summary(&self) -> Res<Option<String>> {
+        let summary = summarize(&self.repo, &self.store.read()?, &self.base_ref, &self.head)?;
+        Ok(Some(summary.line()))
     }
 
     fn viewed(&self) -> Res<HashMap<String, ViewedState>> {

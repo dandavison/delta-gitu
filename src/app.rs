@@ -382,14 +382,14 @@ impl App {
     fn reread_review_threads(&mut self) -> Res<()> {
         for screen in &self.state.screens {
             if let Some(pr) = &screen.pr {
-                let Some(local) = pr.backend.as_local() else {
+                if pr.backend.as_local().is_none() {
                     return Err(Error::LocalPr(
                         "Couldn't read review threads: the PR on screen is not a local PR"
                             .to_owned(),
                     ));
-                };
-                *pr.threads.borrow_mut() = crate::review::Backend::threads(local)?;
-                *pr.pending_review.borrow_mut() = crate::review::Backend::pending_review(local)?;
+                }
+                // A local PR's threads, pending review and summary are read from the store.
+                pr.reread_threads()?;
             }
         }
         Ok(())
@@ -1155,7 +1155,7 @@ impl App {
             Rc::clone(&self.state.repo),
             params,
             COMMIT_PICK_LIMIT,
-            None,
+            vec![],
             None,
         )?);
         self.screen_mut().menu = Some(Menu::CommitPicker);

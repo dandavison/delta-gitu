@@ -20,7 +20,7 @@ use crate::{
     items::{self, Item, RenderParams},
     stream::{Input, Snapshot, Stream, Streams},
 };
-use git2::{Oid, Repository};
+use git2::Repository;
 use regex::Regex;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -103,14 +103,15 @@ pub(crate) fn show(
     live(config, repo, params, git_argv)
 }
 
-/// The view `git log` gives with gitu as git's pager: of `rev`, or of `HEAD`,
-/// at most `limit` commits, and only those whose message matches `msg_regex`.
+/// The view `git log` gives with gitu as git's pager: of `revs`, or of `HEAD`
+/// if there are none, at most `limit` commits, and only those whose message
+/// matches `msg_regex`.
 pub(crate) fn log(
     config: Arc<Config>,
     repo: Rc<Repository>,
     params: RenderParams,
     limit: usize,
-    rev: Option<Oid>,
+    revs: Vec<String>,
     msg_regex: Option<&Regex>,
 ) -> Res<Screen> {
     let mut git_argv: Vec<String> = ["git", "log"]
@@ -127,7 +128,7 @@ pub(crate) fn log(
         git_argv.push("--extended-regexp".into());
         git_argv.push(format!("--grep={regex}"));
     }
-    git_argv.extend(rev.map(|oid| oid.to_string()));
+    git_argv.extend(revs);
     live(config, repo, params, git_argv)
 }
 
