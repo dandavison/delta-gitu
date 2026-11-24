@@ -3,7 +3,7 @@
 //! from, and where comments go, is the PR's [`Backend`].
 
 /// Instructions for an AI agent on reviewing code with a person, which
-/// `delta --tui --agent-instructions` prints.
+/// `delta tui --agent-instructions` prints.
 pub(crate) const AGENT_INSTRUCTIONS: &str = include_str!("agent_instructions.md");
 
 pub(crate) mod diagram;
@@ -327,7 +327,7 @@ pub(crate) fn file_path(diff: &Diff, file_i: usize) -> String {
     path.fmt(&diff.text).into_owned()
 }
 
-/// `delta --tui review`, which reads and writes a local PR's reviews without starting the TUI.
+/// `delta tui review`, which reads and writes a local PR's reviews without starting the TUI.
 pub(crate) mod cli {
     use super::{
         Backend, Side,

@@ -101,7 +101,7 @@ pub enum DiagramFormat {
     D2,
 }
 
-/// How `delta --tui review show` prints a review.
+/// How `delta tui review show` prints a review.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum ShowFormat {
     Markdown,
@@ -121,7 +121,7 @@ pub enum ReviewCommand {
     /// Edit a comment, with its new text read from stdin: a local comment, draft or local-only, or
     /// your own comment in a review on GitHub, which is edited there and fetched again.
     Edit {
-        /// The comment's id, as `delta --tui review show --format json` prints it.
+        /// The comment's id, as `delta tui review show --format json` prints it.
         comment: String,
         /// Change it although it is in a submitted review, which others see.
         #[clap(long)]
@@ -134,7 +134,7 @@ pub enum ReviewCommand {
     /// Delete a local comment, draft or local-only, or your own reply in a review on GitHub. A
     /// thread's first comment can't be deleted while the thread has replies.
     Delete {
-        /// The comment's id, as `delta --tui review show --format json` prints it.
+        /// The comment's id, as `delta tui review show --format json` prints it.
         comment: String,
         /// Delete it although it is in a submitted review, which others see.
         #[clap(long)]
@@ -197,7 +197,7 @@ pub enum ReviewCommand {
     /// first comment is, and otherwise goes into your draft review, which is started if you have
     /// none.
     Reply {
-        /// The thread's id, as `delta --tui review show` prints it.
+        /// The thread's id, as `delta tui review show` prints it.
         thread: String,
         /// The name of the agent writing the reply, shown with it.
         #[clap(long)]
@@ -216,7 +216,7 @@ pub enum ReviewCommand {
     /// Move a local comment to local-only, which sync never posts, or to your draft review, which
     /// sync posts to GitHub.
     Move {
-        /// The comment's id, as `delta --tui review show --format json` prints it.
+        /// The comment's id, as `delta tui review show --format json` prints it.
         comment: String,
         /// Move it to local-only.
         #[clap(long, conflicts_with = "draft", required_unless_present = "draft")]

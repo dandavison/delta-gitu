@@ -1,5 +1,5 @@
 //! A diagram of the review lifecycle's state machine ([`super::lifecycle`]), in d2, laid out by
-//! TALA, which `delta --tui --pr-state-machine-diagram=d2` prints.
+//! TALA, which `delta tui --pr-state-machine-diagram=d2` prints.
 
 /// A state a review can be in, and where it is drawn.
 pub(crate) struct State {

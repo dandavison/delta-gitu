@@ -647,7 +647,7 @@ impl Config {
             return Err(Error::Config(Box::new(figment::Error::from(
                 "git config's [delta-tui] sections are no longer read: their settings go in \
                  [delta] or a [delta \"feature\"] section. \
-                 `delta --tui --migrate-old-config` prints them as they go in [delta]. \
+                 `delta tui --migrate-old-config` prints them as they go in [delta]. \
                  See https://dandavison.github.io/delta/tui.html"
                     .to_owned(),
             ))));

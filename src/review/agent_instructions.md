@@ -5,7 +5,7 @@ description: Review code with a person using delta. Write a review of a branch t
 
 # Reviewing code with a person, using delta
 
-`delta --tui` is a git interface in the terminal. It can show a branch as a local PR: the
+`delta tui` is a git interface in the terminal. It can show a branch as a local PR: the
 branch's diff against its base branch, with review threads under the lines they are on. The person
 opens the current branch's PR with `O O`.
 
@@ -32,10 +32,10 @@ opens the current branch's PR with `O O`.
   GitHub.
 
 How a review goes: your review comments go into the draft review, which only this repository has.
-The person reads them in `delta --tui`, discusses them with you in local-only replies, and edits
+The person reads them in `delta tui`, discusses them with you in local-only replies, and edits
 or deletes what they don't want. When they sync, the draft review's comments, yours included, go
 into their pending review on GitHub, under their name, which they submit there. For the states and
-how a review moves between them, see `delta --tui --pr-state-machine-diagram=d2`.
+how a review moves between them, see `delta tui --pr-state-machine-diagram=d2`.
 
 Rules:
 
@@ -44,7 +44,7 @@ Rules:
 - Write your side of a conversation with the person as local-only: pass `--local` to `review
   comment` and `review reply`. Use the draft review only for comments meant for GitHub, such as a
   review of the branch. A reply is local-only by default when its thread's first comment is.
-- Never sync (`delta --tui review sync`) unless the person asks you to. Sync posts the draft
+- Never sync (`delta tui review sync`) unless the person asks you to. Sync posts the draft
   comments to the person's pending review on GitHub, and can fast-forward the branch. On a branch
   with no GitHub PR it needs `--create-pr`, which pushes the branch and creates a draft PR that
   everyone who can see the repository can see: give it only if the person asks for a PR.
@@ -58,7 +58,7 @@ PR, or else the repository's default branch on GitHub, as gh gives them, which n
 Use `--head` and `--base` for another branch, or to give the base without asking gh:
 
 ```sh
-delta --tui review show --head <branch> --base <branch>
+delta tui review show --head <branch> --base <branch>
 ```
 
 ## 1. Write a review of a branch
@@ -66,7 +66,7 @@ delta --tui review show --head <branch> --base <branch>
 1. See which branch and base the review is of, and any threads it already has:
 
    ```sh
-   delta --tui review show
+   delta tui review show
    ```
 
    The first line is `# Review of <branch> into <base>`.
@@ -76,7 +76,7 @@ delta --tui review show --head <branch> --base <branch>
 3. Comment on a line of the diff. The comment is read from stdin:
 
    ```sh
-   delta --tui review comment --agent <your-name> --path <path> --line <line> <<'EOF'
+   delta tui review comment --agent <your-name> --path <path> --line <line> <<'EOF'
    🤖 This returns before the lock is released.
    EOF
    ```
@@ -85,7 +85,7 @@ delta --tui review show --head <branch> --base <branch>
    line, add `--side old` and use its number in the base branch's version:
 
    ```sh
-   delta --tui review comment --agent <your-name> --path <path> --line <line> --side old <<'EOF'
+   delta tui review comment --agent <your-name> --path <path> --line <line> --side old <<'EOF'
    🤖 This check is still needed.
    EOF
    ```
@@ -96,15 +96,15 @@ delta --tui review show --head <branch> --base <branch>
 4. Say what the review concludes overall in your reply to the person. [NOT YET BUILT: a review's
    overall comment.]
 
-5. Run `delta --tui review show` to check what you wrote, then tell the person the review is
-   ready, and that `O O` in `delta --tui` shows it.
+5. Run `delta tui review show` to check what you wrote, then tell the person the review is
+   ready, and that `O O` in `delta tui` shows it.
 
 ## 2. Read and answer a review
 
 1. Read the review:
 
    ```sh
-   delta --tui review show
+   delta tui review show
    ```
 
    This prints each thread under a heading with its file and line, such as `## src/main.rs:42`,
@@ -121,7 +121,7 @@ delta --tui review show --head <branch> --base <branch>
    (draft, pending, submitted or dismissed):
 
    ```sh
-   delta --tui review show --format json
+   delta tui review show --format json
    ```
 
 2. For each thread, find the person's comments that no later comment of yours answers. Answer each
@@ -129,7 +129,7 @@ delta --tui review show --head <branch> --base <branch>
    you changed:
 
    ```sh
-   delta --tui review reply <thread-id> --agent <your-name> --local <<'EOF'
+   delta tui review reply <thread-id> --agent <your-name> --local <<'EOF'
    🤖 Done in the latest commit: the lock is now released before returning.
    EOF
    ```
@@ -137,10 +137,10 @@ delta --tui review show --head <branch> --base <branch>
    If you disagree, reply saying why, and don't make the change.
 
 3. To delete a comment of yours that is still local, in the draft review or local-only, find its
-   id in `delta --tui review show --format json`, and:
+   id in `delta tui review show --format json`, and:
 
    ```sh
-   delta --tui review delete <comment-id>
+   delta tui review delete <comment-id>
    ```
 
    A thread's first comment can't be deleted while the thread has replies: delete the replies
@@ -149,7 +149,7 @@ delta --tui review show --head <branch> --base <branch>
    To edit a comment of yours that is still local, with its new text on stdin:
 
    ```sh
-   delta --tui review edit <comment-id> <<'EOF'
+   delta tui review edit <comment-id> <<'EOF'
    🤖 This returns before the lock is released, on the error path.
    EOF
    ```
@@ -157,8 +157,8 @@ delta --tui review show --head <branch> --base <branch>
    To move a comment of yours between the draft review and local-only:
 
    ```sh
-   delta --tui review move <comment-id> --local
-   delta --tui review move <comment-id> --draft
+   delta tui review move <comment-id> --local
+   delta tui review move <comment-id> --draft
    ```
 
    A reply in the draft review whose thread's first comment is local-only stops the person's
@@ -169,10 +169,10 @@ delta --tui review show --head <branch> --base <branch>
 5. When the branch has a GitHub PR, first copy its reviews into the local PR:
 
    ```sh
-   delta --tui review fetch
+   delta tui review fetch
    ```
 
-   Then `delta --tui review show` prints them with the local ones. Fetch again to see changes
+   Then `delta tui review show` prints them with the local ones. Fetch again to see changes
    made on GitHub. Don't edit or delete comments in the copies of reviews on GitHub: those that
    can be changed are the person's, and are changed on GitHub.
 
@@ -186,7 +186,7 @@ the person asks for your review to be posted on its own, do this, syncing only b
 2. Sync:
 
    ```sh
-   delta --tui review sync
+   delta tui review sync
    ```
 
 3. Tell the person to submit the pending review on GitHub, with a body such as "Review by an

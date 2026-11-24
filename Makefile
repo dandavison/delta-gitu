@@ -29,5 +29,5 @@ bench-startup-chart:
 
 upload-binary:
 	gh release view tui-test --repo dandavison/delta-maintenance > /dev/null 2>&1 || \
-	gh release create tui-test --repo dandavison/delta-maintenance --prerelease --title "delta --tui test build" --notes ""
+	gh release create tui-test --repo dandavison/delta-maintenance --prerelease --title "delta tui test build" --notes ""
 	gh release upload tui-test ~/src/delta/target/release/delta --repo dandavison/delta-maintenance --clobber

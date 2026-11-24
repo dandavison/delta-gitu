@@ -831,7 +831,7 @@ impl LocalBackend {
         })
     }
 
-    /// The local PR as JSON, for `delta --tui review show --format json`: its reviews, each with
+    /// The local PR as JSON, for `delta tui review show --format json`: its reviews, each with
     /// its author and state (draft, pending, submitted or dismissed), and its threads, each with
     /// its file, side, line now (`null` once it has gone), and comments.
     pub fn json(&self) -> Res<serde_json::Value> {
@@ -1118,7 +1118,7 @@ impl LocalBackend {
         Ok(added)
     }
 
-    /// The PR's review threads as markdown, for `delta --tui review show` (see [`markdown`]).
+    /// The PR's review threads as markdown, for `delta tui review show` (see [`markdown`]).
     pub fn markdown(&self) -> Res<String> {
         let file = self.store.read()?;
         let threads = self.threads()?;
@@ -1645,7 +1645,7 @@ impl PrSummary {
 fn drafts_kept(head: &str, bases: &[String]) -> String {
     let commands: Vec<String> = bases
         .iter()
-        .map(|base| format!("delta --tui review show --head {head} --base {base}"))
+        .map(|base| format!("delta tui review show --head {head} --base {base}"))
         .collect();
     match commands.as_slice() {
         [] => String::new(),

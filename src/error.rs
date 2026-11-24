@@ -107,7 +107,7 @@ impl Display for Error {
             }
             Error::OpenRepo(e) => match e.code() {
                 git2::ErrorCode::NotFound => {
-                    f.write_str("Not in a git repository: run delta --tui inside one")
+                    f.write_str("Not in a git repository: run delta tui inside one")
                 }
                 _ => f.write_fmt(format_args!("Couldn't open repo: {e:?}")),
             },
@@ -239,8 +239,8 @@ impl Display for Error {
             )),
             Error::GitRefusedTheCommand(stderr) => f.write_str(stderr),
             Error::NotATerminal => f.write_str(
-                "delta --tui needs a terminal to draw in. \
-                 To write a diff to a file or a pipe, use delta without --tui",
+                "delta tui needs a terminal to draw in. \
+                 To write a diff to a file or a pipe, use delta, not delta tui",
             ),
             Error::Gh(message) => f.write_str(message),
             Error::PrCheckoutDirty => {

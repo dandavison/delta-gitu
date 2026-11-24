@@ -1,4 +1,4 @@
-//! `delta --tui --migrate-old-config`: the TUI's settings in git config's old `[delta-tui]`
+//! `delta tui --migrate-old-config`: the TUI's settings in git config's old `[delta-tui]`
 //! sections, printed as they go in `[delta]` (see [`crate::config_git`]). The command is
 //! temporary, for the release that moved the settings, and will be removed.
 
