@@ -1469,6 +1469,98 @@ fn oo_without_github_or_a_local_pr_is_an_error() {
     );
 }
 
+/// The status view shows the current branch's local PR: its base, whether it is on GitHub, its
+/// draft comments, and its commits, which are the PR's log.
+#[test]
+fn the_status_view_shows_the_branchs_pr_and_its_commits() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys(""));
+
+    let header = line_with(&ctx, "PR into main");
+    assert!(header.contains("not on GitHub"), "{header}");
+    assert!(header.contains("2 commits"), "{header}");
+    assert!(header.contains("1 draft comment"), "{header}");
+    let screen = ctx.redact_buffer();
+    let lines: Vec<&str> = screen.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.contains("PR into main"))
+        .unwrap();
+    assert!(lines[at + 1].contains("add added.txt"), "{screen}");
+    assert!(lines[at + 2].contains("modify lines.txt"), "{screen}");
+}
+
+/// A local PR linked to a GitHub PR shows the GitHub PR's number in the status view.
+#[test]
+fn the_status_view_shows_the_github_pr_a_pr_is_linked_to() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+    ctx.update(&mut app, keys("OO"));
+
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys(""));
+
+    assert!(
+        line_with(&ctx, "PR into main").contains("#7"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+/// `enter` on the status view's PR opens it.
+#[test]
+fn enter_on_the_status_views_pr_opens_it() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("/PR into<enter><enter>"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("added: added.txt"), "{screen}");
+    assert!(screen.contains("hello"), "{screen}");
+}
+
+/// A branch with no local PR has no PR in the status view.
+#[test]
+fn the_status_view_shows_no_pr_for_a_branch_without_one() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys(""));
+
+    let screen = ctx.redact_buffer();
+    assert!(!screen.contains("PR into"), "{screen}");
+}
+
+/// What can't be shown of the branch's PR in the status view is said there.
+#[test]
+fn the_status_view_says_when_a_branch_has_two_local_prs() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "branch", "release", "main"]);
+    comment_with_base(&ctx, None);
+    comment_with_base(&ctx, Some("release"));
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys(""));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("feature has local PRs into main and release"),
+        "{screen}"
+    );
+}
+
 #[test]
 fn oo_without_gits_user_name_says_to_set_it() {
     let mut ctx = setup_clone!();
