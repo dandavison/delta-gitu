@@ -7,7 +7,7 @@ use super::*;
 use crate::{
     error::Error,
     review::{
-        Side,
+        Place, Side,
         github::{Gh, GitHub},
     },
 };
@@ -335,7 +335,12 @@ fn a_thread_github_does_not_add_is_an_error() {
     let github_pr = github.pr(Some(&pr.head)).unwrap();
     let review = github.start_review(&github_pr).unwrap();
 
-    let result = github.add_thread(&review, "lines.txt", (Side::New, 9999), "nowhere");
+    let result = github.add_thread(
+        &review,
+        "lines.txt",
+        Place::Line(Side::New, 9999),
+        "nowhere",
+    );
 
     let error = result.unwrap_err().to_string();
     assert!(error.contains("GitHub did nothing"), "{error}");
@@ -369,7 +374,12 @@ fn syncing_adds_to_a_pending_review_started_elsewhere() {
     let github_pr = github.pr(Some(&pr.head)).unwrap();
     let review = github.start_review(&github_pr).unwrap();
     github
-        .add_thread(&review, "lines.txt", (Side::New, 5), "from the browser")
+        .add_thread(
+            &review,
+            "lines.txt",
+            Place::Line(Side::New, 5),
+            "from the browser",
+        )
         .unwrap();
     pr.review(
         &["comment", "--path", "lines.txt", "--line", "3"],
@@ -394,7 +404,12 @@ fn syncing_with_no_draft_comments_fetches() {
     let github_pr = github.pr(Some(&pr.head)).unwrap();
     let review = github.start_review(&github_pr).unwrap();
     github
-        .add_thread(&review, "lines.txt", (Side::New, 5), "from the browser")
+        .add_thread(
+            &review,
+            "lines.txt",
+            Place::Line(Side::New, 5),
+            "from the browser",
+        )
         .unwrap();
 
     pr.review(&["sync"], "").unwrap();

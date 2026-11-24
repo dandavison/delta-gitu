@@ -99,6 +99,22 @@ pub(crate) enum Side {
     New,
 }
 
+/// What a thread is on: a line, or, as GitHub allows, a whole file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Subject {
+    #[default]
+    Line,
+    File,
+}
+
+/// Where a new thread goes on GitHub: on a line of a side, or on its whole file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Place {
+    Line(Side, u32),
+    File,
+}
+
 /// A review thread: comments on a line of the PR's diff, and the replies.
 #[derive(Clone, Debug)]
 pub(crate) struct Thread {
@@ -106,9 +122,12 @@ pub(crate) struct Thread {
     pub id: String,
     pub path: String,
     /// The line the thread is on, numbered as in the PR's head commit for the new side and its
-    /// base for the old. None once the line has changed since the thread was started (GitHub
-    /// calls the thread outdated).
+    /// base for the old. None for a thread on a whole file, and once the line has changed since
+    /// the thread was started (GitHub calls the thread outdated).
     pub line: Option<(Side, u32)>,
+    /// For a thread on several lines, the first, numbered as `line` is; `line` is the last.
+    pub start_line: Option<u32>,
+    pub subject: Subject,
     pub resolved: bool,
     pub comments: Vec<Comment>,
 }

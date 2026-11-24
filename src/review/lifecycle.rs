@@ -133,7 +133,7 @@ pub(crate) enum Action {
     /// `O s`: sync. Post the repository's draft review into its author's pending review, which
     /// is started if they have none, stopping after `stop_after` comments if given, as when the
     /// network fails part way; once all of it is posted, fetch. With no draft comments, it only
-    /// fetches.
+    /// fetches. A thread whose line has gone is posted as a comment on its file.
     Sync {
         repo: Repo,
         stop_after: Option<usize>,
@@ -362,13 +362,7 @@ impl Model {
                     m.refresh_copy(repo);
                     return Some(m);
                 };
-                if draft
-                    .comments
-                    .iter()
-                    .any(|c| !self.threads[&r.comments[c].thread].placeable)
-                {
-                    return None;
-                }
+                // A thread whose line has gone is posted as a comment on its file.
                 let pending = match self.pending_of(user) {
                     Some(p) => p,
                     None => {
@@ -702,45 +696,13 @@ impl Model {
         errors
     }
 
-    /// Whether I can post my laptop's draft review, without submitting part of it: delete the
-    /// comments whose lines have gone, and sync.
+    /// Whether I can post my laptop's draft review, without submitting part of it, by syncing.
     pub fn drain(&self, rules: Rules) -> Vec<String> {
         let mut m = self.clone();
         for _ in 0..8 {
             let r = &m.repos[&Repo::Laptop];
             if r.draft.is_none() {
                 return vec![];
-            }
-            // Comments whose lines have gone are deleted: each thread's last local comment first,
-            // since a first comment can't be deleted while the thread has replies.
-            let doomed = r
-                .comments
-                .values()
-                .find(|c| !m.threads[&c.thread].placeable);
-            if let Some(doomed) = doomed {
-                let last = m.threads[&doomed.thread]
-                    .comments
-                    .iter()
-                    .rev()
-                    .find_map(|c| match c {
-                        CommentRef::Local(id) if r.comments.contains_key(id) => Some(*id),
-                        _ => None,
-                    })
-                    .expect("the thread has a local comment");
-                let delete = Action::Delete {
-                    repo: Repo::Laptop,
-                    comment: last,
-                };
-                match m.apply(&delete, rules) {
-                    Some(next) => m = next,
-                    None => {
-                        return vec![
-                            "I can't delete the comments whose lines have gone, so I can't post"
-                                .to_owned(),
-                        ];
-                    }
-                }
-                continue;
             }
             let sync = Action::Sync {
                 repo: Repo::Laptop,

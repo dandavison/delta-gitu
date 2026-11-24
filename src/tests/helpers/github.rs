@@ -5,7 +5,7 @@ use crate::{
     Res,
     error::Error,
     review::{
-        Side, Thread, ViewedState,
+        Place, Thread, ViewedState,
         github::{GitHub, GitHubPr, GitHubReview},
     },
 };
@@ -39,13 +39,7 @@ impl GitHub for NoGitHub {
     fn start_review(&self, _pr: &GitHubPr) -> Res<String> {
         refused()
     }
-    fn add_thread(
-        &self,
-        _review: &str,
-        _path: &str,
-        _line: (Side, u32),
-        _body: &str,
-    ) -> Res<String> {
+    fn add_thread(&self, _review: &str, _path: &str, _place: Place, _body: &str) -> Res<String> {
         refused()
     }
     fn add_reply(&self, _review: &str, _comment: &str, _body: &str) -> Res<String> {

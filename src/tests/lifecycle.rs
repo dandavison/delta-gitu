@@ -16,7 +16,7 @@ use super::*;
 use crate::{
     error::Error,
     review::{
-        Comment, Side, Thread, ViewedState,
+        Comment, Place, Side, Subject, Thread, ViewedState,
         github::{GitHub, GitHubPr, GitHubReview, GitHubReviewState},
         lifecycle::{Action, CommentRef, Id, Model, Person, Repo, ReviewState, Rules},
     },
@@ -71,6 +71,8 @@ struct ServerThread {
     line: u32,
     /// Whether a commit has removed the thread's line, so that GitHub has it outdated.
     outdated: bool,
+    /// Whether it is on its whole file, not on `line`.
+    file: bool,
     /// (id, author, body), in order.
     comments: Vec<(String, &'static str, String)>,
 }
@@ -178,7 +180,9 @@ impl GitHub for User {
             .map(|t| Thread {
                 id: t.id.clone(),
                 path: FILE.to_owned(),
-                line: (!t.outdated).then_some((Side::New, t.line)),
+                line: (!t.outdated && !t.file).then_some((Side::New, t.line)),
+                start_line: None,
+                subject: if t.file { Subject::File } else { Subject::Line },
                 resolved: false,
                 comments: t
                     .comments
@@ -249,17 +253,23 @@ impl GitHub for User {
         &self,
         review_id: &str,
         path: &str,
-        line: (Side, u32),
+        place: Place,
         body: &str,
     ) -> Result<String, Error> {
-        assert_eq!((path, line.0), (FILE, Side::New));
+        assert_eq!(path, FILE);
+        let (line, file) = match place {
+            Place::Line(Side::New, line) => (line, false),
+            Place::File => (0, true),
+            Place::Line(Side::Old, _) => unreachable!("the lifecycle comments on new lines"),
+        };
         let mut server = self.server.borrow_mut();
         server.spend()?;
         let id = server.new_id("T");
         server.threads.push(ServerThread {
             id,
-            line: line.1,
+            line,
             outdated: false,
+            file,
             comments: vec![],
         });
         let thread = server.threads.len() - 1;
@@ -470,7 +480,8 @@ impl World {
 
     fn seen(&self) -> Seen {
         let server = self.server.borrow();
-        let line_of = |thread: &ServerThread| (!thread.outdated).then_some(thread.line);
+        let line_of =
+            |thread: &ServerThread| (!thread.outdated && !thread.file).then_some(thread.line);
         let mut github: Vec<SeenReview> = server
             .reviews
             .iter()
@@ -574,7 +585,12 @@ impl World {
                     None => github.start_review(&pr).unwrap(),
                 };
                 github
-                    .add_thread(&review, FILE, (Side::New, line), &gid.to_string())
+                    .add_thread(
+                        &review,
+                        FILE,
+                        Place::Line(Side::New, line),
+                        &gid.to_string(),
+                    )
                     .unwrap();
             }
             (Action::Dismiss { review }, Some(_)) => {

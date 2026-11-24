@@ -476,6 +476,7 @@ fn thread_rows(
     };
     let mut notes = vec![];
     match thread.line {
+        None if thread.subject == review::Subject::File => notes.push("file".to_owned()),
         None => notes.push("outdated".to_owned()),
         Some((side, n)) if !on_line => notes.push(match side {
             Side::Old => format!("old line {n}"),

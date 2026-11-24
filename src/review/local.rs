@@ -3,7 +3,8 @@
 //! the repository sees it (see [`Store`]).
 
 use super::{
-    ADDED_TO_DRAFT as ADDED, Backend, Comment, PendingReview, Side, Thread, ViewedState,
+    ADDED_TO_DRAFT as ADDED, Backend, Comment, PendingReview, Place, Side, Subject, Thread,
+    ViewedState,
     github::{GitHub, GitHubBackend, GitHubPr, GitHubReviewState},
     missing_commit,
 };
@@ -288,6 +289,23 @@ impl LocalBackend {
         Ok(())
     }
 
+    /// Whether `oid` is a commit of the PR's head branch before its head: one the head has, and
+    /// is not.
+    pub fn is_older_commit_of_head(&self, oid: &str) -> Res<bool> {
+        let head = self.head_commit()?;
+        let Some(oid) = Oid::from_str(oid)
+            .ok()
+            .filter(|oid| self.repo.find_commit(*oid).is_ok())
+        else {
+            return Ok(false);
+        };
+        Ok(oid != head
+            && self
+                .repo
+                .graph_descendant_of(head, oid)
+                .map_err(|e| Error::LocalPr(format!("Couldn't compare commits: {e}")))?)
+    }
+
     /// How many commits the PR has: those of its head since it branched from its base.
     pub fn commit_count(&self) -> Res<usize> {
         self.count_commits(self.head_commit()?, self.merge_base()?)
@@ -367,6 +385,7 @@ impl LocalBackend {
             path: path.to_owned(),
             side,
             line,
+            start_line: None,
             commit: commit.to_string(),
             text: lines[i..end].to_vec(),
             before: lines[i.saturating_sub(CONTEXT)..i].to_vec(),
@@ -459,20 +478,19 @@ impl LocalBackend {
                 if comment.review != mine.id {
                     continue;
                 }
-                let line = lines.get(&thread.id).copied().flatten().ok_or_else(|| {
-                    Error::LocalPr(format!(
-                        "Couldn't post: the line of a thread on {} has gone. Delete its draft \
-                         comments first",
-                        thread.anchor.path
-                    ))
-                })?;
+                // A thread whose line has gone, or on a whole file, starts on its file.
+                let starts = (i == 0 && thread.github.is_none()).then(|| {
+                    match (thread.subject, lines.get(&thread.id).copied().flatten()) {
+                        (Subject::Line, Some((side, line))) => Place::Line(side, line),
+                        _ => Place::File,
+                    }
+                });
                 comments.push(PostComment {
                     id: comment.id.clone(),
                     thread: thread.id.clone(),
                     body: comment.body.clone(),
                     path: thread.anchor.path.clone(),
-                    line,
-                    starts_thread: i == 0 && thread.github.is_none(),
+                    starts,
                     reply_to: thread.github.clone(),
                 });
             }
@@ -493,7 +511,10 @@ impl LocalBackend {
                     }
                 }
             }
-            file.threads.retain(|t| !t.comments.is_empty());
+            // A thread on GitHub stays, with no comments until the fetch after posting brings
+            // them back, so that it is the same thread.
+            file.threads
+                .retain(|t| !t.comments.is_empty() || t.github.is_some());
             remove_empty_drafts(file);
         })
     }
@@ -527,9 +548,23 @@ impl LocalBackend {
         let mut anchors = HashMap::new();
         for thread in &threads {
             let anchor = match thread.line {
+                // On a whole file: it has no line.
+                _ if thread.subject == Subject::File => Anchor {
+                    path: thread.path.clone(),
+                    side: Side::New,
+                    line: 0,
+                    start_line: None,
+                    commit: pr.head_oid.clone(),
+                    text: vec![],
+                    before: vec![],
+                    after: vec![],
+                },
                 Some((Side::New, n)) => {
                     let head = commit(&pr.head_oid, &self.head, "head")?;
-                    self.anchor_at(head, &thread.path, (Side::New, n))?
+                    Anchor {
+                        start_line: thread.start_line,
+                        ..self.anchor_at(head, &thread.path, (Side::New, n))?
+                    }
                 }
                 Some((Side::Old, n)) => {
                     let head = commit(&pr.head_oid, &self.head, "head")?;
@@ -537,13 +572,17 @@ impl LocalBackend {
                     let merge_base = self.repo.merge_base(base, head).map_err(|e| {
                         Error::Gh(format!("Couldn't find where the PR branched: {e}"))
                     })?;
-                    self.anchor_at(merge_base, &thread.path, (Side::Old, n))?
+                    Anchor {
+                        start_line: thread.start_line,
+                        ..self.anchor_at(merge_base, &thread.path, (Side::Old, n))?
+                    }
                 }
                 // Outdated on GitHub: it has no line to find.
                 None => Anchor {
                     path: thread.path.clone(),
                     side: Side::New,
                     line: 0,
+                    start_line: None,
                     commit: pr.head_oid.clone(),
                     text: vec![],
                     before: vec![],
@@ -630,6 +669,7 @@ impl LocalBackend {
                         file.threads.push(StoredThread {
                             id: new_id(),
                             anchor: anchors.remove(&thread.id).unwrap(),
+                            subject: thread.subject,
                             resolved: thread.resolved,
                             github: Some(first),
                             comments: vec![],
@@ -637,6 +677,8 @@ impl LocalBackend {
                         file.threads.last_mut().unwrap()
                     }
                 };
+                // As GitHub has it, as when a thread whose line had gone was posted on its file.
+                local.subject = thread.subject;
                 local.resolved = thread.resolved;
                 let drafts = std::mem::take(&mut local.comments);
                 local.comments = comments.into_iter().chain(drafts).collect();
@@ -650,10 +692,12 @@ impl LocalBackend {
     /// its file, side, line now (`null` once it has gone), and comments.
     pub fn json(&self) -> Res<serde_json::Value> {
         let file = self.store.read()?;
-        let lines: HashMap<String, Option<(Side, u32)>> = self
+        // Each thread's line, and first line if it is on several.
+        type Place = (Option<(Side, u32)>, Option<u32>);
+        let places: HashMap<String, Place> = self
             .threads()?
             .into_iter()
-            .map(|t| (t.id, t.line))
+            .map(|t| (t.id, (t.line, t.start_line)))
             .collect();
         let reviews: Vec<serde_json::Value> = file
             .reviews
@@ -670,12 +714,14 @@ impl LocalBackend {
             .threads
             .iter()
             .map(|t| {
-                let line = lines.get(&t.id).copied().flatten();
+                let (line, start_line) = places.get(&t.id).copied().unwrap_or_default();
                 serde_json::json!({
                     "id": t.id,
                     "path": t.anchor.path,
+                    "subject": t.subject,
                     "side": t.anchor.side,
                     "line": line.map(|(_, n)| n),
+                    "start_line": start_line,
                     "resolved": t.resolved,
                     "comments": t.comments.iter().map(|c| serde_json::json!({
                         "id": c.id,
@@ -988,7 +1034,11 @@ pub(crate) fn markdown(title: &str, mut threads: Vec<MarkdownThread>) -> String 
     {
         let old = if *old_side { " (old side)" } else { "" };
         let place = match (thread.line, recorded_line) {
-            (Some((_, n)), _) => format!("{}:{n}{old}", thread.path),
+            _ if thread.subject == Subject::File => format!("{} (file)", thread.path),
+            (Some((_, n)), _) => match thread.start_line {
+                Some(start) => format!("{}:{start}-{n}{old}", thread.path),
+                None => format!("{}:{n}{old}", thread.path),
+            },
             (None, Some(n)) => format!("{} (outdated: was line {n}{old})", thread.path),
             (None, None) => format!("{} (outdated)", thread.path),
         };
@@ -1026,9 +1076,8 @@ pub(crate) struct PostComment {
     pub thread: String,
     pub body: String,
     pub path: String,
-    pub line: (Side, u32),
-    /// Whether posting it starts its thread on GitHub.
-    pub starts_thread: bool,
+    /// Where its thread goes on GitHub, if posting it starts the thread there.
+    pub starts: Option<Place>,
     /// The GitHub id of its thread's first comment, if that is on GitHub.
     pub reply_to: Option<String>,
 }
@@ -1468,8 +1517,9 @@ impl Backend for LocalBackend {
                 Side::New => head,
                 Side::Old => merge_base,
             };
-            let line = if anchor.text.is_empty() {
-                // A thread fetched from GitHub already outdated has no line to find.
+            let line = if thread.subject == Subject::File || anchor.text.is_empty() {
+                // A thread on a whole file has no line, nor one fetched from GitHub already
+                // outdated.
                 None
             } else if anchor.commit == commit.to_string() {
                 Some(anchor.line)
@@ -1480,10 +1530,17 @@ impl Backend for LocalBackend {
                 }
                 locate(anchor, &files[&key])
             };
+            // A thread on several lines keeps as many, ending where its line now is.
+            let start_line = line.and_then(|line| {
+                let span = anchor.line.checked_sub(anchor.start_line?)?;
+                line.checked_sub(span)
+            });
             threads.push(Thread {
                 id: thread.id.clone(),
                 path: thread.anchor.path.clone(),
                 line: line.map(|line| (thread.anchor.side, line)),
+                start_line,
+                subject: thread.subject,
                 resolved: thread.resolved,
                 comments: thread
                     .comments
@@ -1528,6 +1585,7 @@ impl Backend for LocalBackend {
             threads.push(StoredThread {
                 id: new_id(),
                 anchor,
+                subject: Subject::Line,
                 resolved: false,
                 github: None,
                 comments: vec![comment],
@@ -1594,8 +1652,9 @@ impl Backend for LocalBackend {
 /// an agent's among them; version 2 has one, the reviewer's (see [`merge_drafts`]). Version 3
 /// records the GitHub PR the local PR is linked to, which a gitu writing version 2 would drop.
 /// Before version 4, a draft review recorded the pending review on GitHub that posting it
-/// started, which posting no longer needs.
-const VERSION: u32 = 4;
+/// started, which posting no longer needs. Version 5 records a thread's subject and the first of
+/// its lines, which a gitu writing version 4 would drop.
+const VERSION: u32 = 5;
 
 /// What is recorded about a local PR, as JSON.
 #[derive(Serialize, Deserialize)]
@@ -1676,6 +1735,9 @@ impl ReviewState {
 struct StoredThread {
     id: String,
     anchor: Anchor,
+    /// What the thread is on: its anchor's line, or its whole file.
+    #[serde(default)]
+    subject: Subject,
     resolved: bool,
     /// The GitHub id of the thread's first comment, once it is on GitHub, which is how a fetch
     /// finds the thread, and what a reply posted to it replies to.
@@ -1712,6 +1774,9 @@ struct Anchor {
     path: String,
     side: Side,
     line: u32,
+    /// For a thread on several lines, the first: `line` is the last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start_line: Option<u32>,
     commit: String,
     /// The line, or none if the file was shorter than `line`.
     text: Vec<String>,

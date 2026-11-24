@@ -8,7 +8,7 @@ use crate::{
     app::App,
     error::Error,
     review::{
-        Comment, Side, Thread, ViewedState,
+        Comment, Place, Side, Subject, Thread, ViewedState,
         github::{GitHub, GitHubPr},
     },
 };
@@ -156,22 +156,26 @@ impl GitHub for FakeGitHub {
         &self,
         review_id: &str,
         path: &str,
-        line: (Side, u32),
+        place: Place,
         body: &str,
     ) -> Result<String, Error> {
         if *self.refuses_threads.borrow() {
             return Err(Error::Gh(format!(
-                "Couldn't add the thread on {path}:{}: GitHub did nothing",
-                line.1
+                "Couldn't add the thread on {path} at {place:?}: GitHub did nothing"
             )));
         }
+        let (line, subject, at) = match place {
+            Place::Line(side, n) => (Some((side, n)), Subject::Line, format!("{:?}", (side, n))),
+            Place::File => (None, Subject::File, "file".to_owned()),
+        };
         self.posted
             .borrow_mut()
-            .push((format!("{review_id} {path}:{line:?}"), body.to_owned()));
+            .push((format!("{review_id} {path}:{at}"), body.to_owned()));
         let id = format!("new{}", self.threads.borrow().len());
         let mut new = Thread {
             path: path.to_owned(),
-            ..thread(&id, Some(line), false, &[("me", body)])
+            subject,
+            ..thread(&id, line, false, &[("me", body)])
         };
         new.comments[0].draft = true;
         new.comments[0].editable = true;
@@ -367,6 +371,8 @@ pub(super) fn thread(
         id: id.to_owned(),
         path: "lines.txt".to_owned(),
         line,
+        start_line: None,
+        subject: Subject::Line,
         resolved,
         comments: comments
             .iter()

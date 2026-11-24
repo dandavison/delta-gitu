@@ -97,6 +97,7 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
             )));
         }
     };
+    let pr = once_github_has_head(local, github.as_ref(), pr)?;
     check_pr(local, &pr).map_err(|e| Error::Gh(format!("Couldn't post: {e}")))?;
     local.record_link(&pr)?;
     let review = match github.pending_review(&pr)? {
@@ -106,8 +107,8 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
     let (mut threads, mut replies) = (0, 0);
     let mut started: HashMap<String, String> = HashMap::new();
     for comment in to_post {
-        if comment.starts_thread {
-            let first = github.add_thread(&review, &comment.path, comment.line, &comment.body)?;
+        if let Some(place) = comment.starts {
+            let first = github.add_thread(&review, &comment.path, place, &comment.body)?;
             local.mark_posted(&comment.id, Some(&first))?;
             started.insert(comment.thread, first);
             threads += 1;
@@ -130,6 +131,27 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
         threads,
         replies,
     })
+}
+
+/// How long GitHub is given to show a pushed commit as its PR's head.
+const PUSH_SEEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `pr` as GitHub has it once it shows the branch's commit, just pushed, as the PR's head, which
+/// it does not at once: while GitHub has an older commit of the branch, it is asked again, for up
+/// to [`PUSH_SEEN_TIMEOUT`]. A PR at any other commit is as it is, for [`check_pr`] to refuse.
+fn once_github_has_head(local: &LocalBackend, github: &dyn GitHub, pr: GitHubPr) -> Res<GitHubPr> {
+    let deadline = std::time::Instant::now() + PUSH_SEEN_TIMEOUT;
+    let mut pr = pr;
+    while local.is_older_commit_of_head(&pr.head_oid)? && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        pr = github.pr_for_branch(local.head())?.ok_or_else(|| {
+            Error::Gh(format!(
+                "Couldn't post: GitHub's PR for {} has gone while it was posted to",
+                local.head()
+            ))
+        })?;
+    }
+    Ok(pr)
 }
 
 /// An error unless `pr` is into `local`'s base and at its head's commit, with its base commit

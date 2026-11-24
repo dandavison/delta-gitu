@@ -2,7 +2,7 @@
 //! Comments written in gitu go into the user's pending review, which GitHub shows only to them
 //! until they submit it on GitHub.
 
-use super::{ADDED_TO_DRAFT, Backend, Comment, Side, Thread, ViewedState};
+use super::{ADDED_TO_DRAFT, Backend, Comment, Place, Side, Subject, Thread, ViewedState};
 use crate::{Res, error::Error};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -97,7 +97,8 @@ impl Backend for GitHubBackend {
 
     fn comment(&self, path: &str, line: (Side, u32), body: &str) -> Res<&'static str> {
         let review = self.pending_review()?;
-        self.github.add_thread(&review, path, line, body)?;
+        self.github
+            .add_thread(&review, path, Place::Line(line.0, line.1), body)?;
         Ok(ADDED_TO_DRAFT)
     }
 
@@ -138,8 +139,7 @@ pub(crate) trait GitHub {
     /// Add `body` to the pending review `review_id` as a new thread on `line` of the file at
     /// `path`, numbered as in the PR's head commit on GitHub for the new side and its base for
     /// the old, returning the id of the thread's comment.
-    fn add_thread(&self, review_id: &str, path: &str, line: (Side, u32), body: &str)
-    -> Res<String>;
+    fn add_thread(&self, review_id: &str, path: &str, place: Place, body: &str) -> Res<String>;
     /// The open PR whose head is the branch `head`, if there is one.
     fn pr_for_branch(&self, head: &str) -> Res<Option<GitHubPr>>;
     /// The default branch of the repository a PR would be opened against, as `gh pr create`
@@ -203,7 +203,7 @@ const THREADS_QUERY: &str = "query($id: ID!, $endCursor: String) {
       reviewThreads(first: 100, after: $endCursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id isResolved path line diffSide
+          id isResolved path line startLine diffSide subjectType
           comments(first: 100) {
             totalCount
             nodes { id author { login } body url createdAt state }
@@ -244,6 +244,12 @@ const ADD_THREAD: &str =
     "mutation($review: ID!, $path: String!, $line: Int!, $side: DiffSide!, $body: String!) {
   addPullRequestReviewThread(input: {
     pullRequestReviewId: $review, path: $path, line: $line, side: $side, body: $body
+  }) { thread { comments(first: 1) { nodes { id } } } }
+}";
+
+const ADD_FILE_THREAD: &str = "mutation($review: ID!, $path: String!, $body: String!) {
+  addPullRequestReviewThread(input: {
+    pullRequestReviewId: $review, path: $path, subjectType: FILE, body: $body
   }) { thread { comments(first: 1) { nodes { id } } } }
 }";
 
@@ -458,13 +464,23 @@ impl GitHub for Gh {
         required_id(&output, STARTED_REVIEW, "start a pending review")
     }
 
-    fn add_thread(
-        &self,
-        review_id: &str,
-        path: &str,
-        line: (Side, u32),
-        body: &str,
-    ) -> Res<String> {
+    fn add_thread(&self, review_id: &str, path: &str, place: Place, body: &str) -> Res<String> {
+        let line = match place {
+            Place::Line(side, line) => (side, line),
+            Place::File => {
+                let output = self.graphql(
+                    ADD_FILE_THREAD,
+                    &[("review", review_id), ("path", path), ("body", body)],
+                    &[],
+                    None,
+                )?;
+                return required_id(
+                    &output,
+                    ADDED_THREAD,
+                    &format!("add the thread on the file {path}"),
+                );
+            }
+        };
         let side = match line.0 {
             Side::Old => "LEFT",
             Side::New => "RIGHT",
@@ -612,7 +628,9 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
         is_resolved: bool,
         path: String,
         line: Option<u32>,
+        start_line: Option<u32>,
         diff_side: String,
+        subject_type: String,
         comments: Counted<CommentNode>,
     }
     #[derive(Deserialize)]
@@ -637,6 +655,12 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
         for node in &nodes {
             node.comments
                 .check(&format!("The thread {} on {}", node.id, node.path))?;
+            if !matches!(node.subject_type.as_str(), "LINE" | "FILE") {
+                return Err(serde::de::Error::custom(format!(
+                    "The thread {} on {} is on a {}, which gitu doesn't know",
+                    node.id, node.path, node.subject_type
+                )));
+            }
         }
         threads.extend(nodes.into_iter().map(|node| {
             let side = if node.diff_side == "LEFT" {
@@ -648,6 +672,12 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
                 id: node.id,
                 path: node.path,
                 line: node.line.map(|line| (side, line)),
+                start_line: node.start_line,
+                subject: if node.subject_type == "FILE" {
+                    Subject::File
+                } else {
+                    Subject::Line
+                },
                 resolved: node.is_resolved,
                 comments: node
                     .comments
@@ -830,7 +860,7 @@ mod tests {
     fn parse_threads_reads_every_page() {
         let page = |id: &str, line: &str, side: &str| {
             format!(
-                r#"{{"data":{{"node":{{"reviewThreads":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{{"id":"{id}","isResolved":false,"path":"a.txt","line":{line},"diffSide":"{side}","comments":{{"totalCount":1,"nodes":[{{"id":"c1","author":null,"body":"hm","url":"u","createdAt":"2026-11-20T10:00:00Z"}}]}}}}]}}}}}}}}"#
+                r#"{{"data":{{"node":{{"reviewThreads":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{{"id":"{id}","isResolved":false,"path":"a.txt","line":{line},"diffSide":"{side}","subjectType":"LINE","comments":{{"totalCount":1,"nodes":[{{"id":"c1","author":null,"body":"hm","url":"u","createdAt":"2026-11-20T10:00:00Z"}}]}}}}]}}}}}}}}"#
             )
         };
         let output = format!("{}{}", page("t1", "3", "LEFT"), page("t2", "null", "RIGHT"));
@@ -845,7 +875,7 @@ mod tests {
 
     #[test]
     fn parse_threads_reads_a_pending_comment_as_a_draft() {
-        let output = r#"{"data":{"node":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"t1","isResolved":false,"path":"a.txt","line":3,"diffSide":"RIGHT","comments":{"totalCount":2,"nodes":[{"id":"c1","author":{"login":"a"},"body":"x","url":"u","createdAt":"2026-11-20T10:00:00Z","state":"SUBMITTED"},{"id":"c2","author":{"login":"me"},"body":"y","url":"u","createdAt":"2026-11-20T10:00:00Z","state":"PENDING"}]}}]}}}}"#;
+        let output = r#"{"data":{"node":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"t1","isResolved":false,"path":"a.txt","line":3,"diffSide":"RIGHT","subjectType":"LINE","comments":{"totalCount":2,"nodes":[{"id":"c1","author":{"login":"a"},"body":"x","url":"u","createdAt":"2026-11-20T10:00:00Z","state":"SUBMITTED"},{"id":"c2","author":{"login":"me"},"body":"y","url":"u","createdAt":"2026-11-20T10:00:00Z","state":"PENDING"}]}}]}}}}"#;
 
         let threads = parse_threads(output).unwrap();
 
@@ -885,7 +915,7 @@ mod tests {
     /// with more is refused, rather than read without the rest.
     #[test]
     fn parse_threads_refuses_a_thread_with_more_comments_than_it_read() {
-        let output = r#"{"data":{"node":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"t1","isResolved":false,"path":"a.txt","line":3,"diffSide":"RIGHT","comments":{"totalCount":101,"nodes":[{"id":"c1","author":null,"body":"hm","url":"u","createdAt":"2026-11-20T10:00:00Z"}]}}]}}}}"#;
+        let output = r#"{"data":{"node":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"t1","isResolved":false,"path":"a.txt","line":3,"diffSide":"RIGHT","subjectType":"LINE","comments":{"totalCount":101,"nodes":[{"id":"c1","author":null,"body":"hm","url":"u","createdAt":"2026-11-20T10:00:00Z"}]}}]}}}}"#;
 
         let error = parse_threads(output).unwrap_err().to_string();
 
