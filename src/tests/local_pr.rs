@@ -821,7 +821,7 @@ fn github_at_head(ctx: &TestContext) -> Rc<FakeGitHub> {
 }
 
 #[test]
-fn review_post_pushes_the_branch_and_creates_a_draft_pr_when_there_is_none() {
+fn review_sync_pushes_the_branch_and_creates_a_draft_pr_when_there_is_none() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
@@ -829,7 +829,7 @@ fn review_post_pushes_the_branch_and_creates_a_draft_pr_when_there_is_none() {
     let github = github_at_head(&ctx);
     *github.has_pr.borrow_mut() = false;
 
-    review_cli_with_github(&ctx.dir, &["post", "--create-pr"], "", Rc::clone(&github)).unwrap();
+    review_cli_with_github(&ctx.dir, &["sync", "--create-pr"], "", Rc::clone(&github)).unwrap();
 
     assert_eq!(
         *github.created.borrow(),
@@ -841,9 +841,9 @@ fn review_post_pushes_the_branch_and_creates_a_draft_pr_when_there_is_none() {
     assert_eq!(github.posted.borrow().len(), 1);
 }
 
-/// A thread GitHub doesn't add is not posted: `O p` says so, and the comment stays a draft.
+/// A thread GitHub doesn't add is not posted: `O s` says so, and the comment stays a draft.
 #[test]
-fn op_says_so_when_github_does_not_add_a_thread_and_keeps_it_a_draft() {
+fn os_says_so_when_github_does_not_add_a_thread_and_keeps_it_a_draft() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let github = github_at_head(&ctx);
@@ -852,7 +852,7 @@ fn op_says_so_when_github_does_not_add_a_thread_and_keeps_it_a_draft() {
     app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
     ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
-    ctx.update(&mut app, keys("Opy"));
+    ctx.update(&mut app, keys("Osy"));
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("Couldn't add the thread"), "{screen}");
@@ -866,14 +866,14 @@ fn op_says_so_when_github_does_not_add_a_thread_and_keeps_it_a_draft() {
 /// Creating a PR on GitHub makes the branch visible to everyone who can see the repository, so
 /// posting from a branch with no PR creates one only when told to.
 #[test]
-fn review_post_on_a_branch_with_no_github_pr_needs_create_pr() {
+fn review_sync_on_a_branch_with_no_github_pr_needs_create_pr() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     comment_with_base(&ctx, None);
     let github = github_at_head(&ctx);
     *github.has_pr.borrow_mut() = false;
 
-    let result = review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github));
+    let result = review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github));
 
     let error = result.unwrap_err().to_string();
     assert!(error.contains("--create-pr"), "{error}");
@@ -881,10 +881,10 @@ fn review_post_on_a_branch_with_no_github_pr_needs_create_pr() {
     assert!(github.posted.borrow().is_empty());
 }
 
-/// `O p` on a branch with no GitHub PR says it would create one, which everyone who can see the
+/// `O s` on a branch with no GitHub PR says it would create one, which everyone who can see the
 /// repository sees, and does nothing unless told to.
 #[test]
-fn op_on_a_branch_with_no_github_pr_asks_before_creating_one() {
+fn os_on_a_branch_with_no_github_pr_asks_before_creating_one() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     comment_with_base(&ctx, None);
@@ -893,19 +893,19 @@ fn op_on_a_branch_with_no_github_pr_asks_before_creating_one() {
     let mut app = init_app(&mut ctx);
     app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
 
-    ctx.update(&mut app, keys("Op"));
+    ctx.update(&mut app, keys("Os"));
     let screen = ctx.redact_buffer();
     assert!(screen.contains("create a draft PR"), "{screen}");
 
     let mut app = init_app(&mut ctx);
     app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
-    ctx.update(&mut app, keys("Opn"));
+    ctx.update(&mut app, keys("Osn"));
     assert!(github.created.borrow().is_empty());
     assert!(github.posted.borrow().is_empty());
 }
 
 #[test]
-fn review_post_pushes_new_commits_to_an_existing_pr() {
+fn review_sync_pushes_new_commits_to_an_existing_pr() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
@@ -914,7 +914,7 @@ fn review_post_pushes_new_commits_to_an_existing_pr() {
     ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
     let github = github_at_head(&ctx);
 
-    review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github)).unwrap();
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
 
     let pushed = run(&ctx.remote_dir, &["git", "rev-parse", "feature"]);
     let local = run(&ctx.dir, &["git", "rev-parse", "feature"]);
@@ -923,7 +923,7 @@ fn review_post_pushes_new_commits_to_an_existing_pr() {
 }
 
 #[test]
-fn review_post_refuses_when_githubs_head_is_not_the_branchs() {
+fn review_sync_refuses_when_githubs_head_is_not_the_branchs() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
@@ -931,7 +931,7 @@ fn review_post_refuses_when_githubs_head_is_not_the_branchs() {
     let main = run(&ctx.dir, &["git", "rev-parse", "main"]);
     let github = Rc::new(FakeGitHub::new(main.trim(), &"0".repeat(40)));
 
-    let result = review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github));
+    let result = review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github));
 
     let error = result.unwrap_err().to_string();
     assert!(error.contains("is not at feature's commit"), "{error}");
@@ -940,7 +940,7 @@ fn review_post_refuses_when_githubs_head_is_not_the_branchs() {
 }
 
 #[test]
-fn op_posts_the_review_once_confirmed() {
+fn os_posts_the_review_once_confirmed() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let github = github_at_head(&ctx);
@@ -948,7 +948,7 @@ fn op_posts_the_review_once_confirmed() {
     app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
     ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
-    ctx.update(&mut app, keys("Opy"));
+    ctx.update(&mut app, keys("Osy"));
 
     assert_eq!(github.posted.borrow().len(), 1);
     let screen = ctx.redact_buffer();
@@ -959,7 +959,7 @@ fn op_posts_the_review_once_confirmed() {
 }
 
 #[test]
-fn review_post_refuses_when_the_github_prs_base_is_not_the_local_prs() {
+fn review_sync_refuses_when_the_github_prs_base_is_not_the_local_prs() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
@@ -969,7 +969,7 @@ fn review_post_refuses_when_the_github_prs_base_is_not_the_local_prs() {
 
     let result = review_cli_with_github(
         &ctx.dir,
-        &["post", "--base", "main"],
+        &["sync", "--base", "main"],
         "",
         Rc::clone(&github),
     );
@@ -1107,10 +1107,10 @@ fn a_thread_on_a_file_not_in_the_diff_is_said_not_to_be_shown() {
     );
 }
 
-/// A pending review on GitHub with no comments has no threads to show it by, but it stops `O p`,
-/// so the PR's screen says it is there, and that it stops `O p`.
+/// A pending review on GitHub with no comments has no threads to show it by, so the PR's summary
+/// says it is there.
 #[test]
-fn the_screen_shows_a_pending_review_on_github_with_no_comments() {
+fn the_summary_shows_a_pending_review_on_github_with_no_comments() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let github = github_at_head(&ctx);
@@ -1123,16 +1123,15 @@ fn the_screen_shows_a_pending_review_on_github_with_no_comments() {
 
     let screen = ctx.redact_buffer();
     assert!(
-        screen.contains("You have a pending review on GitHub, with no comments"),
+        screen.contains("pending review on GitHub with no comments"),
         "{screen}"
     );
-    assert!(screen.contains("O p won't post until"), "{screen}");
+    assert!(!screen.contains("won't post"), "{screen}");
 }
 
-/// Posting refused for a pending review on GitHub says where it is, and how many comments it
-/// has.
+/// Sync adds the draft comments to the user's pending review on GitHub, whoever started it.
 #[test]
-fn posting_refused_for_a_pending_review_says_where_it_is_and_what_it_has() {
+fn review_sync_adds_to_a_pending_review_it_did_not_start() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let github = github_at_head(&ctx);
@@ -1144,12 +1143,28 @@ fn posting_refused_for_a_pending_review_says_where_it_is_and_what_it_has() {
     )
     .unwrap();
 
-    let error = review_cli_with_github(&ctx.dir, &["post"], "", github)
-        .unwrap_err()
-        .to_string();
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
 
-    assert!(error.contains("https://github.com/o/r/pull/7"), "{error}");
-    assert!(error.contains("with no comments"), "{error}");
+    assert_eq!(*github.reviews_started.borrow(), 0);
+    assert_eq!(
+        *github.posted.borrow(),
+        vec![("R1 lines.txt:(New, 2)".to_owned(), "hello".to_owned())]
+    );
+}
+
+/// With no draft comments and no PR on GitHub, there is nothing to sync.
+#[test]
+fn review_sync_with_nothing_to_post_and_no_github_pr_is_an_error() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    *github.has_pr.borrow_mut() = false;
+
+    let result = review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github));
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("Nothing to sync"), "{error}");
+    assert!(github.created.borrow().is_empty());
 }
 
 /// A repository whose `main` is behind `origin/main`, with `feature` branched from
@@ -1757,7 +1772,7 @@ fn k_deletes_an_agents_draft_comment() {
 }
 
 #[test]
-fn posting_posts_an_agents_draft_comments_too() {
+fn syncing_posts_an_agents_draft_comments_too() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     review_cli_with_input(
@@ -1791,7 +1806,7 @@ fn posting_posts_an_agents_draft_comments_too() {
 
     let github = github_at_head(&ctx);
 
-    review_cli_with_github(&ctx.dir, &["post"], "", Rc::clone(&github)).unwrap();
+    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
 
     let mut bodies: Vec<String> = github
         .posted

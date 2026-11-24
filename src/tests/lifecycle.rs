@@ -545,9 +545,9 @@ impl World {
                 let result = self.review(*repo, &["delete", &id], "");
                 assert_eq!(result.is_ok(), after.is_some(), "{action}: {result:?}");
             }
-            (Action::Post { repo, stop_after }, after) => {
+            (Action::Sync { repo, stop_after }, after) => {
                 self.server.borrow_mut().fail_after = *stop_after;
-                let result = self.review(*repo, &["post"], "");
+                let result = self.review(*repo, &["sync"], "");
                 self.server.borrow_mut().fail_after = None;
                 let finished = after.is_some_and(|after| after.repos[repo].draft.is_none());
                 assert_eq!(result.is_ok(), finished, "{action}: {result:?}");

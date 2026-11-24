@@ -192,7 +192,7 @@ fn posting_a_comment_adds_it_to_the_pending_review() {
     )
     .unwrap();
 
-    pr.review(&["post"], "").unwrap();
+    pr.review(&["sync"], "").unwrap();
 
     assert_eq!(pr.pending_comments(), ["on three"]);
     let json = pr.json();
@@ -217,11 +217,11 @@ fn posting_a_reply_to_a_posted_thread_adds_it() {
         "on three",
     )
     .unwrap();
-    pr.review(&["post"], "").unwrap();
+    pr.review(&["sync"], "").unwrap();
     let thread = pr.json()["threads"][0]["id"].as_str().unwrap().to_owned();
     pr.review(&["reply", &thread], "and more").unwrap();
 
-    pr.review(&["post"], "").unwrap();
+    pr.review(&["sync"], "").unwrap();
 
     let mut comments = pr.pending_comments();
     comments.sort();
@@ -262,11 +262,11 @@ fn a_pr_whose_base_branch_has_moved_on_opens() {
     );
 }
 
-/// A pending review the user started elsewhere, as in the browser, stops posting, which says
-/// where it is and what it has.
+/// The draft comments are added to the user's pending review, though they started it elsewhere,
+/// as in the browser.
 #[test]
 #[ignore = "against GitHub itself: run with cargo test-github"]
-fn posting_while_a_pending_review_from_elsewhere_has_comments_is_refused() {
+fn syncing_adds_to_a_pending_review_started_elsewhere() {
     let pr = RealPr::new(stdext::function_name!());
     let github = pr.github();
     let github_pr = github.pr(Some(&pr.head)).unwrap();
@@ -280,14 +280,38 @@ fn posting_while_a_pending_review_from_elsewhere_has_comments_is_refused() {
     )
     .unwrap();
 
-    let error = pr.review(&["post"], "").unwrap_err().to_string();
+    pr.review(&["sync"], "").unwrap();
 
-    assert!(
-        error.contains(&format!("github.com/{REPOSITORY}/pull/{}", pr.number)),
-        "{error}"
-    );
-    assert!(error.contains("with 1 comment"), "{error}");
-    assert_eq!(pr.pending_comments(), ["from the browser"]);
+    let mut comments = pr.pending_comments();
+    comments.sort();
+    assert_eq!(comments, ["from the browser", "on three"]);
+}
+
+/// With no draft comments, sync copies GitHub's reviews into the local PR, such as the user's
+/// pending review started in the browser.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn syncing_with_no_draft_comments_fetches() {
+    let pr = RealPr::new(stdext::function_name!());
+    let github = pr.github();
+    let github_pr = github.pr(Some(&pr.head)).unwrap();
+    let review = github.start_review(&github_pr).unwrap();
+    github
+        .add_thread(&review, "lines.txt", (Side::New, 5), "from the browser")
+        .unwrap();
+
+    pr.review(&["sync"], "").unwrap();
+
+    let json = pr.json();
+    let comment = &json["threads"][0]["comments"][0];
+    assert_eq!(comment["body"], "from the browser", "{json}");
+    let pending = json["reviews"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["state"] == "pending")
+        .unwrap_or_else(|| panic!("{json}"));
+    assert_eq!(comment["review"], pending["id"], "{json}");
 }
 
 /// The user's own comment on GitHub is edited, and deleted, on GitHub, from its local copy.
@@ -300,10 +324,10 @@ fn my_comment_on_github_is_edited_and_deleted_there() {
         "on three",
     )
     .unwrap();
-    pr.review(&["post"], "").unwrap();
+    pr.review(&["sync"], "").unwrap();
     let thread = pr.json()["threads"][0]["id"].as_str().unwrap().to_owned();
     pr.review(&["reply", &thread], "and more").unwrap();
-    pr.review(&["post"], "").unwrap();
+    pr.review(&["sync"], "").unwrap();
     let reply = pr.json()["threads"][0]["comments"][1]["id"]
         .as_str()
         .unwrap()
@@ -367,7 +391,7 @@ fn posting_from_a_branch_with_no_pr_creates_one_only_with_create_pr() {
     .unwrap();
 
     let error = pr
-        .review(&[&["post"][..], &base].concat(), "")
+        .review(&[&["sync"][..], &base].concat(), "")
         .unwrap_err()
         .to_string();
     assert!(error.contains("--create-pr"), "{error}");
@@ -377,7 +401,7 @@ fn posting_from_a_branch_with_no_pr_creates_one_only_with_create_pr() {
     );
     assert_eq!(found.trim(), "[]");
 
-    pr.review(&[&["post", "--create-pr"][..], &base].concat(), "")
+    pr.review(&[&["sync", "--create-pr"][..], &base].concat(), "")
         .unwrap();
     let number = gh(
         &pr.dir,

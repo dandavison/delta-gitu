@@ -90,8 +90,6 @@ pub(crate) struct Draft {
     pub id: Id,
     /// Local comment ids, in order.
     pub comments: Vec<Id>,
-    /// The pending review on GitHub that posting this draft started, if it has.
-    pub link: Option<Id>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -114,9 +112,6 @@ pub(crate) struct RepoState {
 /// without it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Rules {
-    /// Posting resumes into the pending review it started, rather than refusing because I have a
-    /// pending review.
-    pub resume_linked_review: bool,
     /// A thread's first comment can't be deleted while the thread has replies.
     pub keep_first_comment: bool,
 }
@@ -124,7 +119,6 @@ pub(crate) struct Rules {
 impl Default for Rules {
     fn default() -> Self {
         Rules {
-            resume_linked_review: true,
             keep_first_comment: true,
         }
     }
@@ -136,10 +130,11 @@ pub(crate) enum Action {
     Write { repo: Repo, thread: Option<Id> },
     /// Delete a local draft comment.
     Delete { repo: Repo, comment: Id },
-    /// `O p`: post the repository's draft review as its author's pending review, stopping after
-    /// `stop_after` comments if given, as when the network fails part way. A post that finishes
+    /// `O s`: sync. Post the repository's draft review into its author's pending review, which
+    /// is started if they have none, stopping after `stop_after` comments if given, as when the
+    /// network fails part way; once all of it is posted, fetch. With no draft comments, it only
     /// fetches.
-    Post {
+    Sync {
         repo: Repo,
         stop_after: Option<usize>,
     },
@@ -172,14 +167,14 @@ impl fmt::Display for Action {
                 thread: Some(t),
             } => write!(f, "reply in thread {t} in {repo:?}"),
             Action::Delete { repo, comment } => write!(f, "delete comment {comment} in {repo:?}"),
-            Action::Post {
+            Action::Sync {
                 repo,
                 stop_after: None,
-            } => write!(f, "post from {repo:?}"),
-            Action::Post {
+            } => write!(f, "sync from {repo:?}"),
+            Action::Sync {
                 repo,
                 stop_after: Some(n),
-            } => write!(f, "post from {repo:?}, stopping after {n}"),
+            } => write!(f, "sync from {repo:?}, stopping after {n}"),
             Action::Fetch { repo } => write!(f, "fetch in {repo:?}"),
             Action::Submit { user } => write!(f, "{user:?} submits on GitHub"),
             Action::BrowserComment { user } => write!(f, "{user:?} comments in the browser"),
@@ -328,7 +323,6 @@ impl Model {
                 let draft = r.draft.get_or_insert(Draft {
                     id: new_draft,
                     comments: vec![],
-                    link: None,
                 });
                 draft.comments.push(cid);
                 let draft_id = draft.id;
@@ -361,10 +355,13 @@ impl Model {
                 thread.retain(|c| *c != CommentRef::Local(comment));
                 m.deleted.push(comment);
             }
-            Action::Post { repo, stop_after } => {
+            Action::Sync { repo, stop_after } => {
                 let user = repo.github_user();
                 let r = &self.repos[&repo];
-                let draft = r.draft.as_ref().filter(|d| !d.comments.is_empty())?;
+                let Some(draft) = r.draft.as_ref().filter(|d| !d.comments.is_empty()) else {
+                    m.refresh_copy(repo);
+                    return Some(m);
+                };
                 if draft
                     .comments
                     .iter()
@@ -372,15 +369,7 @@ impl Model {
                 {
                     return None;
                 }
-                let pending = self.pending_of(user);
-                if pending.is_some()
-                    && !(rules.resume_linked_review
-                        && draft.link.is_some()
-                        && draft.link == pending)
-                {
-                    return None;
-                }
-                let pending = match pending {
+                let pending = match self.pending_of(user) {
                     Some(p) => p,
                     None => {
                         let p = m.new_id();
@@ -396,7 +385,6 @@ impl Model {
                     }
                 };
                 let order = draft.comments.clone();
-                m.repos.get_mut(&repo).unwrap().draft.as_mut().unwrap().link = Some(pending);
                 for (posted, cid) in order.into_iter().enumerate() {
                     if stop_after == Some(posted) {
                         break;
@@ -438,11 +426,20 @@ impl Model {
             Action::Submit { user } => {
                 let p = self.pending_of(user)?;
                 m.gh_reviews.get_mut(&p).unwrap().state = ReviewState::Submitted;
+                // A draft review of which some is in the pending review, and some is not yet
+                // posted, is submitted part way.
+                let posted_from = |draft: &Draft| {
+                    self.gh_reviews[&p].comments.iter().any(|g| {
+                        self.gh_comments[g]
+                            .origin
+                            .is_some_and(|origin| self.draft_of.get(&origin) == Some(&draft.id))
+                    })
+                };
                 for repo in Repo::ALL {
                     if repo.github_user() == user
                         && let Some(d) = &self.repos[&repo].draft
-                        && d.link == Some(p)
                         && !d.comments.is_empty()
+                        && posted_from(d)
                     {
                         m.submitted_part_way.push(d.id);
                     }
@@ -545,11 +542,11 @@ impl Model {
             for &comment in self.repos[&repo].comments.keys() {
                 out.push(Action::Delete { repo, comment });
             }
-            out.push(Action::Post {
+            out.push(Action::Sync {
                 repo,
                 stop_after: None,
             });
-            out.push(Action::Post {
+            out.push(Action::Sync {
                 repo,
                 stop_after: Some(1),
             });
@@ -706,8 +703,7 @@ impl Model {
     }
 
     /// Whether I can post my laptop's draft review, without submitting part of it: delete the
-    /// comments whose lines have gone, and post, submitting first any pending review of mine that
-    /// my draft did not start.
+    /// comments whose lines have gone, and sync.
     pub fn drain(&self, rules: Rules) -> Vec<String> {
         let mut m = self.clone();
         for _ in 0..8 {
@@ -746,27 +742,12 @@ impl Model {
                 }
                 continue;
             }
-            let post = Action::Post {
+            let sync = Action::Sync {
                 repo: Repo::Laptop,
                 stop_after: None,
             };
-            let next = match m.apply(&post, rules) {
-                Some(next) => next,
-                None => {
-                    let mine = r.draft.as_ref();
-                    if mine.is_some_and(|d| d.link.is_some() && d.link == m.pending_of(Person::Me))
-                    {
-                        return vec![
-                            "To post the rest of my draft review, I must first submit the part \
-                             posted"
-                                .to_owned(),
-                        ];
-                    }
-                    match m.apply(&Action::Submit { user: Person::Me }, rules) {
-                        Some(next) => next,
-                        None => return vec!["I can't post my draft review".to_owned()],
-                    }
-                }
+            let Some(next) = m.apply(&sync, rules) else {
+                return vec!["I can't sync my draft review".to_owned()];
             };
             let errors = next.invariants();
             if !errors.is_empty() {
@@ -837,19 +818,6 @@ mod tests {
         if let Some(found) = violation(Rules::default(), 7, 3) {
             panic!("{}", describe(found));
         }
-    }
-
-    #[test]
-    fn without_resuming_a_post_part_of_a_review_must_be_submitted() {
-        let rules = Rules {
-            resume_linked_review: false,
-            ..Rules::default()
-        };
-        let (_, error) = violation(rules, 5, 3).expect("a violation");
-        assert!(
-            error.contains("I must first submit the part posted"),
-            "{error}"
-        );
     }
 
     #[test]

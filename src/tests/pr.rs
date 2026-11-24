@@ -1763,7 +1763,7 @@ fn k_on_a_comment_not_in_a_draft_review_says_it_cannot_be_changed() {
 }
 
 #[test]
-fn op_posts_the_draft_review_into_one_pending_review() {
+fn os_posts_the_draft_review_into_one_pending_review() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     let mut app = init_app(&mut ctx, &github);
@@ -1772,7 +1772,7 @@ fn op_posts_the_draft_review_into_one_pending_review() {
         keys("OO/new<enter>ione<ctrl+s>/old<enter>itwo<ctrl+s>"),
     );
 
-    ctx.update(&mut app, keys("Opy"));
+    ctx.update(&mut app, keys("Osy"));
 
     assert_eq!(*github.reviews_started.borrow(), 1);
     assert_eq!(
@@ -1787,21 +1787,19 @@ fn op_posts_the_draft_review_into_one_pending_review() {
 }
 
 #[test]
-fn op_refuses_while_you_have_a_pending_review_it_did_not_start() {
+fn os_adds_to_a_pending_review_it_did_not_start() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     *github.pending.borrow_mut() = Some("R0".into());
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
-    ctx.update(&mut app, keys("Opy"));
+    ctx.update(&mut app, keys("Osy"));
 
-    assert!(github.posted.borrow().is_empty());
-    let screen = ctx.redact_buffer();
-    assert!(
-        screen
-            .contains("Couldn't post: you have a pending review on https://github.com/o/r/pull/7"),
-        "{screen}"
+    assert_eq!(*github.reviews_started.borrow(), 0);
+    assert_eq!(
+        *github.posted.borrow(),
+        vec![("R0 lines.txt:(New, 2)".to_owned(), "hello".to_owned())]
     );
 }
 

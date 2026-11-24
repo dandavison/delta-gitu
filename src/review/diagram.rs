@@ -69,7 +69,7 @@ pub(crate) const EDGES: &[Edge] = &[
     Edge {
         from: Some("mine"),
         to: "pending",
-        label: "O p, or review post",
+        label: "O s, or review sync",
         copies: false,
     },
     Edge {
@@ -178,7 +178,7 @@ mod tests {
             } => None,
             // Deleting a comment leaves its review where it is.
             Action::Delete { .. } => None,
-            Action::Post { .. } => Some("O p, or review post"),
+            Action::Sync { .. } => Some("O s, or review sync"),
             Action::Fetch { .. } => Some("review fetch"),
             Action::Submit { .. } => Some("submit on GitHub"),
             Action::BrowserComment { .. } => Some("comment in the browser"),
@@ -198,7 +198,7 @@ mod tests {
                 repo: Repo::Laptop,
                 thread: None,
             },
-            Action::Post {
+            Action::Sync {
                 repo: Repo::Laptop,
                 stop_after: None,
             },
