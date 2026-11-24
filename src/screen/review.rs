@@ -15,7 +15,7 @@ use std::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// `items`, a PR's diff, under a summary of the PR in `summary_style`, and under a warning when
+/// `items`, a PR's diff, under a summary of the PR in `summary_style` and a blank line, and under a warning when
 /// HEAD is not the commit the PR's lines are numbered against, and with each of the PR's threads under the line it is on. A thread whose
 /// line is not among the rows, as GitHub has it outdated or as its line is outside the diff's
 /// hunks, goes under its file's header. A thread on a file not among the rows is not shown, and a
@@ -111,6 +111,11 @@ pub(crate) fn with_threads(
         out.push(Item {
             unselectable: true,
             rendered: Some(Rc::new(vec![(summary, summary_style)])),
+            ..Default::default()
+        });
+        out.push(Item {
+            unselectable: true,
+            rendered: Some(Rc::new(vec![])),
             ..Default::default()
         });
     }

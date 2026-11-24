@@ -201,6 +201,9 @@ section_header = { fg = "yellow" }
 file_header = { fg = "magenta" }
 hunk_header = { fg = "blue" }
 
+# The line atop a PR's screen that says what the PR is.
+pr_summary = { fg = "yellow" }
+
 
 picker.prompt = { fg = "cyan" }
 picker.info = { mods = "DIM" }

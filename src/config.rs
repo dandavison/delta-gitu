@@ -426,6 +426,8 @@ pub struct StyleConfig {
     pub file_header: StyleConfigEntry,
     pub hunk_header: StyleConfigEntry,
 
+    pub pr_summary: StyleConfigEntry,
+
     #[serde(default)]
     pub picker: PickerStyleConfig,
 

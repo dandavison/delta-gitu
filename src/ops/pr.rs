@@ -177,7 +177,7 @@ fn show_pr(app: &mut App, term: &mut Term, backend: Rc<dyn Backend>) -> Res<()> 
                 side_by_side: options.side_by_side,
             };
             let error_style = Style::from(&config.style.error_msg);
-            let summary_style = Style::from(&config.style.section_header);
+            let summary_style = Style::from(&config.style.pr_summary);
             screen::review::with_threads(
                 items,
                 &threads_pr,
