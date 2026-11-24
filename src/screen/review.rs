@@ -487,6 +487,9 @@ fn thread_rows(
     if thread.resolved {
         notes.push("resolved".to_owned());
     }
+    if thread.deleted_on_github {
+        notes.push("thread deleted on GitHub".to_owned());
+    }
 
     let frame = Frame::new(panel, &options.decoration);
     let mut rows: Vec<(usize, usize, Row)> = vec![];

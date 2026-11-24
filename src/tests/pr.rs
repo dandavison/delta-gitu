@@ -374,6 +374,7 @@ pub(super) fn thread(
         start_line: None,
         subject: Subject::Line,
         resolved,
+        deleted_on_github: false,
         comments: comments
             .iter()
             .enumerate()

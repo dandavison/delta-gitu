@@ -184,6 +184,7 @@ impl GitHub for User {
                 start_line: None,
                 subject: if t.file { Subject::File } else { Subject::Line },
                 resolved: false,
+                deleted_on_github: false,
                 comments: t
                     .comments
                     .iter()

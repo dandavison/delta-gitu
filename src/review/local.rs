@@ -1,6 +1,6 @@
-//! Local PRs: a branch reviewed against a base branch, with no PR on GitHub. What the review
-//! records is kept in a file in the repository's shared git directory, so that every worktree of
-//! the repository sees it (see [`Store`]).
+//! Local PRs: a branch reviewed against a base branch, linked to the branch's PR on GitHub if it
+//! has one. What the review records is kept in a file in the repository's shared git directory,
+//! so that every worktree of the repository sees it (see [`Store`]).
 
 use super::{
     ADDED_TO_DRAFT as ADDED, Backend, Comment, PendingReview, Place, Side, Subject, Thread,
@@ -149,8 +149,7 @@ impl LocalBackend {
         result
     }
 
-    /// Refuse a PR with no commits to review, or whose branch is behind its remote's, so that
-    /// what is reviewed is the branch as it is.
+    /// Refuse a PR with no commits to review.
     fn check_commits(&self) -> Res<()> {
         if self.commit_count()? == 0 {
             return Err(no_pr(&format!(
@@ -159,6 +158,12 @@ impl LocalBackend {
                 short_ref(&self.base_ref)
             )));
         }
+        Ok(())
+    }
+
+    /// Refuse a PR whose branch is behind its remote's, so that what is reviewed is the branch
+    /// as it is. Sync, which brings the branch up to GitHub's head itself, doesn't ask this.
+    pub fn check_not_behind(&self) -> Res<()> {
         let local = format!("refs/heads/{}", self.head);
         let upstream = match self.repo.branch_upstream_name(&local) {
             Ok(name) => name.as_str().map(str::to_owned).ok_or_else(|| {
@@ -304,6 +309,17 @@ impl LocalBackend {
                 .repo
                 .graph_descendant_of(head, oid)
                 .map_err(|e| Error::LocalPr(format!("Couldn't compare commits: {e}")))?)
+    }
+
+    /// The draft replies, by their text, in threads that have been deleted on GitHub, which can't
+    /// be posted.
+    pub fn orphaned_replies(&self) -> Res<Vec<String>> {
+        Ok(self
+            .threads()?
+            .into_iter()
+            .filter(|t| t.deleted_on_github)
+            .flat_map(|t| t.comments.into_iter().map(|c| c.body))
+            .collect())
     }
 
     /// How many commits the PR has: those of its head since it branched from its base.
@@ -461,7 +477,7 @@ impl LocalBackend {
 
     /// The draft review's comments, as they are to be posted, in that order: each thread's
     /// first comment before its replies. None if there is no draft review. A thread whose line
-    /// has gone is an error.
+    /// has gone starts on its file, saying which line it was on.
     pub fn to_post(&self) -> Res<Vec<PostComment>> {
         let file = self.store.read()?;
         let Some(mine) = file.reviews.iter().find(|r| r.state == ReviewState::Draft) else {
@@ -478,17 +494,35 @@ impl LocalBackend {
                 if comment.review != mine.id {
                     continue;
                 }
-                // A thread whose line has gone, or on a whole file, starts on its file.
-                let starts = (i == 0 && thread.github.is_none()).then(|| {
-                    match (thread.subject, lines.get(&thread.id).copied().flatten()) {
-                        (Subject::Line, Some((side, line))) => Place::Line(side, line),
-                        _ => Place::File,
+                // A thread whose line has gone, or on a whole file, starts on its file. One
+                // whose line has gone says which it was, so that it means what it did.
+                let line = lines.get(&thread.id).copied().flatten();
+                let place = match (thread.subject, line) {
+                    (Subject::Line, Some((side, line))) => Place::Line(side, line),
+                    _ => Place::File,
+                };
+                let starts = (i == 0 && thread.github.is_none()).then_some(place);
+                let gone = starts == Some(Place::File) && thread.subject == Subject::Line;
+                let body = if gone {
+                    let anchor = &thread.anchor;
+                    let side = if anchor.side == Side::Old {
+                        "old line"
+                    } else {
+                        "line"
+                    };
+                    match anchor.text.first() {
+                        Some(text) => {
+                            format!("On {side} {}: `{text}`\n\n{}", anchor.line, comment.body)
+                        }
+                        None => format!("On {side} {}:\n\n{}", anchor.line, comment.body),
                     }
-                });
+                } else {
+                    comment.body.clone()
+                };
                 comments.push(PostComment {
                     id: comment.id.clone(),
                     thread: thread.id.clone(),
-                    body: comment.body.clone(),
+                    body,
                     path: thread.anchor.path.clone(),
                     starts,
                     reply_to: thread.github.clone(),
@@ -694,10 +728,15 @@ impl LocalBackend {
         let file = self.store.read()?;
         // Each thread's line, and first line if it is on several.
         type Place = (Option<(Side, u32)>, Option<u32>);
-        let places: HashMap<String, Place> = self
-            .threads()?
-            .into_iter()
-            .map(|t| (t.id, (t.line, t.start_line)))
+        let threads = self.threads()?;
+        let deleted: HashSet<&str> = threads
+            .iter()
+            .filter(|t| t.deleted_on_github)
+            .map(|t| t.id.as_str())
+            .collect();
+        let places: HashMap<String, Place> = threads
+            .iter()
+            .map(|t| (t.id.clone(), (t.line, t.start_line)))
             .collect();
         let reviews: Vec<serde_json::Value> = file
             .reviews
@@ -722,6 +761,7 @@ impl LocalBackend {
                     "side": t.anchor.side,
                     "line": line.map(|(_, n)| n),
                     "start_line": start_line,
+                    "deleted_on_github": deleted.contains(t.id.as_str()),
                     "resolved": t.resolved,
                     "comments": t.comments.iter().map(|c| serde_json::json!({
                         "id": c.id,
@@ -1042,7 +1082,11 @@ pub(crate) fn markdown(title: &str, mut threads: Vec<MarkdownThread>) -> String 
             (None, Some(n)) => format!("{} (outdated: was line {n}{old})", thread.path),
             (None, None) => format!("{} (outdated)", thread.path),
         };
-        let resolved = if thread.resolved { ", resolved" } else { "" };
+        let resolved = match (thread.resolved, thread.deleted_on_github) {
+            (_, true) => ", deleted on GitHub",
+            (true, false) => ", resolved",
+            (false, false) => "",
+        };
         out += &format!("\n## {place}\n\nThread id: {}{resolved}\n", thread.id);
         if !quote.text.is_empty() {
             out += "\n````\n";
@@ -1179,11 +1223,13 @@ fn find_pr(
         }
         [many @ .., last] => {
             return Err(not_handled(&format!(
-                "{head} has local PRs into {} and {last}",
-                many.join(", ")
+                "{head} has local PRs into {} and {last}{}",
+                many.join(", "),
+                drafts_kept(head, &bases)
             )));
         }
     };
+    let kept = drafts_kept(head, &bases);
     let github_pr = match github.pr_for_branch(head) {
         Ok(github_pr) => github_pr,
         Err(e) => {
@@ -1206,20 +1252,20 @@ fn find_pr(
                 && link.number != pr.number
             {
                 return Err(not_handled(&format!(
-                    "{head}'s local PR is linked to #{}, but GitHub's PR for it is #{}",
+                    "{head}'s local PR is linked to #{}, but GitHub's PR for it is #{}{kept}",
                     link.number, pr.number
                 )));
             }
             if base != pr.base_ref {
                 return Err(not_handled(&format!(
-                    "{head}'s local PR is into {base}, but GitHub's PR #{} is into {}",
+                    "{head}'s local PR is into {base}, but GitHub's PR #{} is into {}{kept}",
                     pr.number, pr.base_ref
                 )));
             }
             Ok((base, Some(pr), None))
         }
         (None, Some((_, Some(link)))) => Err(not_handled(&format!(
-            "{head}'s local PR is linked to #{}, which GitHub no longer has open",
+            "{head}'s local PR is linked to #{}, which GitHub no longer has open{kept}",
             link.number
         ))),
         (None, Some((base, None))) => Ok((base, None, None)),
@@ -1338,6 +1384,23 @@ impl PrSummary {
             parts.push(format!("pending review on GitHub with {comments}"));
         }
         parts.join(" · ")
+    }
+}
+
+/// What to add to an error about the branch `head`'s local PRs, into `bases`: that their drafts
+/// are kept, and how to see them.
+fn drafts_kept(head: &str, bases: &[String]) -> String {
+    let commands: Vec<String> = bases
+        .iter()
+        .map(|base| format!("delta --tui review show --head {head} --base {base}"))
+        .collect();
+    match commands.as_slice() {
+        [] => String::new(),
+        [one] => format!(". Its drafts are kept: see them with {one}"),
+        many => format!(
+            ". Their drafts are kept: see them with {}",
+            many.join(", or ")
+        ),
     }
 }
 
@@ -1542,6 +1605,10 @@ impl Backend for LocalBackend {
                 start_line,
                 subject: thread.subject,
                 resolved: thread.resolved,
+                // On GitHub, and with none of its comments copied from there.
+                deleted_on_github: thread.github.is_some()
+                    && !thread.comments.is_empty()
+                    && thread.comments.iter().all(|c| draft(&c.review)),
                 comments: thread
                     .comments
                     .iter()

@@ -770,8 +770,8 @@ fn a_comment_on_several_lines_shows_at_its_last_with_its_first_recorded() {
     assert!(markdown.contains("\n## lines.txt:3-6\n"), "{markdown}");
 }
 
-/// A draft thread whose line has gone since it was written is posted as a comment on its file,
-/// and comes back as one.
+/// A draft thread whose line has gone since it was written, as when the PR's author has changed
+/// it, is posted as a comment on its file, saying which line it was on, and comes back as one.
 #[test]
 #[ignore = "against GitHub itself: run with cargo test-github"]
 fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
@@ -781,13 +781,15 @@ fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
         "on five",
     )
     .unwrap();
+    // The author changes line 5 on GitHub.
     let lines = std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap();
     commit(
         &pr.dir,
         "lines.txt",
         &lines.replace("line five\n", "line FIVE\n"),
     );
-    assert_eq!(pr.only_local_thread()["line"], serde_json::Value::Null);
+    run(&pr.dir, &["git", "push", "-q", "origin", &pr.head]);
+    run(&pr.dir, &["git", "reset", "-q", "--hard", "HEAD~1"]);
 
     pr.review(&["sync"], "").unwrap();
 
@@ -795,7 +797,7 @@ fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
     assert_eq!(github.len(), 1, "{github:?}");
     assert_eq!(github[0]["subjectType"], "FILE", "{github:?}");
     assert_eq!(
-        github[0]["comments"]["nodes"][0]["body"], "on five",
+        github[0]["comments"]["nodes"][0]["body"], "On line 5: `line five`\n\non five",
         "{github:?}"
     );
     let thread = pr.only_local_thread();

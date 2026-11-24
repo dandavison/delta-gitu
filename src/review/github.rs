@@ -679,6 +679,7 @@ fn parse_threads(output: &str) -> serde_json::Result<Vec<Thread>> {
                     Subject::Line
                 },
                 resolved: node.is_resolved,
+                deleted_on_github: false,
                 comments: node
                     .comments
                     .nodes

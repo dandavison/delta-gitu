@@ -129,6 +129,8 @@ pub(crate) struct Thread {
     pub start_line: Option<u32>,
     pub subject: Subject,
     pub resolved: bool,
+    /// Whether the thread was on GitHub and has been deleted there, leaving only draft replies.
+    pub deleted_on_github: bool,
     pub comments: Vec<Comment>,
 }
 
@@ -157,14 +159,14 @@ pub(crate) struct Comment {
     pub deletable: bool,
 }
 
-/// A PR opened for review on a screen, with the checkbox state of each of its files, by path, and
-/// its review threads.
 /// The user's pending review on GitHub: only they can see its comments until they submit it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PendingReview {
     pub comments: usize,
 }
 
+/// A PR opened for review on a screen, with the checkbox state of each of its files, by path, and
+/// its review threads.
 pub(crate) struct OpenPr {
     pub backend: Rc<dyn Backend>,
     pub viewed: RefCell<HashMap<String, ViewedState>>,
@@ -319,32 +321,37 @@ pub(crate) mod cli {
                 head,
                 base,
             } => {
-                let pr = pr_by(repo, Rc::clone(&github), head, base, &None)?;
-                // Only fetching, there is nothing to push.
-                if pr.to_post()?.is_empty() {
-                    let synced = super::post::sync(&pr, github, *create_pr)?;
-                    return writeln!(out, "{}", synced.summary()).map_err(|e| {
-                        Error::LocalPr(format!("Couldn't print what was synced: {e}"))
-                    });
-                }
-                if !create_pr && github.pr_for_branch(pr.head())?.is_none() {
+                // Sync brings the branch up to GitHub's head itself.
+                let pr = local_pr(repo, Rc::clone(&github), head, base)?;
+                if !create_pr
+                    && github.pr_for_branch(pr.head())?.is_none()
+                    && !pr.to_post()?.is_empty()
+                {
                     return Err(Error::Gh(format!(
                         "Couldn't post: {} has no GitHub PR. Give --create-pr to push it and \
                          create a draft PR, which everyone who can see the repository can see",
                         pr.head()
                     )));
                 }
-                let output = super::post::push_command(pr.repo(), pr.head())?
-                    .output()
-                    .map_err(|e| Error::LocalPr(format!("Couldn't run git push: {e}")))?;
-                if !output.status.success() {
-                    return Err(Error::LocalPr(format!(
-                        "Couldn't push {}: {}",
-                        pr.head(),
-                        String::from_utf8_lossy(&output.stderr).trim_end()
-                    )));
-                }
-                let synced = super::post::sync(&pr, github, *create_pr)?;
+                let workdir = pr
+                    .repo()
+                    .workdir()
+                    .ok_or(Error::NoRepoWorkdir)?
+                    .to_path_buf();
+                let mut run = |mut cmd: std::process::Command| {
+                    let output = cmd.current_dir(&workdir).output().map_err(|e| {
+                        Error::LocalPr(format!("Couldn't run {:?}: {e}", cmd.get_program()))
+                    })?;
+                    if !output.status.success() {
+                        return Err(Error::LocalPr(format!(
+                            "Couldn't run {:?}: {}",
+                            cmd.get_program(),
+                            String::from_utf8_lossy(&output.stderr).trim_end()
+                        )));
+                    }
+                    Ok(())
+                };
+                let synced = super::post::sync(&pr, github, *create_pr, &mut run)?;
                 writeln!(out, "{}", synced.summary())
                     .map_err(|e| Error::LocalPr(format!("Couldn't print what was synced: {e}")))
             }
@@ -436,7 +443,8 @@ pub(crate) mod cli {
         Ok(GitHubBackend { github, pr })
     }
 
-    /// The local PR `head` into `base`, whose comments are labelled with `agent`'s name if given.
+    /// The local PR `head` into `base`, whose branch must not be behind its remote's, and whose
+    /// comments are labelled with `agent`'s name if given.
     fn pr_by(
         repo: Repository,
         github: Rc<dyn GitHub>,
@@ -444,15 +452,27 @@ pub(crate) mod cli {
         base: &Option<String>,
         agent: &Option<String>,
     ) -> Res<LocalBackend> {
+        let pr = local_pr(repo, github, head, base)?;
+        pr.check_not_behind()?;
+        Ok(match agent {
+            Some(agent) => pr.with_agent(agent.clone()),
+            None => pr,
+        })
+    }
+
+    /// The local PR `head` into `base`, saying on stderr if it wasn't checked against GitHub.
+    fn local_pr(
+        repo: Repository,
+        github: Rc<dyn GitHub>,
+        head: &Option<String>,
+        base: &Option<String>,
+    ) -> Res<LocalBackend> {
         let pr = LocalBackend::new(Rc::new(repo), github, head.clone(), base.clone())?;
         // On stderr, which is not what a command prints, such as JSON.
         if let Some(unchecked) = pr.unchecked() {
             eprintln!("{unchecked}");
         }
-        Ok(match agent {
-            Some(agent) => pr.with_agent(agent.clone()),
-            None => pr,
-        })
+        Ok(pr)
     }
 
     /// A comment or reply, `what`, read from `input`, without the newline it ends with.

@@ -65,39 +65,71 @@ pub(crate) fn push_command(repo: &Repository, head: &str) -> Res<Command> {
     Ok(cmd)
 }
 
-/// Sync `local`'s PR with GitHub: post its draft comments, an agent's included, into the user's
-/// pending review on GitHub, which is started if they have none, and then fetch the PR's reviews;
-/// with no draft comments, only fetch. A branch with no GitHub PR gets a draft PR only if
-/// `create_pr`. The branch must already be pushed. A thread whose line has gone stops the whole
-/// post. If posting stops part way, as when the network fails, each comment posted is recorded as
-/// it is, so that syncing again posts the rest into the same pending review, the only one the user
-/// can have. Each thread's first comment is posted before its replies.
-pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool) -> Res<Synced> {
-    let to_post = local.to_post()?;
-    let found = github.pr_for_branch(local.head())?;
-    if to_post.is_empty() {
-        let pr = found.ok_or_else(|| {
-            Error::Gh(format!(
+/// Sync `local`'s PR with GitHub, running commands such as `git push` with `run`. Its draft
+/// comments, an agent's included, are posted into the user's pending review on GitHub, which is
+/// started if they have none, and then the PR's reviews are fetched; with no draft comments, they
+/// are only fetched.
+///
+/// Sync never pushes to a PR on GitHub: a branch behind GitHub's head is brought up to it, and one
+/// with commits the PR doesn't have is refused. A branch with no PR on GitHub is pushed, and gets
+/// a draft PR, only if `create_pr`. Nothing is posted while a draft reply's thread has been deleted
+/// on GitHub. If posting stops part way, as when the network fails, each comment posted is
+/// recorded as it is, so that syncing again posts the rest into the same pending review, the only
+/// one the user can have. Each thread's first comment is posted before its replies.
+pub(crate) fn sync(
+    local: &LocalBackend,
+    github: Rc<dyn GitHub>,
+    create_pr: bool,
+    run: &mut dyn FnMut(Command) -> Res<()>,
+) -> Res<Synced> {
+    let Some(pr) = github.pr_for_branch(local.head())? else {
+        let to_post = local.to_post()?;
+        if to_post.is_empty() {
+            return Err(Error::Gh(format!(
                 "Nothing to sync: there are no draft comments, and {} has no PR on GitHub",
                 local.head()
-            ))
-        })?;
-        local.record_link(&pr)?;
-        let url = pr.url.clone();
-        local.fetch(&GitHubBackend { github, pr })?;
-        return Ok(Synced::Fetched { url });
-    }
-    let pr = match found {
-        Some(pr) => pr,
-        None if create_pr => github.create_pr(local.head(), local.base())?,
-        None => {
+            )));
+        }
+        if !create_pr {
             return Err(Error::Gh(format!(
                 "Couldn't post: {} has no GitHub PR, and creating one wasn't asked for",
                 local.head()
             )));
         }
+        run(push_command(local.repo(), local.head())?)?;
+        let pr = github.create_pr(local.head(), local.base())?;
+        let pr = once_github_has_head(local, github.as_ref(), pr)?;
+        return post(local, github, pr, to_post);
     };
-    let pr = once_github_has_head(local, github.as_ref(), pr)?;
+    up_to_github_head(local, github.as_ref(), &pr, run)?;
+    local.record_link(&pr)?;
+    local.fetch(&GitHubBackend {
+        github: Rc::clone(&github),
+        pr: pr.clone(),
+    })?;
+    let orphans = local.orphaned_replies()?;
+    if !orphans.is_empty() {
+        return Err(Error::Gh(format!(
+            "Couldn't post: the threads of these draft replies were deleted on GitHub: \"{}\". \
+             Delete them, or write them as new comments",
+            orphans.join("\", \"")
+        )));
+    }
+    let to_post = local.to_post()?;
+    if to_post.is_empty() {
+        return Ok(Synced::Fetched { url: pr.url });
+    }
+    post(local, github, pr, to_post)
+}
+
+/// Post `to_post` into the user's pending review on `pr`, which is started if they have none,
+/// and then fetch the PR's reviews.
+fn post(
+    local: &LocalBackend,
+    github: Rc<dyn GitHub>,
+    pr: GitHubPr,
+    to_post: Vec<super::local::PostComment>,
+) -> Res<Synced> {
     check_pr(local, &pr).map_err(|e| Error::Gh(format!("Couldn't post: {e}")))?;
     local.record_link(&pr)?;
     let review = match github.pending_review(&pr)? {
@@ -131,6 +163,40 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
         threads,
         replies,
     })
+}
+
+/// Bring `local`'s branch up to `pr`'s head on GitHub, with `gh pr checkout`, which only fast-
+/// forwards it. Never the other way: a branch with commits the PR doesn't have is refused.
+fn up_to_github_head(
+    local: &LocalBackend,
+    github: &dyn GitHub,
+    pr: &GitHubPr,
+    run: &mut dyn FnMut(Command) -> Res<()>,
+) -> Res<()> {
+    if local.head_commit()?.to_string() == pr.head_oid {
+        return Ok(());
+    }
+    if local.is_older_commit_of_head(&pr.head_oid)? {
+        return Err(Error::Gh(format!(
+            "Couldn't sync: {} has commits GitHub's PR #{} doesn't. Sync never pushes: push them \
+             first, then sync",
+            local.head(),
+            pr.number
+        )));
+    }
+    run(github.checkout(pr))?;
+    let head = local.head_commit()?.to_string();
+    if head != pr.head_oid {
+        return Err(Error::Gh(format!(
+            "Couldn't sync: {} is at {}, not at GitHub's PR #{}'s head, {}: it has commits the PR \
+             doesn't, or the PR's branch was rewritten",
+            local.head(),
+            &head[..7],
+            pr.number,
+            &pr.head_oid[..pr.head_oid.len().min(7)]
+        )));
+    }
+    Ok(())
 }
 
 /// How long GitHub is given to show a pushed commit as its PR's head.

@@ -80,6 +80,7 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
 pub(crate) fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>) -> Res<()> {
     let local =
         LocalBackend::for_current_branch(Rc::clone(&app.state.repo), Rc::clone(&app.state.github))?;
+    local.check_not_behind()?;
     if let Some(expected) = expected
         && local.linked_number() != Some(expected)
     {
@@ -118,9 +119,9 @@ fn confirm_authors(app: &mut App, term: &mut Term, local: &LocalBackend) -> Res<
     Ok(())
 }
 
-/// Sync the current branch's PR with GitHub (see [`review::post::sync`]): push the branch, add
-/// every draft comment to the user's pending review there, and fetch, asking first. With no draft
-/// comments, it only fetches.
+/// Sync the current branch's PR with GitHub (see [`review::post::sync`]): add every draft comment
+/// to the user's pending review there, and fetch. With no PR on GitHub, it asks before creating
+/// one, which pushes the branch.
 pub(crate) struct PrSync;
 impl OpTrait for PrSync {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
@@ -139,29 +140,17 @@ impl OpTrait for PrSync {
                     &for_current_branch
                 }
             };
-            if local.to_post()?.is_empty() {
-                let synced = review::post::sync(local, Rc::clone(&app.state.github), false)?;
-                reread_pr(app)?;
-                app.update_screens()?;
-                app.display_info(synced.summary());
-                return Ok(());
-            }
-            // A PR makes the branch visible to everyone who can see the repository.
-            let create_pr = app.state.github.pr_for_branch(local.head())?.is_none();
+            // Creating a PR pushes the branch, and makes it visible to everyone who can see the
+            // repository.
+            let create_pr = app.state.github.pr_for_branch(local.head())?.is_none()
+                && !local.to_post()?.is_empty();
             if create_pr {
-                app.confirm(
-                    term,
-                    "No GitHub PR: create a draft PR, which anyone with access sees, and post? [y/n]",
-                )?;
-            } else {
-                app.confirm(
-                    term,
-                    "Push the branch and post its draft comments to GitHub? [y/n]",
-                )?;
+                app.confirm(term, "No PR on GitHub: create one? [y/n]")?;
             }
-            let push = review::post::push_command(&app.state.repo, local.head())?;
-            app.run_cmd(term, &[], push)?;
-            let synced = review::post::sync(local, Rc::clone(&app.state.github), create_pr)?;
+            let github = Rc::clone(&app.state.github);
+            let synced = review::post::sync(local, github, create_pr, &mut |cmd| {
+                app.run_cmd(term, &[], cmd)
+            })?;
             reread_pr(app)?;
             app.update_screens()?;
             app.display_info(synced.summary());
