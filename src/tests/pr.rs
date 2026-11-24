@@ -1778,7 +1778,7 @@ fn os_posts_the_draft_review_into_one_pending_review() {
         keys("OO/new<enter>ione<ctrl+s>/old<enter>itwo<ctrl+s>"),
     );
 
-    ctx.update(&mut app, keys("Osy"));
+    ctx.update(&mut app, keys("Os"));
 
     assert_eq!(*github.reviews_started.borrow(), 1);
     assert_eq!(
@@ -1800,7 +1800,7 @@ fn os_adds_to_a_pending_review_it_did_not_start() {
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
-    ctx.update(&mut app, keys("Osy"));
+    ctx.update(&mut app, keys("Os"));
 
     assert_eq!(*github.reviews_started.borrow(), 0);
     assert_eq!(

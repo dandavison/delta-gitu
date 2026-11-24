@@ -852,7 +852,7 @@ fn os_says_so_when_github_does_not_add_a_thread_and_keeps_it_a_draft() {
     app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
     ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
-    ctx.update(&mut app, keys("Osy"));
+    ctx.update(&mut app, keys("Os"));
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("Couldn't add the thread"), "{screen}");
@@ -895,7 +895,10 @@ fn os_on_a_branch_with_no_github_pr_asks_before_creating_one() {
 
     ctx.update(&mut app, keys("Os"));
     let screen = ctx.redact_buffer();
-    assert!(screen.contains("create a draft PR"), "{screen}");
+    assert!(
+        screen.contains("No PR on GitHub: create one? [y/n]"),
+        "{screen}"
+    );
 
     let mut app = init_app(&mut ctx);
     app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
@@ -904,22 +907,76 @@ fn os_on_a_branch_with_no_github_pr_asks_before_creating_one() {
     assert!(github.posted.borrow().is_empty());
 }
 
+/// Sync never pushes: a branch with commits GitHub's PR doesn't have is refused, with nothing
+/// pushed or posted.
 #[test]
-fn review_sync_pushes_new_commits_to_an_existing_pr() {
+fn review_sync_with_commits_github_doesnt_have_refuses_and_pushes_nothing() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
-    commit(&ctx.dir, "added.txt", "added\nmore\n");
-    let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
-    let github = github_at_head(&ctx);
-
-    review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github)).unwrap();
-
     let pushed = run(&ctx.remote_dir, &["git", "rev-parse", "feature"]);
-    let local = run(&ctx.dir, &["git", "rev-parse", "feature"]);
-    assert_eq!(pushed, local);
-    assert!(github.created.borrow().is_empty());
+    let github = github_at_head(&ctx);
+    comment_with_base(&ctx, None);
+    commit(&ctx.dir, "added.txt", "added\nmore\n");
+
+    let result = review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github));
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("push them first"), "{error}");
+    assert_eq!(
+        run(&ctx.remote_dir, &["git", "rev-parse", "feature"]),
+        pushed
+    );
+    assert!(github.posted.borrow().is_empty());
+}
+
+/// When gitu can't yet open a branch's PR, it says how to see the drafts, which are kept.
+#[test]
+fn a_pr_not_handled_yet_says_how_to_see_its_drafts() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_at_head(&ctx);
+    review_cli_with_github(
+        &ctx.dir,
+        &["comment", "--path", "lines.txt", "--line", "2"],
+        "hello",
+        Rc::clone(&github),
+    )
+    .unwrap();
+    *github.has_pr.borrow_mut() = false;
+
+    let error = review_cli_with_github(&ctx.dir, &["show"], "", Rc::clone(&github))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("no longer has open"), "{error}");
+    assert!(
+        error.contains("delta --tui review show --head feature --base main"),
+        "{error}"
+    );
+}
+
+/// With more than one local PR for a branch, gitu says how to see each one's drafts.
+#[test]
+fn two_local_prs_for_a_branch_say_how_to_see_each_ones_drafts() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "branch", "release", "main"]);
+    comment_with_base(&ctx, None);
+    comment_with_base(&ctx, Some("release"));
+
+    let error = review_cli_with_input(&ctx.dir, &["show"], "")
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("delta --tui review show --head feature --base main"),
+        "{error}"
+    );
+    assert!(
+        error.contains("delta --tui review show --head feature --base release"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -934,13 +991,13 @@ fn review_sync_refuses_when_githubs_head_is_not_the_branchs() {
     let result = review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github));
 
     let error = result.unwrap_err().to_string();
-    assert!(error.contains("is not at feature's commit"), "{error}");
+    assert!(error.contains("not at GitHub's PR #7's head"), "{error}");
     assert!(github.posted.borrow().is_empty());
     assert_eq!(review_file(&ctx)["reviews"][0]["state"], "draft");
 }
 
 #[test]
-fn os_posts_the_review_once_confirmed() {
+fn os_posts_the_review() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let github = github_at_head(&ctx);
@@ -948,7 +1005,7 @@ fn os_posts_the_review_once_confirmed() {
     app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
     ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
 
-    ctx.update(&mut app, keys("Osy"));
+    ctx.update(&mut app, keys("Os"));
 
     assert_eq!(github.posted.borrow().len(), 1);
     let screen = ctx.redact_buffer();

@@ -248,6 +248,40 @@ impl RealPr {
             .clone()
     }
 
+    /// Delete, on GitHub, the thread `thread`, by deleting its one comment.
+    fn delete_thread(&self, thread: &str) {
+        let comment = self.graphql(
+            "query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { comments(first: 1) { nodes { id } } } } }",
+            &[("id", thread)],
+            &[],
+        )["data"]["node"]["comments"]["nodes"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        self.graphql(
+            "mutation($id: ID!) { deletePullRequestReviewComment(input: {id: $id}) { clientMutationId } }",
+            &[("id", &comment)],
+            &[],
+        );
+    }
+
+    /// The commit the PR's head branch is at on GitHub.
+    fn remote_head(&self) -> String {
+        run(
+            &self.dir,
+            &[
+                "git",
+                "ls-remote",
+                "origin",
+                &format!("refs/heads/{}", self.head),
+            ],
+        )
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned()
+    }
+
     /// The one thread of the local PR, as `review show --format json` gives it.
     fn only_local_thread(&self) -> serde_json::Value {
         let json = self.json();
@@ -766,4 +800,77 @@ fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
     );
     let thread = pr.only_local_thread();
     assert_eq!(thread["subject"], "file", "{thread}");
+}
+
+// Sync deals with comments, never with the PR's code: it doesn't push.
+
+/// A branch with commits GitHub's PR doesn't have is not pushed by sync, which posts nothing and
+/// says to push them first.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn syncing_with_commits_github_doesnt_have_refuses_and_pushes_nothing() {
+    let pr = RealPr::new(stdext::function_name!());
+    let before = pr.remote_head();
+    pr.review(
+        &["comment", "--path", "lines.txt", "--line", "3"],
+        "on three",
+    )
+    .unwrap();
+    commit(&pr.dir, "more.txt", "more\n");
+
+    let error = pr.review(&["sync"], "").unwrap_err().to_string();
+
+    assert!(error.contains("push them first"), "{error}");
+    assert_eq!(pr.remote_head(), before);
+    assert!(pr.pending_comments().is_empty());
+}
+
+/// A branch behind GitHub's PR, as when its author has pushed since, is brought up to it by sync.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn syncing_fast_forwards_a_branch_behind_githubs_head() {
+    let pr = RealPr::new(stdext::function_name!());
+    commit(&pr.dir, "more.txt", "more\n");
+    run(&pr.dir, &["git", "push", "-q", "origin", &pr.head]);
+    run(&pr.dir, &["git", "reset", "-q", "--hard", "HEAD~1"]);
+
+    pr.review(&["sync"], "").unwrap();
+
+    assert_eq!(
+        run(&pr.dir, &["git", "rev-parse", "HEAD"]).trim(),
+        pr.remote_head()
+    );
+}
+
+/// A draft reply whose thread was deleted on GitHub can't be posted: sync posts nothing, and says
+/// which reply it is. The reply is kept, in its thread, which says it was deleted on GitHub.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn a_draft_reply_whose_thread_was_deleted_on_github_is_refused_and_kept() {
+    let pr = RealPr::new(stdext::function_name!());
+    let thread = pr.submitted_thread("line: 4, side: RIGHT", "on four");
+    pr.review(&["sync"], "").unwrap();
+    let local = pr.only_local_thread_id();
+    pr.review(&["reply", &local], "and more").unwrap();
+    pr.review(
+        &["comment", "--path", "lines.txt", "--line", "3"],
+        "on three",
+    )
+    .unwrap();
+    pr.delete_thread(&thread);
+
+    let error = pr.review(&["sync"], "").unwrap_err().to_string();
+
+    assert!(error.contains("deleted on GitHub"), "{error}");
+    assert!(error.contains("and more"), "{error}");
+    assert!(pr.pending_comments().is_empty());
+    let json = pr.json();
+    let orphan = json["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == local.as_str())
+        .unwrap_or_else(|| panic!("{json}"));
+    assert_eq!(orphan["deleted_on_github"], true, "{json}");
+    assert_eq!(orphan["comments"][0]["body"], "and more", "{json}");
 }
