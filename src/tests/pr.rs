@@ -58,6 +58,8 @@ pub(super) struct FakeGitHub {
     /// How many of the next threads and replies GitHub adds but whose reply is lost, as when the
     /// network fails just after GitHub has made the change.
     pub(super) loses_replies: RefCell<usize>,
+    /// How long GitHub takes to say what a PR is, as over a slow network.
+    pub(super) delay: RefCell<std::time::Duration>,
 }
 
 impl FakeGitHub {
@@ -74,6 +76,7 @@ impl FakeGitHub {
 
 impl GitHub for FakeGitHub {
     fn pr(&self, selector: Option<&str>) -> Result<GitHubPr, Error> {
+        std::thread::sleep(*self.delay.borrow());
         self.asked_for.borrow_mut().push(selector.map(String::from));
         Ok(GitHubPr {
             id: "PR_id".into(),
@@ -310,7 +313,7 @@ impl GitHub for FakeGitHub {
 
 /// A repository with the branch `feature`, which changes `lines.txt` and adds
 /// `added.txt`, and `main`, which has moved on since with `main-only.txt`.
-fn setup(ctx: &TestContext) -> Rc<FakeGitHub> {
+pub(super) fn setup(ctx: &TestContext) -> Rc<FakeGitHub> {
     commit(&ctx.dir, "lines.txt", "keep\nold\nkeep\n");
     run(&ctx.dir, &["git", "checkout", "-b", "feature"]);
     commit(&ctx.dir, "lines.txt", "keep\nnew\nkeep\n");
@@ -353,6 +356,7 @@ impl FakeGitHub {
             commits: RefCell::new(2),
             submitted_by_me: RefCell::new(false),
             loses_replies: RefCell::new(0),
+            delay: RefCell::new(std::time::Duration::ZERO),
         }
     }
 }
@@ -380,7 +384,7 @@ fn a_thread_on_a_file_not_pushed_is_shown_and_not_said_not_to_be() {
     assert!(screen.contains("Hm"), "{screen}");
 }
 
-fn init_app(ctx: &mut TestContext, github: &Rc<FakeGitHub>) -> App {
+pub(super) fn init_app(ctx: &mut TestContext, github: &Rc<FakeGitHub>) -> App {
     ctx.debug = false;
     let mut app = ctx.init_app();
     app.state.github = Rc::clone(github) as Rc<dyn GitHub>;

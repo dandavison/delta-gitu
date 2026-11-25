@@ -200,9 +200,7 @@ fn run_app(app: &mut app::App, args: &cli::Args, term: &mut Term) -> Res<i32> {
             panic!("Couldn't parse keys");
         };
 
-        for event in keys_to_events(&keys) {
-            app.handle_event(term, event)?;
-        }
+        replay_keys(app, term, keys_to_events(&keys), !args.print)?;
     }
 
     app.redraw_now(term)?;
@@ -214,6 +212,19 @@ fn run_app(app: &mut app::App, args: &cli::Args, term: &mut Term) -> Res<i32> {
     app.run(term, Duration::from_millis(100))?;
 
     Ok(app.state.exit_code)
+}
+
+/// Handle `events`, keys given on the command line, as typed keys are handled.
+pub(crate) fn replay_keys(
+    app: &mut app::App,
+    term: &mut Term,
+    events: Vec<event::Event>,
+    _draw: bool,
+) -> Res<()> {
+    for event in events {
+        app.handle_event(term, event)?;
+    }
+    Ok(())
 }
 
 /// What git piped to us as its pager, alongside the command already found to

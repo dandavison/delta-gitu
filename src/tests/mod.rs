@@ -20,6 +20,7 @@ mod back;
 mod bindings;
 mod blame;
 mod branch;
+mod busy;
 mod cherry_pick;
 mod command;
 mod commit;

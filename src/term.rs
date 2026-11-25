@@ -14,6 +14,7 @@ use crossterm::{
 };
 use std::io::{self, Stdout, Write, stdout};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -81,6 +82,8 @@ pub struct TestBuffer {
     /// The text of each frame flushed, so that a test can see what was drawn while the TUI was
     /// busy, such as waiting for a command.
     pub frames: Vec<String>,
+    /// What the TUI said it was busy with, in place of the spinner a terminal shows.
+    pub busy: Arc<Mutex<Vec<String>>>,
 }
 
 impl TestBuffer {
@@ -92,6 +95,7 @@ impl TestBuffer {
             cursor: (0, 0),
             link: None,
             frames: vec![],
+            busy: Arc::new(Mutex::new(vec![])),
         }
     }
 
