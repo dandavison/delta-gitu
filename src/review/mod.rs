@@ -402,7 +402,7 @@ pub(crate) mod cli {
     use super::{
         Backend, Side,
         github::{GitHub, GitHubBackend},
-        local::LocalBackend,
+        local::{LocalBackend, Purpose},
     };
     use crate::{
         Res,
@@ -430,37 +430,19 @@ pub(crate) mod cli {
                 head,
                 base,
             } => {
-                // Sync brings the branch up to GitHub's head itself.
+                // Sync compares the branch with GitHub itself.
                 let pr = local_pr(repo, Rc::clone(&github), head, base)?;
                 if !create_pr
                     && github.pr_for_branch(pr.head())?.is_none()
                     && !pr.to_post()?.is_empty()
                 {
                     return Err(Error::Gh(format!(
-                        "Couldn't post: {} has no GitHub PR. Give --create-pr to push it and \
-                         create a draft PR, which everyone who can see the repository can see",
+                        "Couldn't post: {} has no GitHub PR. Give --create-pr to create a draft \
+                         PR, which everyone who can see the repository can see",
                         pr.head()
                     )));
                 }
-                let workdir = pr
-                    .repo()
-                    .workdir()
-                    .ok_or(Error::NoRepoWorkdir)?
-                    .to_path_buf();
-                let mut run = |mut cmd: std::process::Command| {
-                    let output = cmd.current_dir(&workdir).output().map_err(|e| {
-                        Error::LocalPr(format!("Couldn't run {:?}: {e}", cmd.get_program()))
-                    })?;
-                    if !output.status.success() {
-                        return Err(Error::LocalPr(format!(
-                            "Couldn't run {:?}: {}",
-                            cmd.get_program(),
-                            String::from_utf8_lossy(&output.stderr).trim_end()
-                        )));
-                    }
-                    Ok(())
-                };
-                let synced = super::post::sync(&pr, github, *create_pr, &mut run)?;
+                let synced = super::post::sync(&pr, github, *create_pr)?;
                 writeln!(out, "{}", synced.summary())
                     .map_err(|e| Error::LocalPr(format!("Couldn't print what was synced: {e}")))
             }
@@ -602,8 +584,9 @@ pub(crate) mod cli {
         Ok(GitHubBackend { github, pr })
     }
 
-    /// The local PR `head` into `base`, whose branch must not be behind its remote's, and whose
-    /// comments are labelled with `agent`'s name if given.
+    /// The local PR `head` into `base`, whose branch must have GitHub's commits (see
+    /// [`LocalBackend::compare_with_github`]), and whose comments are labelled with `agent`'s
+    /// name if given. What to tell the user about how it differs from GitHub goes to stderr.
     fn pr_by(
         repo: Repository,
         github: Rc<dyn GitHub>,
@@ -612,7 +595,11 @@ pub(crate) mod cli {
         agent: &Option<String>,
     ) -> Res<LocalBackend> {
         let pr = local_pr(repo, github, head, base)?;
-        pr.check_not_behind()?;
+        if pr.unchecked().is_none()
+            && let Some(note) = pr.compare_with_github(pr.linked_pr(), Purpose::Review)?
+        {
+            eprintln!("{note}");
+        }
         Ok(match agent {
             Some(agent) => pr.with_agent(agent.clone()),
             None => pr,

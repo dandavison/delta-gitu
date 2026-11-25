@@ -26,9 +26,9 @@ opens the current branch's PR with `O O`.
 - **Local-only comment**: a comment in no review, which is never posted to GitHub. Your
   conversations with the person are local-only.
 - **Thread**: a first comment on a line of the diff, and the replies to it.
-- **Sync**: the person's command to bring the branch up to its GitHub PR's head, add the draft
-  review's comments, yours included, to their pending review on GitHub, and copy the reviews on
-  GitHub into the local PR. Local-only comments are never posted.
+- **Sync**: the person's command to add the draft review's comments, yours included, to their
+  pending review on GitHub, and copy the reviews on GitHub into the local PR. Local-only comments
+  are never posted. It never pushes or pulls: the branch must be where GitHub has it.
 - **Fetch**: copy the reviews on the branch's GitHub PR into the local PR, which sync also does.
   The copies can't be changed locally, except the person's own comments, which are changed on
   GitHub.
@@ -47,9 +47,11 @@ Rules:
   comment` and `review reply`. Use the draft review only for comments meant for GitHub, such as a
   review of the branch. A reply is local-only by default when its thread's first comment is.
 - Never sync (`delta tui review sync`) unless the person asks you to. Sync posts the draft
-  comments to the person's pending review on GitHub, and can fast-forward the branch. On a branch
-  with no GitHub PR it needs `--create-pr`, which pushes the branch and creates a draft PR that
-  everyone who can see the repository can see: give it only if the person asks for a PR.
+  comments to the person's pending review on GitHub. On a branch with no GitHub PR it needs
+  `--create-pr`, which creates a draft PR that everyone who can see the repository can see: give
+  it only if the person asks for a PR.
+- Don't push or pull the branch, though sync or another command says to, unless the person asks
+  you to.
 - Start each comment with 🤖. Posted comments appear on GitHub under the person's name, where
   only the 🤖 shows that an agent wrote them.
 - Edit, delete and move only your own comments, unless the person asks you to, though nothing

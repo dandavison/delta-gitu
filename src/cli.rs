@@ -199,9 +199,10 @@ pub enum ReviewCommand {
         #[clap(long)]
         base: Option<String>,
     },
-    /// Sync the PR with GitHub: copy GitHub's reviews into the local PR, bring the branch up to
-    /// the PR's head, and add every draft comment to your pending review there. With no draft
-    /// comments, it only copies GitHub's reviews. Local-only comments are never posted.
+    /// Sync the PR with GitHub: copy GitHub's reviews into the local PR, and add every draft
+    /// comment to your pending review there. With no draft comments, it only copies GitHub's
+    /// reviews. Local-only comments are never posted. It never pushes or pulls: the branch must be
+    /// where GitHub has it, and otherwise it says which command makes them agree.
     Sync {
         /// Create a draft PR on GitHub if the branch has none. A PR makes the branch visible to
         /// everyone who can see the repository.

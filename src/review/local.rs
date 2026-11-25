@@ -167,43 +167,6 @@ impl LocalBackend {
         Ok(())
     }
 
-    /// Refuse a PR whose branch is behind its remote's, so that what is reviewed is the branch
-    /// as it is. A branch whose upstream is gone, as git says of one deleted on the remote, has
-    /// nothing to be behind. Sync, which brings the branch up to GitHub's head itself, doesn't
-    /// ask this.
-    pub fn check_not_behind(&self) -> Res<()> {
-        let local = format!("refs/heads/{}", self.head);
-        let upstream = match self.repo.branch_upstream_name(&local) {
-            Ok(name) => name.as_str().map(str::to_owned).ok_or_else(|| {
-                Error::LocalPr(format!(
-                    "Couldn't read {}'s upstream: it is not UTF-8",
-                    self.head
-                ))
-            })?,
-            Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(()),
-            Err(e) => {
-                return Err(Error::LocalPr(format!(
-                    "Couldn't read {}'s upstream: {e}",
-                    self.head
-                )));
-            }
-        };
-        let Some(upstream_commit) = ref_commit(&self.repo, &upstream)? else {
-            return Ok(());
-        };
-        let behind = self.count_commits(upstream_commit, self.head_commit()?)?;
-        if behind > 0 {
-            let commits = if behind == 1 { "commit" } else { "commits" };
-            return Err(opening(Error::LocalPr(format!(
-                "{} has {behind} {commits} that {} doesn't. Pull, so that the PR is reviewed as \
-                 it is",
-                short_ref(&upstream),
-                self.head
-            ))));
-        }
-        Ok(())
-    }
-
     /// The distinct authors of the PR's commits, by name, in the order of their first commit
     /// from newest to oldest.
     pub fn commit_authors(&self) -> Res<Vec<String>> {
@@ -237,121 +200,234 @@ impl LocalBackend {
         walk.try_fold(0, |n, oid| oid.map(|_| n + 1)).map_err(error)
     }
 
-    /// Refuse to create a GitHub PR whose diff there would not be the one here: see
-    /// [`LocalBackend::check_base_on_github`], with GitHub's base branch where it is now.
-    pub(crate) fn check_would_be_githubs(&self, github: &dyn GitHub) -> Res<()> {
-        let githubs_base = github.branch_commit(&self.base)?.ok_or_else(|| {
+    /// The GitHub PR the local PR is linked to, if it is.
+    pub fn linked_pr(&self) -> Option<&GitHubPr> {
+        self.linked.as_ref().map(|linked| &linked.pr)
+    }
+
+    /// Compare the branch, and its base, with GitHub: with GitHub's PR `pr`, or with the branch
+    /// on GitHub when it has no PR. delta never pushes or pulls, so an error says how they
+    /// differ, and which command makes them agree. A PR whose diff on GitHub has commits of its
+    /// base, as GitHub saved where the base was before it had them, is shown as GitHub has it:
+    /// what to tell the user about that is returned.
+    pub(crate) fn compare_with_github(
+        &self,
+        pr: Option<&GitHubPr>,
+        purpose: Purpose,
+    ) -> Res<Option<String>> {
+        let remote = self.remote_name()?;
+        let head = self.head_commit()?;
+        let Some(pr) = pr else {
+            if purpose == Purpose::Post {
+                self.compare_base_with_github(&remote, head)?;
+            }
+            return match self.github.branch_commit(&self.head)? {
+                None if purpose == Purpose::Post => Err(Error::Gh(format!(
+                    "{branch} is not on GitHub. Push it: git push -u {remote} {branch}",
+                    branch = self.head
+                ))),
+                None => Ok(None),
+                Some(githubs) => {
+                    let pull = format!("git pull {remote} {}", self.head);
+                    let theirs = format!("GitHub's {}", self.head);
+                    self.compare_heads(&githubs, head, &theirs, &pull, &remote, purpose)?;
+                    Ok(None)
+                }
+            };
+        };
+        if pr.base_ref != self.base {
+            return Err(Error::Gh(format!(
+                "GitHub's PR #{} is into {}, not {}, so its lines would not match. Open it with \
+                 its base: delta tui review show --base {}",
+                pr.number, pr.base_ref, self.base, pr.base_ref
+            )));
+        }
+        let theirs = format!("GitHub's PR #{}", pr.number);
+        let checkout = format!("gh pr checkout {}", pr.number);
+        self.compare_heads(&pr.head_oid, head, &theirs, &checkout, &remote, purpose)?;
+        let Some(saved_base) = self.commit_here(&pr.base_oid) else {
+            return Err(Error::Gh(format!(
+                "GitHub's PR #{} is into {} at {}, which this repository doesn't have. Fetch it: \
+                 git fetch {remote}",
+                pr.number,
+                pr.base_ref,
+                short(&pr.base_oid)
+            )));
+        };
+        if head.to_string() == pr.head_oid {
+            let commits = self.commit_count()?;
+            if commits != pr.commits {
+                return Err(Error::Gh(format!(
+                    "GitHub's PR has {} commits, but {} has {commits} since it branched from {}",
+                    pr.commits,
+                    self.head,
+                    short_ref(&self.base_ref),
+                )));
+            }
+        }
+        let error = |e: git2::Error| Error::LocalPr(format!("Couldn't compare with GitHub: {e}"));
+        let here = self
+            .repo
+            .merge_base(self.base_here()?, head)
+            .map_err(error)?;
+        let on_github = self.repo.merge_base(saved_base, head).map_err(error)?;
+        if here == on_github
+            || !self
+                .repo
+                .graph_descendant_of(here, on_github)
+                .map_err(error)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "GitHub's PR #{} includes {} from {base}: GitHub saved where {base} was when the PR \
+             was created",
+            pr.number,
+            self.commits_between(on_github, here)?.join(", "),
+            base = self.base,
+        )))
+    }
+
+    /// Compare the branch's commit, `head`, with GitHub's, `githubs`, which `theirs` describes:
+    /// an error unless the branch has GitHub's commits and, to post, no more. `bring_in` is the
+    /// command that brings in GitHub's.
+    fn compare_heads(
+        &self,
+        githubs: &str,
+        head: Oid,
+        theirs: &str,
+        bring_in: &str,
+        remote: &str,
+        purpose: Purpose,
+    ) -> Res<()> {
+        let branch = &self.head;
+        let Some(githubs) = self.commit_here(githubs) else {
+            return Err(Error::Gh(format!(
+                "{theirs} is at {}, which this repository doesn't have. Fetch it: git fetch \
+                 {remote}",
+                short(githubs)
+            )));
+        };
+        let commits = |n: usize| match n {
+            1 => ("1 commit".to_owned(), "it"),
+            n => (format!("{n} commits"), "them"),
+        };
+        match (
+            self.count_commits(head, githubs)?,
+            self.count_commits(githubs, head)?,
+        ) {
+            (_, 0) if purpose == Purpose::Review => Ok(()),
+            (0, 0) => Ok(()),
+            (ahead, 0) => {
+                let (count, them) = commits(ahead);
+                Err(Error::Gh(format!(
+                    "{branch} has {count} that {theirs} doesn't. Push {them}: git push {remote} \
+                     {branch}"
+                )))
+            }
+            (0, behind) => {
+                let (count, them) = commits(behind);
+                Err(Error::Gh(format!(
+                    "{theirs} has {count} that {branch} doesn't. Bring {them} in: {bring_in}"
+                )))
+            }
+            _ => Err(Error::Gh(format!(
+                "{branch} and {theirs} have diverged: each has commits the other doesn't. Rebase \
+                 yours onto GitHub's: git pull --rebase {remote} {branch}"
+            ))),
+        }
+    }
+
+    /// For a PR to be created: an error if the branch has commits of its base that GitHub's base
+    /// branch doesn't, which GitHub would show in the PR though the diff here doesn't.
+    fn compare_base_with_github(&self, remote: &str, head: Oid) -> Res<()> {
+        let base = &self.base;
+        let githubs = self.github.branch_commit(base)?.ok_or_else(|| {
             Error::Gh(format!(
-                "Couldn't create the PR: GitHub has no branch {}",
-                self.base
+                "GitHub has no branch {base}, which the PR would be into"
             ))
         })?;
-        self.check_base_on_github(&githubs_base, &self.base)
-    }
-
-    /// Refuse a PR whose diff on GitHub, from GitHub's base branch at `githubs_base`, is not the
-    /// one here: one whose base here doesn't have GitHub's, or whose branch has commits of its
-    /// base here that GitHub's base doesn't have, which GitHub counts as the PR's.
-    fn check_base_on_github(&self, githubs_base: &str, githubs_base_ref: &str) -> Res<()> {
-        let githubs = Oid::from_str(githubs_base)
-            .ok()
-            .filter(|oid| self.repo.find_commit(*oid).is_ok())
-            .ok_or_else(|| Error::Gh(missing_commit("base", githubs_base, githubs_base_ref)))?;
-        // The base as this repository has it, not as the link to GitHub gives it.
-        let base = ref_commit(&self.repo, &self.base_ref)?.ok_or_else(|| {
-            Error::LocalPr(format!("Couldn't find the PR's base, {}", self.base_ref))
-        })?;
+        let Some(githubs) = self.commit_here(&githubs) else {
+            return Err(Error::Gh(format!(
+                "GitHub's {base} is at {}, which this repository doesn't have. Fetch it: git \
+                 fetch {remote}",
+                short(&githubs)
+            )));
+        };
         let error = |e: git2::Error| Error::LocalPr(format!("Couldn't compare with GitHub: {e}"));
-        let has_githubs = base == githubs
-            || self
-                .repo
-                .graph_descendant_of(base, githubs)
-                .map_err(error)?;
-        if !has_githubs {
-            return Err(Error::Gh(format!(
-                "GitHub's {} is at {}, which {} doesn't have. Fetch, so that it does",
-                self.base,
-                short(githubs_base),
-                short_ref(&self.base_ref),
-            )));
-        }
-        let head = self.head_commit()?;
-        let here = self.repo.merge_base(base, head).map_err(error)?;
+        let here = self
+            .repo
+            .merge_base(self.base_here()?, head)
+            .map_err(error)?;
         let on_github = self.repo.merge_base(githubs, head).map_err(error)?;
-        // Only a local base branch, ahead of its remote's, has commits GitHub's may not have:
-        // otherwise the base here is GitHub's, as last fetched, which GitHub's PR may record as
-        // where it was before.
-        if here != on_github && !self.base_ref.starts_with("refs/heads/") {
-            return Err(Error::Gh(format!(
-                "The PR branched from {} at {} here, but at {} on GitHub, so its diff here \
-                 would not be GitHub's",
-                short_ref(&self.base_ref),
-                short(&here.to_string()),
-                short(&on_github.to_string()),
-            )));
-        }
-        if here != on_github {
-            let mut walk = self.repo.revwalk().map_err(error)?;
-            walk.push(here).map_err(error)?;
-            walk.hide(on_github).map_err(error)?;
-            let commits = walk
-                .map(|oid| oid.map(|oid| short(&oid.to_string()).to_owned()))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(error)?;
-            let (count, them) = match commits.len() {
-                1 => ("1 commit".to_owned(), "it"),
-                n => (format!("{n} commits"), "them"),
-            };
-            return Err(Error::Gh(format!(
-                "{head_branch} has {count} of {base} that GitHub's {base} doesn't, {ids}, which \
-                 GitHub counts as the PR's but the diff here doesn't. Push {base}, or rebase \
-                 {head_branch} onto GitHub's {base}, to leave {them} out",
-                head_branch = self.head,
-                base = self.base,
-                ids = commits.join(", "),
-            )));
-        }
-        Ok(())
-    }
-
-    /// Why the local PR is not the GitHub PR `github_pr`, if it isn't: one that doesn't branch
-    /// from its base where GitHub's does, or, while the branch is where GitHub has the PR's head,
-    /// whose commits are not as many as GitHub says the PR has. GitHub's base for a PR is where
-    /// the base branch was when the PR was last updated, which the base branch may since have
-    /// moved on from, so the base here need only have it.
-    pub(crate) fn check_against(&self, github_pr: &GitHubPr) -> Res<()> {
-        self.check_base_on_github(&github_pr.base_oid, &github_pr.base_ref)?;
-        let head = self.head_commit()?;
-        if head.to_string() != github_pr.head_oid {
+        if here == on_github {
             return Ok(());
         }
-        let commits = self.commit_count()?;
-        if commits != github_pr.commits {
+        if !self
+            .repo
+            .graph_descendant_of(here, on_github)
+            .map_err(error)?
+        {
             return Err(Error::Gh(format!(
-                "GitHub's PR has {} commits, but {} has {commits} since it branched from {}",
-                github_pr.commits,
-                self.head,
-                short_ref(&self.base_ref),
+                "GitHub's {base} has commits that {} doesn't. Fetch them: git fetch {remote}",
+                short_ref(&self.base_ref)
             )));
         }
-        Ok(())
+        let commits = self.commits_between(on_github, here)?;
+        let count = match commits.len() {
+            1 => "1 commit".to_owned(),
+            n => format!("{n} commits"),
+        };
+        Err(Error::Gh(format!(
+            "{branch} has {count} of {base} that GitHub's {base} doesn't, {ids}, which GitHub \
+             would show in the PR. Push {base} first: git push {remote} {base}",
+            branch = self.head,
+            ids = commits.join(", "),
+        )))
     }
 
-    /// Whether `oid` is a commit of the PR's head branch before its head: one the head has, and
-    /// is not.
-    pub fn is_older_commit_of_head(&self, oid: &str) -> Res<bool> {
-        let head = self.head_commit()?;
-        let Some(oid) = Oid::from_str(oid)
+    /// The base as this repository has it, not as the link to GitHub gives it.
+    fn base_here(&self) -> Res<Oid> {
+        ref_commit(&self.repo, &self.base_ref)?.ok_or_else(|| {
+            Error::LocalPr(format!("Couldn't find the PR's base, {}", self.base_ref))
+        })
+    }
+
+    /// The commit `oid` if this repository has it.
+    fn commit_here(&self, oid: &str) -> Option<Oid> {
+        Oid::from_str(oid)
             .ok()
             .filter(|oid| self.repo.find_commit(*oid).is_ok())
-        else {
-            return Ok(false);
+    }
+
+    /// The short ids of the commits `to` has that `from` doesn't.
+    fn commits_between(&self, from: Oid, to: Oid) -> Res<Vec<String>> {
+        let error = |e: git2::Error| Error::LocalPr(format!("Couldn't list commits: {e}"));
+        let mut walk = self.repo.revwalk().map_err(error)?;
+        walk.push(to).map_err(error)?;
+        walk.hide(from).map_err(error)?;
+        walk.map(|oid| oid.map(|oid| short(&oid.to_string()).to_owned()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(error)
+    }
+
+    /// The remote to name in commands that push or pull the branch: its push remote, or the
+    /// repository's, or its upstream's remote, or else `origin`.
+    fn remote_name(&self) -> Res<String> {
+        let config = self
+            .repo
+            .config()
+            .map_err(|e| Error::LocalPr(format!("Couldn't read git config: {e}")))?;
+        let get = |key: &str| match config.get_string(key) {
+            Ok(value) => Ok(Some(value)),
+            Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(e) => Err(Error::LocalPr(format!("Couldn't read {key}: {e}"))),
         };
-        Ok(oid != head
-            && self
-                .repo
-                .graph_descendant_of(head, oid)
-                .map_err(|e| Error::LocalPr(format!("Couldn't compare commits: {e}")))?)
+        let upstream = get(&format!("branch.{}.remote", self.head))?.filter(|r| r != ".");
+        Ok(get(&format!("branch.{}.pushRemote", self.head))?
+            .or(get("remote.pushDefault")?)
+            .or(upstream)
+            .unwrap_or_else(|| "origin".to_owned()))
     }
 
     /// The draft threads not yet on GitHub whose lines were found in another commit than the PR's
@@ -561,10 +637,6 @@ impl LocalBackend {
             }
         }
         Ok(false)
-    }
-
-    pub fn repo(&self) -> &Repository {
-        &self.repo
     }
 
     pub fn head(&self) -> &str {
@@ -1031,15 +1103,13 @@ impl LocalBackend {
         }))
     }
 
-    /// The same PR, linked to `github`'s PR, as `O O` opens it: refused if it is not that PR
-    /// (see [`LocalBackend::check_against`]).
+    /// The same PR, linked to `github`'s PR, as `O O` opens it. Whether the branch is where
+    /// GitHub has the PR is for [`LocalBackend::compare_with_github`] to say.
     pub fn with_linked_pr(self, github: GitHubBackend) -> Res<Self> {
-        let pr = github.pr.clone();
         let linked = Self {
             linked: Some(github),
             ..self
         };
-        linked.check_against(&pr).map_err(opening)?;
         Ok(linked)
     }
 
@@ -2046,7 +2116,7 @@ fn short(oid: &str) -> &str {
 }
 
 /// `e`, a reason a PR can't be opened, as an error saying so.
-fn opening(e: Error) -> Error {
+pub(crate) fn opening(e: Error) -> Error {
     Error::Gh(format!("Couldn't open the PR: {e}"))
 }
 
@@ -2272,6 +2342,16 @@ impl Backend for LocalBackend {
     fn url(&self) -> Option<String> {
         self.linked.as_ref().and_then(|linked| linked.url())
     }
+}
+
+/// What [`LocalBackend::compare_with_github`] needs of the branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Purpose {
+    /// To review the PR: the branch may have commits GitHub doesn't, as while they are being
+    /// written, but must have GitHub's.
+    Review,
+    /// To post to the PR on GitHub, or create it: the branch must be where GitHub has it.
+    Post,
 }
 
 /// The commits a local PR's diff is of: its head branch's last commit, whose lines the new side's

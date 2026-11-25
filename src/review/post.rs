@@ -5,14 +5,12 @@
 use super::{
     Place, Subject,
     github::{GitHub, GitHubBackend, GitHubPr},
-    local::LocalBackend,
+    local::{LocalBackend, Purpose},
     remote::{self, Change, Consent},
 };
 use crate::{Res, error::Error};
-use git2::Repository;
 use std::{
     collections::{HashMap, HashSet},
-    process::Command,
     rc::Rc,
 };
 
@@ -69,43 +67,22 @@ fn refuse_blocked_replies(local: &LocalBackend) -> Res<()> {
     )))
 }
 
-/// The command that pushes `head`, in `repo`, to its remote (`origin` if it has none), setting it
-/// as the branch's upstream.
-pub(crate) fn push_command(repo: &Repository, head: &str) -> Res<Command> {
-    let key = format!("branch.{head}.remote");
-    let error = |e: git2::Error| Error::LocalPr(format!("Couldn't read git's {key}: {e}"));
-    let remote = match repo.config().map_err(error)?.get_string(&key) {
-        Ok(remote) => remote,
-        Err(e) if e.code() == git2::ErrorCode::NotFound => "origin".to_owned(),
-        Err(e) => return Err(error(e)),
-    };
-    let mut cmd = Command::new("git");
-    cmd.args(["push", "--set-upstream", &remote, head]);
-    cmd.current_dir(repo.workdir().unwrap_or(repo.path()));
-    Ok(cmd)
-}
-
-/// Sync `local`'s PR with GitHub, running commands such as `git push` with `run`. Its draft
-/// comments, an agent's included, are posted into the user's pending review on GitHub, which is
-/// started if they have none, and then the PR's reviews are fetched; with no draft comments, they
-/// are only fetched.
+/// Sync `local`'s PR with GitHub. Its draft comments, an agent's included, are posted into the
+/// user's pending review on GitHub, which is started if they have none, and then the PR's reviews
+/// are fetched; with no draft comments, they are only fetched.
 ///
-/// Sync never pushes to a PR on GitHub: a branch behind GitHub's head is brought up to it, unless
-/// tracked files have uncommitted changes, and one with commits the PR doesn't have is refused. Draft threads written before the PR changed are
-/// not posted: they are moved with their lines, for the user to check, and posted at the next
-/// sync. A branch with no PR on GitHub is pushed, and gets a draft PR, only if `create_pr`.
+/// Sync never pushes or pulls: the branch must be where GitHub has it, and otherwise sync says
+/// which command makes them agree (see [`LocalBackend::compare_with_github`]). Draft threads
+/// written before the PR changed are not posted: they are moved with their lines, for the user to
+/// check, and posted at the next sync. A branch with no PR on GitHub gets a draft PR only if
+/// `create_pr`.
 /// Local-only comments are never posted. Nothing is posted while a draft reply's thread has been
 /// deleted on GitHub, or starts with a local-only comment. If posting stops part way, as when the
 /// network fails, each comment posted is recorded as it is, so that syncing again posts the rest
 /// into the same pending review, the only one the user can have; one GitHub added but whose reply
 /// was lost is found among the user's comments, even once they have submitted it, and not posted
 /// again. Each thread's first comment is posted before its replies.
-pub(crate) fn sync(
-    local: &LocalBackend,
-    github: Rc<dyn GitHub>,
-    create_pr: bool,
-    run: &mut dyn FnMut(Command) -> Res<()>,
-) -> Res<Synced> {
+pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool) -> Res<Synced> {
     let Some(pr) = github.pr_for_branch(local.head())? else {
         let to_post = local.to_post()?;
         if to_post.is_empty() {
@@ -121,18 +98,20 @@ pub(crate) fn sync(
                 local.head()
             )));
         }
-        local.check_would_be_githubs(github.as_ref())?;
-        run(push_command(local.repo(), local.head())?)?;
+        local
+            .compare_with_github(None, Purpose::Post)
+            .map_err(couldnt_sync)?;
         // The user asked for it, as create_pr says.
         let change = Change::CreatePr {
             head: local.head(),
             base: local.base(),
         };
         let pr = remote::write(github.as_ref(), change, Consent::Publish)?.pr()?;
-        let pr = once_github_has_head(local, github.as_ref(), pr)?;
         return post(local, github, pr, to_post);
     };
-    up_to_github_head(local, github.as_ref(), &pr, run)?;
+    local
+        .compare_with_github(Some(&pr), Purpose::Post)
+        .map_err(couldnt_sync)?;
     local.record_link(&pr)?;
     local.fetch(&GitHubBackend {
         github: Rc::clone(&github),
@@ -183,7 +162,6 @@ fn post(
     pr: GitHubPr,
     to_post: Vec<super::local::PostComment>,
 ) -> Res<Synced> {
-    check_pr(local, &pr).map_err(|e| Error::Gh(format!("Couldn't post: {e}")))?;
     local.record_link(&pr)?;
     // Started only when a comment is to be added to it, as every one may be on GitHub already.
     let mut review = github.pending_review(&pr)?;
@@ -341,111 +319,6 @@ fn take_added(
     Some(added.remove(i).id)
 }
 
-/// Bring `local`'s branch up to `pr`'s head on GitHub, with `gh pr checkout`, which only fast-
-/// forwards it. Never the other way: a branch with commits the PR doesn't have is refused.
-fn up_to_github_head(
-    local: &LocalBackend,
-    github: &dyn GitHub,
-    pr: &GitHubPr,
-    run: &mut dyn FnMut(Command) -> Res<()>,
-) -> Res<()> {
-    if local.head_commit()?.to_string() == pr.head_oid {
-        return Ok(());
-    }
-    if local.is_older_commit_of_head(&pr.head_oid)? {
-        return Err(Error::Gh(format!(
-            "Couldn't sync: {} has commits GitHub's PR #{} doesn't. Sync never pushes: push them \
-             first, then sync",
-            local.head(),
-            pr.number
-        )));
-    }
-    // Bringing commits into files with uncommitted changes would mix them with those changes.
-    let changed = uncommitted_changes(local.repo())?;
-    if !changed.is_empty() {
-        return Err(Error::Gh(format!(
-            "Couldn't sync: GitHub's PR #{} has commits that {} doesn't, which sync brings in, but \
-             these files have uncommitted changes: {}. Commit or stash them, then sync",
-            pr.number,
-            local.head(),
-            changed.join(", ")
-        )));
-    }
-    run(github.checkout(pr))?;
-    let head = local.head_commit()?.to_string();
-    if head != pr.head_oid {
-        return Err(Error::Gh(format!(
-            "Couldn't sync: {} is at {}, not at GitHub's PR #{}'s head, {}: it has commits the PR \
-             doesn't, or the PR's branch was rewritten",
-            local.head(),
-            &head[..7],
-            pr.number,
-            &pr.head_oid[..pr.head_oid.len().min(7)]
-        )));
-    }
-    Ok(())
-}
-
-/// The files git tracks in `repo`'s worktree that have uncommitted changes, staged or not.
-fn uncommitted_changes(repo: &Repository) -> Res<Vec<String>> {
-    let mut options = git2::StatusOptions::new();
-    options.include_untracked(false).include_ignored(false);
-    let statuses = repo
-        .statuses(Some(&mut options))
-        .map_err(|e| Error::LocalPr(format!("Couldn't read git's status: {e}")))?;
-    Ok(statuses
-        .iter()
-        .filter(|entry| entry.status() != git2::Status::CURRENT)
-        .filter_map(|entry| entry.path().map(str::to_owned))
-        .collect())
-}
-
-/// How long GitHub is given to show a pushed commit as its PR's head.
-const PUSH_SEEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// `pr` as GitHub has it once it shows the branch's commit, just pushed, as the PR's head, which
-/// it does not at once: while GitHub has an older commit of the branch, it is asked again, for up
-/// to [`PUSH_SEEN_TIMEOUT`]. A PR at any other commit is as it is, for [`check_pr`] to refuse.
-fn once_github_has_head(local: &LocalBackend, github: &dyn GitHub, pr: GitHubPr) -> Res<GitHubPr> {
-    let deadline = std::time::Instant::now() + PUSH_SEEN_TIMEOUT;
-    let mut pr = pr;
-    while local.is_older_commit_of_head(&pr.head_oid)? && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        pr = github.pr_for_branch(local.head())?.ok_or_else(|| {
-            Error::Gh(format!(
-                "Couldn't post: GitHub's PR for {} has gone while it was posted to",
-                local.head()
-            ))
-        })?;
-    }
-    Ok(pr)
-}
-
-/// An error unless `pr` is into `local`'s base and at its head's commit, with its base commit
-/// and its commits, so that their lines match.
-pub(crate) fn check_pr(local: &LocalBackend, pr: &GitHubPr) -> Res<()> {
-    if pr.base_ref != local.base() {
-        return Err(Error::Gh(format!(
-            "GitHub's PR #{} is into {}, not {}, so its lines would not match",
-            pr.number,
-            pr.base_ref,
-            local.base()
-        )));
-    }
-    let head = local.head_commit()?.to_string();
-    if pr.head_oid != head {
-        return Err(Error::Gh(format!(
-            "GitHub's PR #{} is at {}, which is not at {}'s commit {}. \
-             Push the branch, and try again once GitHub has it",
-            pr.number,
-            short(&pr.head_oid),
-            local.head(),
-            short(&head)
-        )));
-    }
-    local.check_against(pr)
-}
-
-fn short(oid: &str) -> &str {
-    &oid[..oid.len().min(7)]
+fn couldnt_sync(e: Error) -> Error {
+    Error::Gh(format!("Couldn't sync: {e}"))
 }

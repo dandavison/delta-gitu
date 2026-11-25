@@ -12,7 +12,7 @@ use crate::{
     prompt::HistoryKind,
     review::{
         self, Backend, CommentEditor, EditorTarget, OpenPr, Side, ViewedState,
-        local::{LocalBackend, NOT_DRAFT},
+        local::{self, LocalBackend, NOT_DRAFT, Purpose},
         remote::Consent,
     },
     screen,
@@ -83,7 +83,13 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
 pub(crate) fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>) -> Res<()> {
     let local =
         LocalBackend::for_current_branch(Rc::clone(&app.state.repo), Rc::clone(&app.state.github))?;
-    local.check_not_behind()?;
+    // A PR not checked against GitHub, as gh couldn't say what it is, says so instead.
+    let note = match local.unchecked() {
+        Some(_) => None,
+        None => local
+            .compare_with_github(local.linked_pr(), Purpose::Review)
+            .map_err(local::opening)?,
+    };
     if let Some(expected) = expected
         && local.linked_number() != Some(expected)
     {
@@ -101,6 +107,9 @@ pub(crate) fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>
     show_pr(app, term, Rc::new(local))?;
     if let Some(unchecked) = unchecked {
         app.display_error(unchecked);
+    }
+    if let Some(note) = note {
+        app.display_info(note);
     }
     Ok(())
 }
@@ -124,7 +133,7 @@ fn confirm_authors(app: &mut App, term: &mut Term, local: &LocalBackend) -> Res<
 
 /// Sync the current branch's PR with GitHub (see [`review::post::sync`]): add every draft comment
 /// to the user's pending review there, and fetch. With no PR on GitHub, it asks before creating
-/// one, which pushes the branch.
+/// one, once the branch is where GitHub has it.
 pub(crate) struct PrSync;
 impl OpTrait for PrSync {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
@@ -143,17 +152,18 @@ impl OpTrait for PrSync {
                     &for_current_branch
                 }
             };
-            // Creating a PR pushes the branch, and makes it visible to everyone who can see the
-            // repository.
+            // Creating a PR makes the branch visible to everyone who can see the repository. What
+            // would stop it is said before asking.
             let create_pr = app.state.github.pr_for_branch(local.head())?.is_none()
                 && !local.to_post()?.is_empty();
             if create_pr {
+                local
+                    .compare_with_github(None, Purpose::Post)
+                    .map_err(|e| Error::Gh(format!("Couldn't create a PR: {e}")))?;
                 app.confirm(term, "No PR on GitHub: create one? [y/n]")?;
             }
             let github = Rc::clone(&app.state.github);
-            let synced = review::post::sync(local, github, create_pr, &mut |cmd| {
-                app.run_cmd(term, &[], cmd)
-            });
+            let synced = review::post::sync(local, github, create_pr);
             // What sync did is shown, as drafts it moved, even when it posted nothing.
             reread_pr(app)?;
             app.update_screens()?;
