@@ -1794,10 +1794,7 @@ fn fetching_a_thread_whose_commit_is_not_in_the_repository_is_an_error() {
     let result = review_cli_with_github(&ctx.dir, &["fetch"], "", github);
 
     let error = result.unwrap_err().to_string();
-    assert!(
-        error.contains("which this repository doesn't have"),
-        "{error}"
-    );
+    assert!(error.contains("is not in the repository"), "{error}");
 }
 
 /// Every comment GitHub gives is in one of the reviews it lists. One that is not would be lost
@@ -3284,4 +3281,45 @@ fn opening_a_pr_whose_diff_on_github_has_commits_of_its_base_shows_it_as_github_
     );
     assert!(screen.contains(&note), "{screen}");
     assert!(screen.contains("added: lines.txt"), "{screen}");
+}
+
+/// An agent's commands don't compare the branch with GitHub, as opening the PR and sync do: one
+/// edits and replies though the branch is behind its PR on GitHub, as when someone has pushed
+/// since.
+#[test]
+fn an_agent_edits_and_replies_though_the_branch_is_behind_its_pr() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let comment = comment_id(&ctx, "hello");
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    commit(&ctx.dir, "more.txt", "more\n");
+    let githubs = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    run(&ctx.dir, &["git", "reset", "--hard", "HEAD~1"]);
+    let github = Rc::new(FakeGitHub::new(
+        run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
+        githubs.trim(),
+    ));
+
+    review_cli_with_github(
+        &ctx.dir,
+        &["edit", &comment],
+        "hello again",
+        Rc::clone(&github),
+    )
+    .unwrap();
+    review_cli_with_github(
+        &ctx.dir,
+        &["reply", &thread, "--agent", "claude", "--local"],
+        "Done.",
+        Rc::clone(&github),
+    )
+    .unwrap();
+
+    let shown = review_cli_with_github(&ctx.dir, &["show"], "", github).unwrap();
+    assert!(shown.contains("hello again"), "{shown}");
+    assert!(shown.contains("Done."), "{shown}");
 }
