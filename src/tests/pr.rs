@@ -1862,6 +1862,31 @@ fn esc_leaves_the_box_and_i_goes_back_to_it() {
     );
 }
 
+/// esc in a box with nothing written in it removes the box, and leaves the PR open.
+#[test]
+fn esc_removes_an_empty_box() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>i"));
+    assert!(
+        ctx.redact_buffer().contains("New comment"),
+        "{}",
+        ctx.redact_buffer()
+    );
+    let screens = app.state.screens.len();
+
+    ctx.update(&mut app, keys("<esc>"));
+
+    assert!(
+        !ctx.redact_buffer().contains("New comment"),
+        "{}",
+        ctx.redact_buffer()
+    );
+    assert_eq!(app.state.screens.len(), screens);
+    assert!(app.screen().pr.is_some());
+}
+
 #[test]
 fn a_paste_goes_into_the_box() {
     let mut ctx = setup_clone!();
