@@ -289,8 +289,15 @@ impl App {
         if let Some(file_watcher) = &mut self.state.file_watcher
             && file_watcher.pending_updates()
         {
+            let busy = term.busy(
+                &Op::Refresh.description(),
+                crate::style::Style::from(&self.state.config.style.info_msg),
+            );
             self.reread_review_threads()?;
             self.update_screens()?;
+            if busy.finish() {
+                self.stage_redraw();
+            }
         }
 
         let finished = self.finish_screens();
@@ -676,7 +683,14 @@ impl App {
         let implementation = op.clone().implementation();
 
         if let Some(mut action) = implementation.get_action(&item_data) {
+            let busy = term.busy(
+                &op.description(),
+                crate::style::Style::from(&self.state.config.style.info_msg),
+            );
             let result = Rc::get_mut(&mut action).unwrap()(self, term);
+            if busy.finish() {
+                self.stage_redraw();
+            }
             self.handle_result(result)?;
             if !self.state.inhibit_close_menu {
                 self.close_menu();

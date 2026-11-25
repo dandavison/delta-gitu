@@ -214,14 +214,19 @@ fn run_app(app: &mut app::App, args: &cli::Args, term: &mut Term) -> Res<i32> {
     Ok(app.state.exit_code)
 }
 
-/// Handle `events`, keys given on the command line, as typed keys are handled.
+/// Handle `events`, keys given on the command line, as typed keys are handled: when `draw`, with
+/// the screen drawn before each, so that a menu one opens shows, as does what one is busy with,
+/// over the screen rather than a blank one. `--print` draws only the frame after them.
 pub(crate) fn replay_keys(
     app: &mut app::App,
     term: &mut Term,
     events: Vec<event::Event>,
-    _draw: bool,
+    draw: bool,
 ) -> Res<()> {
     for event in events {
+        if draw {
+            app.redraw_now(term)?;
+        }
         app.handle_event(term, event)?;
     }
     Ok(())

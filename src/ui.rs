@@ -46,6 +46,8 @@ impl Measure for Span<'_> {
 }
 
 pub(crate) fn ui(term: &mut TermBackend, state: &mut State) -> Res<()> {
+    // Held while drawing, so that the busy spinner doesn't draw in the middle of the frame.
+    let _turn = crate::term::terminal_turn();
     let size = term.size().unwrap();
 
     // The screen gets what the panels below it leave, and has to know before it
