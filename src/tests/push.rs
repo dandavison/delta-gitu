@@ -99,3 +99,29 @@ fn push_elsewhere_prompt() {
 fn push_elsewhere() {
     snapshot!(setup_clone!(), "Peorigin<enter>");
 }
+
+/// A branch whose remote branch is gone, as once it is deleted on the remote, pushes to the
+/// upstream git config gives it, which creates the remote branch again.
+#[test]
+fn push_upstream_whose_remote_branch_is_gone() {
+    let mut ctx = setup_clone!();
+    run(&ctx.dir, &["git", "checkout", "-b", "feature"]);
+    run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
+    run(&ctx.dir, &["git", "push", "origin", "--delete", "feature"]);
+    let mut app = ctx.init_app();
+
+    ctx.update(&mut app, keys("P"));
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("to origin/feature, creating it"),
+        "{screen}"
+    );
+
+    ctx.update(&mut app, keys("Pu"));
+    let remote_branches = run(&ctx.remote_dir, &["git", "branch", "--list", "feature"]);
+    assert!(
+        remote_branches.contains("feature"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
