@@ -54,3 +54,15 @@ fn every_review_command_in_the_agent_instructions_is_accepted() {
         );
     }
 }
+
+/// The instructions say, first, where they come from, so that an agent or person reading an
+/// installed copy knows how to update it.
+#[test]
+fn agent_instructions_say_first_that_they_are_printed_by_agent_instructions() {
+    let (_, body) = AGENT_INSTRUCTIONS
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+        .unwrap();
+    let first = body.lines().find(|line| !line.is_empty()).unwrap();
+    assert!(first.contains("delta --agent-instructions"), "{first}");
+}

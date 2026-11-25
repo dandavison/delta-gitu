@@ -2458,3 +2458,122 @@ fn an_agents_reply_shows_without_refreshing() {
         app.update(&mut ctx.term, None).unwrap();
     }
 }
+
+/// `review listen` run in `dir` on a thread of its own, as an agent runs it in the background.
+fn listen_in_background(dir: &std::path::Path) -> std::thread::JoinHandle<Result<String, String>> {
+    let dir = dir.to_owned();
+    std::thread::spawn(move || {
+        review_cli_with_input(&dir, &["listen"], "").map_err(|e| e.to_string())
+    })
+}
+
+/// What `listen` printed, once it has exited.
+fn listened(listen: std::thread::JoinHandle<Result<String, String>>) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !listen.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "listen is still waiting"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    listen.join().unwrap().unwrap()
+}
+
+/// Whether `listen` is still waiting, a while after it started.
+fn still_listening(listen: &std::thread::JoinHandle<Result<String, String>>) -> bool {
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    !listen.is_finished()
+}
+
+/// `@` asks for a message to the agent, which `review listen` prints: from the PR's summary,
+/// about the whole PR.
+#[test]
+fn at_sends_a_message_about_the_pr_that_review_listen_prints() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OOgg"));
+
+    ctx.update(&mut app, keys("@please respond to the comments<enter>"));
+
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(
+        printed.contains("please respond to the comments"),
+        "{printed}"
+    );
+    assert!(!printed.contains("thread"), "{printed}");
+}
+
+/// From a thread, the message is about the thread, and `review listen` prints its id.
+#[test]
+fn at_on_a_thread_sends_a_message_about_the_thread() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>/hello<enter>"));
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    ctx.update(&mut app, keys("@fix this<enter>"));
+
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(printed.contains("fix this"), "{printed}");
+    assert!(printed.contains(&thread), "{printed}");
+}
+
+/// With no message waiting, `review listen` waits for one.
+#[test]
+fn review_listen_waits_for_a_message() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OOgg"));
+    let listen = listen_in_background(&ctx.dir);
+    assert!(still_listening(&listen));
+
+    ctx.update(&mut app, keys("@please respond<enter>"));
+
+    let printed = listened(listen);
+    assert!(printed.contains("please respond"), "{printed}");
+}
+
+/// Each message is printed once: by the first `review listen` after it is sent, with any others
+/// waiting.
+#[test]
+fn review_listen_prints_each_message_once() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OOgg"));
+    ctx.update(&mut app, keys("@first<enter>@second<enter>"));
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(printed.contains("first"), "{printed}");
+    assert!(printed.contains("second"), "{printed}");
+
+    let listen = listen_in_background(&ctx.dir);
+    assert!(still_listening(&listen));
+    ctx.update(&mut app, keys("@third<enter>"));
+
+    let printed = listened(listen);
+    assert!(printed.contains("third"), "{printed}");
+    assert!(!printed.contains("first"), "{printed}");
+}
+
+/// Nothing typed at the prompt sends nothing.
+#[test]
+fn at_with_nothing_typed_sends_nothing() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OOgg"));
+    let listen = listen_in_background(&ctx.dir);
+
+    ctx.update(&mut app, keys("@<enter>"));
+
+    assert!(still_listening(&listen));
+    ctx.update(&mut app, keys("@done<enter>"));
+    assert!(listened(listen).contains("done"));
+}
