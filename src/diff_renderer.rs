@@ -9,6 +9,9 @@
 //! annotates each rendered line with its patch-space identity `(file, kind,
 //! new/old line)`. We advertise the protocol via the `OSC1717` env var and
 //! attach each record to the line that follows it.
+//!
+//! The protocol, and the section numbers ("spec §N") cited in gitu, are those
+//! of <https://github.com/stefanhaller/diff-line-metadata-spec/blob/main/diff-line-metadata-osc-1717.md>.
 
 use crate::Res;
 use crate::config::ColorMode;

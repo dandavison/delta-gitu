@@ -198,7 +198,8 @@ pub struct DifftasticConfig {
 pub struct DiffRendererConfig {
     /// Renderer command as `[executable, ...args]`, set by `delta --gitu` to
     /// itself rather than read from config. It receives a unified diff on stdin
-    /// and emits ANSI-colored output carrying OSC-1717 diff-line metadata.
+    /// and emits ANSI-colored output carrying OSC-1717 diff-line metadata
+    /// (<https://github.com/stefanhaller/diff-line-metadata-spec/blob/main/diff-line-metadata-osc-1717.md>).
     #[serde(skip)]
     pub command: Vec<String>,
     /// Named renderer features offered by `renderer_features`, to turn on and
