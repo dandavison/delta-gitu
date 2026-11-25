@@ -979,6 +979,61 @@ pub(super) fn annotating_renderer() -> Vec<String> {
     .to_vec()
 }
 
+/// A renderer that lays a diff out as delta does, with OSC 1717 records where the spec puts them
+/// (§6), for the layout to be tested: `side_by_side` is `never`, `always`, or `hunk`, for only a
+/// hunk that both removes and adds lines, as delta's `side-by-side = hunk`. Side by side, the right
+/// column starts halfway across the width given in `COLUMNS`, each column's row starts with its
+/// record, a context line has its record before each column, and a row with a line on one side
+/// only has no record on the other. Drawn unified, a line longer than `wrap` columns, if `wrap` is
+/// not 0, is drawn on more rows, each starting with the line's record. A file's header is its
+/// path, and a hunk's is git's `@@` line.
+pub(super) fn layout_renderer(side_by_side: &str, wrap: usize) -> Vec<String> {
+    [
+        "awk".to_owned(),
+        "-v".to_owned(),
+        format!("scope={side_by_side}"),
+        "-v".to_owned(),
+        format!("wrap={wrap}"),
+        r#"
+        BEGIN{bs=sprintf("%c",92);osc="\033]1717;1";st="\033" bs;printf "%s",osc st;half=int(ENVIRON["COLUMNS"]/2);n=0}
+        function rec(type,new,old){return osc ";" type ";" new ";" old ";" file st}
+        function pad(s,w){if(length(s)>=w)return substr(s,1,w);return s sprintf("%" (w-length(s)) "s","")}
+        function unified(r,s){if(wrap==0){printf "%s%s\n",r,s;return}while(length(s)>wrap){printf "%s%s\n",r,substr(s,1,wrap);s=substr(s,wrap+1)}printf "%s%s\n",r,s}
+        function flush(i,k,nd,na,sbs,hasA,hasD,left,right){
+          if(n==0)return
+          hasA=0;hasD=0
+          for(i=1;i<=n;i++){if(t[i]=="a")hasA=1;if(t[i]=="d")hasD=1}
+          sbs=scope=="always"||(scope=="hunk"&&hasA&&hasD)
+          if(!sbs){for(i=1;i<=n;i++)unified(rec(t[i],nl[i],ol[i]),x[i]);n=0;return}
+          i=1
+          while(i<=n){
+            if(t[i]=="c"){printf "%s%s%s%s\n",rec("c",nl[i],""),pad(x[i],half),rec("c",nl[i],""),x[i];i++;continue}
+            nd=0;while(i+nd<=n&&t[i+nd]=="d")nd++
+            na=0;while(i+nd+na<=n&&t[i+nd+na]=="a")na++
+            for(k=0;k<(nd>na?nd:na);k++){
+              left=k<nd?rec("d",nl[i+k],ol[i+k]) pad(x[i+k],half):pad("",half)
+              right=k<na?rec("a",nl[i+nd+k],"") x[i+nd+k]:""
+              printf "%s%s\n",left,right
+            }
+            i+=nd+na
+          }
+          n=0
+        }
+        {gsub(/\033\[[0-9;]*m/,"")}
+        /^diff --git /{flush();file=$0;sub(/^diff --git a\/.* b\//,"",file);printf "%s%s\n",rec("f","",""),file;hunk=0;next}
+        /^@@ /{flush();o=$2;m=$3;sub(/^-/,"",o);sub(/^\+/,"",m);split(o,a,",");split(m,b,",");old=a[1];new=b[1];printf "%s%s\n",rec("h",new,""),$0;hunk=1;next}
+        hunk&&/^\+/{n++;t[n]="a";nl[n]=new++;ol[n]="";x[n]=$0;next}
+        hunk&&/^-/{n++;t[n]="d";nl[n]=new;ol[n]=old++;x[n]=$0;next}
+        hunk&&/^ /{n++;t[n]="c";nl[n]=new++;old++;ol[n]="";x[n]=$0;next}
+        !hunk{next}
+        {flush();hunk=0}
+        END{flush()}
+        "#
+        .to_owned(),
+    ]
+    .into()
+}
+
 fn selected_hunk_line(app: &App) -> Option<usize> {
     match app.screen().get_selected_item().data {
         crate::item_data::ItemData::HunkLine { line_i, .. } => Some(line_i),

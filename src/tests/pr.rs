@@ -892,9 +892,9 @@ fn bar_column(ctx: &TestContext, text: &str) -> usize {
     line_with(ctx, text).chars().position(|c| c == '│').unwrap()
 }
 
+/// A renderer that draws every hunk side by side, as delta does with `side-by-side`.
 fn side_by_side(ctx: &mut TestContext) {
-    ctx.config().general.diff_renderer.enabled_features =
-        crate::config::EnabledFeatures::new(|_| vec!["side-by-side".into()]);
+    ctx.config().general.diff_renderer.command = super::pager::layout_renderer("always", 0);
 }
 
 /// Where delta's right panel starts in side-by-side: halfway across the width
@@ -938,6 +938,56 @@ fn side_by_side_draws_an_old_side_thread_in_the_left_panel() {
     ctx.update(&mut app, keys("OO"));
 
     assert_eq!(bar_column(&ctx, ALICE), 1 + 2);
+}
+
+/// A comment goes where its line is drawn, as the renderer's OSC 1717 records place it, not as
+/// the side-by-side setting says: with delta's `side-by-side = hunk`, a hunk that only adds lines
+/// is drawn unified, and a thread on it is as in a unified diff, while one on a hunk that removes
+/// and adds lines is in its side's panel.
+#[test]
+fn a_thread_goes_where_the_renderer_draws_its_line() {
+    let mut ctx = setup_clone!();
+    ctx.config().general.diff_renderer.command = super::pager::layout_renderer("hunk", 0);
+    let github = setup(&ctx);
+    let mut added = thread("t2", Some((Side::New, 1)), false, &[("bob", "Why added?")]);
+    added.path = "added.txt".to_owned();
+    *github.threads.borrow_mut() = vec![
+        thread("t1", Some((Side::New, 2)), false, &[("alice", "Why new?")]),
+        added,
+    ];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    assert_eq!(bar_column(&ctx, ALICE), RIGHT_PANEL + 2);
+    assert_eq!(bar_column(&ctx, "bob ["), 1 + 2);
+}
+
+/// A thread on a line the renderer draws on several rows goes after all of them.
+#[test]
+fn a_thread_goes_after_every_row_of_a_wrapped_line() {
+    let mut ctx = setup_clone!();
+    ctx.config().general.diff_renderer.command = super::pager::layout_renderer("never", 2);
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    let row = |text: &str| {
+        screen
+            .lines()
+            .position(|line| line.trim_end_matches([' ', '|']).ends_with(text))
+            .unwrap_or_else(|| panic!("no row ending {text}:\n{screen}"))
+    };
+    assert_eq!(row("+n") + 1, row("ew"), "{screen}");
+    assert!(row("ew") < row("Why?"), "{screen}");
 }
 
 /// A comment longer than the room for it wraps, each row after the first
