@@ -817,11 +817,26 @@ fn github_at_head(ctx: &TestContext) -> Rc<FakeGitHub> {
         .trim()
         .parse()
         .unwrap();
+    github.branches.borrow_mut().insert(
+        "feature".to_owned(),
+        run(&ctx.dir, &["git", "rev-parse", "feature"])
+            .trim()
+            .to_owned(),
+    );
     Rc::new(github)
 }
 
+/// The short id of `rev`.
+fn short_id(ctx: &TestContext, rev: &str) -> String {
+    run(&ctx.dir, &["git", "rev-parse", "--short=7", rev])
+        .trim()
+        .to_owned()
+}
+
+/// Sync creates a draft PR of a branch that is on GitHub, as the user pushed it, and posts to it.
+/// It pushes nothing itself.
 #[test]
-fn review_sync_pushes_the_branch_and_creates_a_draft_pr_when_there_is_none() {
+fn review_sync_creates_a_draft_pr_of_a_branch_on_github_when_there_is_none() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
@@ -835,10 +850,186 @@ fn review_sync_pushes_the_branch_and_creates_a_draft_pr_when_there_is_none() {
         *github.created.borrow(),
         vec![("feature".to_owned(), "main".to_owned())]
     );
-    let pushed = run(&ctx.remote_dir, &["git", "rev-parse", "feature"]);
-    let local = run(&ctx.dir, &["git", "rev-parse", "feature"]);
-    assert_eq!(pushed, local);
     assert_eq!(github.posted.borrow().len(), 1);
+    let pushed = run(&ctx.remote_dir, &["git", "branch", "--list", "feature"]);
+    assert!(pushed.trim().is_empty(), "{pushed}");
+}
+
+/// A branch that is not on GitHub has no PR made of it: sync says how to push it.
+#[test]
+fn review_sync_on_a_branch_not_on_github_says_to_push_it() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let github = github_at_head(&ctx);
+    *github.has_pr.borrow_mut() = false;
+    github.branches.borrow_mut().clear();
+
+    let error = review_cli_with_github(&ctx.dir, &["sync", "--create-pr"], "", Rc::clone(&github))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("feature is not on GitHub. Push it: git push -u origin feature"),
+        "{error}"
+    );
+    assert!(github.created.borrow().is_empty());
+    assert!(github.posted.borrow().is_empty());
+}
+
+/// The command to push a branch names its push remote.
+#[test]
+fn the_command_to_push_a_branch_names_its_push_remote() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    run(
+        &ctx.dir,
+        &["git", "config", "branch.feature.pushRemote", "fork"],
+    );
+    let github = github_at_head(&ctx);
+    *github.has_pr.borrow_mut() = false;
+    github.branches.borrow_mut().clear();
+
+    let error = review_cli_with_github(&ctx.dir, &["sync", "--create-pr"], "", Rc::clone(&github))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("git push -u fork feature"), "{error}");
+}
+
+/// `O s` says how to push a branch that is not on GitHub before asking whether to create a PR.
+#[test]
+fn os_on_a_branch_not_on_github_says_to_push_it_without_asking() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    let github = github_at_head(&ctx);
+    *github.has_pr.borrow_mut() = false;
+    github.branches.borrow_mut().clear();
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::clone(&github) as Rc<dyn GitHub>;
+
+    ctx.update(&mut app, keys("Os"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("feature is not on GitHub"), "{screen}");
+    assert!(!screen.contains("create one?"), "{screen}");
+}
+
+/// Sync doesn't move the branch: one behind GitHub's PR is refused, saying how to bring in
+/// GitHub's commits.
+#[test]
+fn review_sync_on_a_branch_behind_its_pr_says_to_check_the_pr_out() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    commit(&ctx.dir, "more.txt", "more\n");
+    let githubs = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    run(&ctx.dir, &["git", "reset", "--hard", "HEAD~1"]);
+    let before = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    let github = Rc::new(FakeGitHub::new(
+        run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
+        githubs.trim(),
+    ));
+
+    let error = review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains(
+            "GitHub's PR #7 has 1 commit that feature doesn't. Bring it in: gh pr checkout 7"
+        ),
+        "{error}"
+    );
+    assert_eq!(run(&ctx.dir, &["git", "rev-parse", "feature"]), before);
+    assert!(github.posted.borrow().is_empty());
+}
+
+/// `O O` on a branch behind its GitHub PR says how to bring in GitHub's commits, rather than
+/// showing the PR as it was.
+#[test]
+fn oo_on_a_branch_behind_its_pr_says_to_check_the_pr_out() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    commit(&ctx.dir, "more.txt", "more\n");
+    let githubs = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    run(&ctx.dir, &["git", "reset", "--hard", "HEAD~1"]);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::new(FakeGitHub::new(
+        run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
+        githubs.trim(),
+    ));
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("gh pr checkout 7"), "{screen}");
+    assert!(!screen.contains("added: added.txt"), "{screen}");
+}
+
+/// A branch and its GitHub PR that have each moved on are refused, saying how to rebase onto
+/// GitHub's.
+#[test]
+fn review_sync_on_a_branch_diverged_from_its_pr_says_to_rebase() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    comment_with_base(&ctx, None);
+    commit(&ctx.dir, "theirs.txt", "theirs\n");
+    let githubs = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    run(&ctx.dir, &["git", "reset", "--hard", "HEAD~1"]);
+    commit(&ctx.dir, "mine.txt", "mine\n");
+    let github = Rc::new(FakeGitHub::new(
+        run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
+        githubs.trim(),
+    ));
+
+    let error = review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("have diverged"), "{error}");
+    assert!(
+        error.contains("git pull --rebase origin feature"),
+        "{error}"
+    );
+}
+
+/// A PR whose head on GitHub is a commit this repository doesn't have is refused, saying to
+/// fetch it.
+#[test]
+fn oo_on_a_pr_at_a_commit_not_here_says_to_fetch() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::new(FakeGitHub::new(
+        run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
+        &"1".repeat(40),
+    ));
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Fetch it: git fetch origin"), "{screen}");
+}
+
+/// A PR whose base on GitHub is a commit this repository doesn't have is refused, saying to
+/// fetch it.
+#[test]
+fn oo_on_a_pr_whose_base_is_not_here_says_to_fetch() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    app.state.github = Rc::new(FakeGitHub::new(
+        &"1".repeat(40),
+        run(&ctx.dir, &["git", "rev-parse", "feature"]).trim(),
+    ));
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Fetch it: git fetch origin"), "{screen}");
 }
 
 /// A thread GitHub doesn't add is not posted: `O s` says so, and the comment stays a draft.
@@ -1408,7 +1599,12 @@ fn review_sync_with_commits_github_doesnt_have_refuses_and_pushes_nothing() {
     let result = review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github));
 
     let error = result.unwrap_err().to_string();
-    assert!(error.contains("push them first"), "{error}");
+    assert!(
+        error.contains(
+            "feature has 1 commit that GitHub's PR #7 doesn't. Push it: git push origin feature"
+        ),
+        "{error}"
+    );
     assert_eq!(
         run(&ctx.remote_dir, &["git", "rev-parse", "feature"]),
         pushed
@@ -1477,7 +1673,10 @@ fn review_sync_refuses_when_githubs_head_is_not_the_branchs() {
     let result = review_cli_with_github(&ctx.dir, &["sync"], "", Rc::clone(&github));
 
     let error = result.unwrap_err().to_string();
-    assert!(error.contains("not at GitHub's PR #7's head"), "{error}");
+    assert!(
+        error.contains("GitHub's PR #7 is at 0000000, which this repository doesn't have"),
+        "{error}"
+    );
     assert!(github.posted.borrow().is_empty());
     assert_eq!(review_file(&ctx)["reviews"][0]["state"], "draft");
 }
@@ -1595,7 +1794,10 @@ fn fetching_a_thread_whose_commit_is_not_in_the_repository_is_an_error() {
     let result = review_cli_with_github(&ctx.dir, &["fetch"], "", github);
 
     let error = result.unwrap_err().to_string();
-    assert!(error.contains("is not in the repository"), "{error}");
+    assert!(
+        error.contains("which this repository doesn't have"),
+        "{error}"
+    );
 }
 
 /// Every comment GitHub gives is in one of the reviews it lists. One that is not would be lost
@@ -1766,10 +1968,10 @@ fn oo_with_main_and_origin_main_diverged_is_an_error() {
     assert!(!screen.contains("added: feature.txt"), "{screen}");
 }
 
-/// When the branch has a PR on GitHub, the local PR must branch from its base where GitHub's
-/// does, so that its diff is the GitHub PR's.
+/// When the branch has a PR on GitHub, its diff is GitHub's, from where GitHub has its base,
+/// though the base here has moved on, which it says.
 #[test]
-fn oo_branched_from_elsewhere_than_on_github_is_an_error() {
+fn oo_branched_from_elsewhere_than_on_github_shows_githubs_diff_saying_so() {
     let mut ctx = setup_clone!();
     setup_stale_main(&mut ctx);
     let stale = run(&ctx.dir, &["git", "rev-parse", "main"]);
@@ -1780,8 +1982,8 @@ fn oo_branched_from_elsewhere_than_on_github_is_an_error() {
     ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
-    assert!(screen.contains("on GitHub, so its diff"), "{screen}");
-    assert!(!screen.contains("added: feature.txt"), "{screen}");
+    assert!(screen.contains("GitHub's PR #7 includes"), "{screen}");
+    assert!(screen.contains("upstream.txt"), "{screen}");
 }
 
 /// GitHub's base for a PR is where the base branch was when the PR was last updated, which the
@@ -1809,9 +2011,10 @@ fn oo_when_main_has_moved_on_since_the_pr_was_updated_opens_it() {
     assert!(!screen.contains("later.txt"), "{screen}");
 }
 
-/// A base that doesn't have GitHub's base commit is behind GitHub's, and must be fetched.
+/// A base behind GitHub's doesn't matter to a PR on GitHub, whose diff is from where GitHub has
+/// its base: it opens.
 #[test]
-fn oo_with_a_base_behind_githubs_is_an_error() {
+fn oo_with_a_base_behind_githubs_opens_the_pr_as_github_has_it() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     run(&ctx.dir, &["git", "checkout", "-b", "githubs-main", "main"]);
@@ -1825,8 +2028,7 @@ fn oo_with_a_base_behind_githubs_is_an_error() {
     ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
-    assert!(screen.contains("which main doesn't have"), "{screen}");
-    assert!(!screen.contains("added: added.txt"), "{screen}");
+    assert!(screen.contains("added: added.txt"), "{screen}");
 }
 
 /// When the branch is where GitHub has the PR's head, the local PR has the GitHub PR's commits,
@@ -1898,23 +2100,31 @@ fn oo_with_commits_by_several_authors_asks_before_opening() {
     );
 }
 
-/// A branch behind its remote's would be reviewed as it was, not as it is, so opening its PR
-/// is an error.
+/// A branch behind GitHub's would be reviewed as it was, not as it is, so opening its PR is an
+/// error, which says how to bring in GitHub's commits.
 #[test]
-fn oo_on_a_branch_behind_its_remote_branch_is_an_error() {
+fn oo_on_a_branch_behind_its_branch_on_github_says_to_pull() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
-    run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
     commit(&ctx.dir, "more.txt", "more\n");
-    run(&ctx.dir, &["git", "push"]);
+    let githubs = run(&ctx.dir, &["git", "rev-parse", "feature"]);
     run(&ctx.dir, &["git", "reset", "--hard", "HEAD~1"]);
     let mut app = init_app(&mut ctx);
+    let github = FakeGitHub::new("", "");
+    *github.has_pr.borrow_mut() = false;
+    github
+        .branches
+        .borrow_mut()
+        .insert("feature".to_owned(), githubs.trim().to_owned());
+    app.state.github = Rc::new(github);
 
     ctx.update(&mut app, keys("OO"));
 
-    let screen = ctx.redact_buffer();
+    let screen = super::pr::screen_text(&ctx);
     assert!(
-        screen.contains("origin/feature has 1 commit that feature doesn't"),
+        screen.contains(
+            "GitHub's feature has 1 commit that feature doesn't. Bring it in: git pull origin feature"
+        ),
         "{screen}"
     );
     assert!(!screen.contains("added: added.txt"), "{screen}");
@@ -3030,8 +3240,8 @@ fn github_behind_main(ctx: &TestContext) -> Rc<FakeGitHub> {
 }
 
 /// What a user is told to do about a branch with a commit of its base that GitHub's base doesn't
-/// have, which GitHub counts as the PR's though the diff here doesn't.
-const PUSH_OR_REBASE: &str = "Push main, or rebase feature onto GitHub's main";
+/// have, which GitHub would show in the PR though the diff here doesn't.
+const PUSH_BASE: &str = "Push main first: git push origin main";
 
 /// Sync refuses to create a PR whose diff on GitHub would have commits of its base that the diff
 /// here doesn't, before pushing anything.
@@ -3048,24 +3258,30 @@ fn review_sync_refuses_to_create_a_pr_whose_diff_on_github_would_not_be_the_one_
         .unwrap_err()
         .to_string();
 
-    assert!(error.contains(PUSH_OR_REBASE), "{error}");
+    assert!(error.contains(PUSH_BASE), "{error}");
     assert!(github.created.borrow().is_empty());
     let pushed = run(&ctx.remote_dir, &["git", "branch", "--list", "feature"]);
     assert!(pushed.trim().is_empty(), "{pushed}");
 }
 
-/// A PR on GitHub whose diff there has commits of its base that the diff here doesn't says what
-/// to do about it.
+/// A PR on GitHub whose diff there has commits of its base, as GitHub saved where its base was
+/// before it had them, opens as GitHub has it, saying so.
 #[test]
-fn opening_a_pr_whose_diff_on_github_is_not_the_one_here_says_what_to_do() {
+fn opening_a_pr_whose_diff_on_github_has_commits_of_its_base_shows_it_as_github_does() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let github = github_behind_main(&ctx);
+    *github.commits.borrow_mut() = 3;
     let mut app = init_app(&mut ctx);
     app.state.github = github;
 
     ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
-    assert!(screen.contains("feature has 1 commit of main"), "{screen}");
+    let note = format!(
+        "GitHub's PR #7 includes {} from main",
+        short_id(&ctx, "feature~2")
+    );
+    assert!(screen.contains(&note), "{screen}");
+    assert!(screen.contains("added: lines.txt"), "{screen}");
 }

@@ -714,6 +714,8 @@ fn posting_from_a_branch_with_no_pr_creates_one_only_with_create_pr() {
     );
     assert_eq!(found.trim(), "[]");
 
+    // Sync pushes nothing: the user pushes the branch.
+    run(&pr.dir, &["git", "push", "-q", "-u", "origin", &head]);
     pr.review(&[&["sync", "--create-pr"][..], &base].concat(), "")
         .unwrap();
     let number = gh(
@@ -1026,21 +1028,19 @@ fn syncing_with_commits_github_doesnt_have_refuses_and_pushes_nothing() {
     assert!(pr.pending_comments().is_empty());
 }
 
-/// A branch behind GitHub's PR, as when its author has pushed since, is brought up to it by sync.
-/// Untracked files don't stop it.
+/// A branch behind GitHub's PR, as when its author has pushed since, is not moved by sync, which
+/// says how to bring in GitHub's commits.
 #[test]
 #[ignore = "against GitHub itself: run with cargo test-github"]
-fn syncing_fast_forwards_a_branch_behind_githubs_head() {
+fn syncing_a_branch_behind_githubs_head_says_to_check_the_pr_out() {
     let pr = RealPr::new(stdext::function_name!());
     pr.author_pushes("more.txt", "more\n");
-    std::fs::write(pr.dir.join("untracked.txt"), "untracked\n").unwrap();
+    let before = run(&pr.dir, &["git", "rev-parse", "HEAD"]);
 
-    pr.review(&["sync"], "").unwrap();
+    let error = pr.review(&["sync"], "").unwrap_err().to_string();
 
-    assert_eq!(
-        run(&pr.dir, &["git", "rev-parse", "HEAD"]).trim(),
-        pr.remote_head()
-    );
+    assert!(error.contains("gh pr checkout"), "{error}");
+    assert_eq!(run(&pr.dir, &["git", "rev-parse", "HEAD"]), before);
 }
 
 /// Right after the PR's author pushes, the PR opens: GitHub's head for it and how many commits it
@@ -1056,30 +1056,6 @@ fn the_pr_opens_right_after_its_author_pushes() {
     for _ in 0..5 {
         pr.review(&["show"], "").unwrap();
     }
-}
-
-/// A branch behind GitHub's PR is not brought up to it while tracked files have uncommitted
-/// changes, which the incoming commits would be mixed into: sync says which files they are, and
-/// leaves the branch and the changes as they were.
-#[test]
-#[ignore = "against GitHub itself: run with cargo test-github"]
-fn syncing_a_branch_behind_githubs_head_with_uncommitted_changes_refuses() {
-    let pr = RealPr::new(stdext::function_name!());
-    pr.author_pushes("more.txt", "more\n");
-    let before = run(&pr.dir, &["git", "rev-parse", "HEAD"]);
-    std::fs::write(pr.dir.join("lines.txt"), "uncommitted\n").unwrap();
-
-    let error = pr.review(&["sync"], "").unwrap_err().to_string();
-
-    assert!(error.contains("uncommitted changes"), "{error}");
-    assert!(error.contains("lines.txt"), "{error}");
-    assert_eq!(run(&pr.dir, &["git", "rev-parse", "HEAD"]), before);
-    assert_eq!(
-        std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap(),
-        "uncommitted\n"
-    );
-    // So that closing the PR can switch branches.
-    run(&pr.dir, &["git", "checkout", "--", "lines.txt"]);
 }
 
 /// A draft reply whose thread was deleted on GitHub can't be posted: sync posts nothing, and says

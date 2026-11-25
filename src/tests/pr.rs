@@ -60,6 +60,9 @@ pub(super) struct FakeGitHub {
     pub(super) loses_replies: RefCell<usize>,
     /// How long GitHub takes to say what a PR is, as over a slow network.
     pub(super) delay: RefCell<std::time::Duration>,
+    /// Where branches are on GitHub, by name, other than the PR's base, which is at `base_oid`
+    /// unless given here.
+    pub(super) branches: RefCell<HashMap<String, String>>,
 }
 
 impl FakeGitHub {
@@ -146,6 +149,12 @@ impl GitHub for FakeGitHub {
     }
 
     fn branch_commit(&self, branch: &str) -> Result<Option<String>, Error> {
+        if *self.fails.borrow() {
+            return Err(Error::Gh("error connecting to api.github.com".to_owned()));
+        }
+        if let Some(at) = self.branches.borrow().get(branch) {
+            return Ok(Some(at.clone()));
+        }
         Ok((branch == *self.base_ref.borrow()).then(|| self.base_oid.clone()))
     }
 
@@ -361,6 +370,7 @@ impl FakeGitHub {
             submitted_by_me: RefCell::new(false),
             loses_replies: RefCell::new(0),
             delay: RefCell::new(std::time::Duration::ZERO),
+            branches: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -595,8 +605,11 @@ fn a_base_commit_not_in_the_repository_is_an_error() {
 
     ctx.update(&mut app, keys("OO"));
 
-    let screen = ctx.redact_buffer();
-    assert!(screen.contains("is not in the repository:"), "{screen}");
+    let screen = screen_text(&ctx);
+    assert!(
+        screen.contains("which this repository doesn't have. Fetch it: git fetch origin"),
+        "{screen}"
+    );
 }
 
 #[test]
@@ -880,7 +893,9 @@ fn a_head_that_is_not_the_prs_on_github_is_warned_of() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     let github = Rc::new(FakeGitHub {
-        head_oid: "0".repeat(40),
+        head_oid: run(&ctx.dir, &["git", "rev-parse", "feature~1"])
+            .trim()
+            .to_owned(),
         ..Rc::into_inner(github).unwrap()
     });
     let mut app = init_app(&mut ctx, &github);
@@ -1066,6 +1081,17 @@ fn a_long_comment_wraps_under_the_bar() {
 }
 
 /// The cell drawn for the first `c` on the screen's row that shows `text`.
+/// The screen's text as one line, its rows joined with spaces, so that a message wrapped onto
+/// several rows reads as it was written.
+pub(super) fn screen_text(ctx: &TestContext) -> String {
+    ctx.redact_buffer()
+        .lines()
+        .map(|line| line.trim_end_matches('|').trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(super) fn cell(ctx: &TestContext, text: &str, c: char) -> crate::term::TestCell {
     let crate::term::TermBackend::Test { buffer, .. } = &ctx.term else {
         unreachable!();
@@ -2004,7 +2030,9 @@ fn a_new_comment_is_not_posted_while_head_is_not_the_prs() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     let github = Rc::new(FakeGitHub {
-        head_oid: "0".repeat(40),
+        head_oid: run(&ctx.dir, &["git", "rev-parse", "feature~1"])
+            .trim()
+            .to_owned(),
         ..Rc::into_inner(github).unwrap()
     });
     let mut app = init_app(&mut ctx, &github);

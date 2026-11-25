@@ -489,8 +489,7 @@ impl World {
             &mut input.as_bytes(),
             &mut out,
         );
-        // Only review data: here the branch is always at the PR's head, which is on GitHub, so
-        // that sync has nothing to fast-forward, and nothing to push.
+        // Only review data: sync never moves the branch.
         assert_eq!(
             self.git_state(),
             before,
