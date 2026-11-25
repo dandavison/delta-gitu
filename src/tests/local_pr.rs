@@ -2756,3 +2756,30 @@ fn a_message_about_the_pr_pulses_the_threads_whose_last_comment_is_mine() {
     assert_eq!(bar_color(&ctx, "hello"), Color::Red);
     assert_eq!(bar_color(&ctx, "Agent here."), Color::Blue);
 }
+
+/// An agent in another worktree listens to a branch's PR with `--head`, and a message says which
+/// PR it is about.
+#[test]
+fn an_agent_in_another_worktree_listens_with_head() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    let worktree = ctx.dir.parent().unwrap().join("feature-worktree");
+    run(
+        &ctx.dir,
+        &[
+            "git",
+            "worktree",
+            "add",
+            worktree.to_str().unwrap(),
+            "feature",
+        ],
+    );
+    let mut app = init_app_at(&mut ctx, worktree);
+    ctx.update(&mut app, keys("OOgg@please respond<enter>"));
+
+    let printed = review_cli(&ctx.dir, &["listen", "--head", "feature"]);
+
+    assert!(printed.contains("please respond"), "{printed}");
+    assert!(printed.contains("feature into main"), "{printed}");
+}
