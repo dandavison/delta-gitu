@@ -808,7 +808,7 @@ fn review_comment_that_is_empty_is_an_error() {
 
 /// GitHub with a PR of `feature` into `main` whose head is where `feature` is now, with its
 /// commits.
-fn github_at_head(ctx: &TestContext) -> Rc<FakeGitHub> {
+pub(super) fn github_at_head(ctx: &TestContext) -> Rc<FakeGitHub> {
     let github = FakeGitHub::new(
         run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
         run(&ctx.dir, &["git", "rev-parse", "feature"]).trim(),
@@ -2052,7 +2052,7 @@ fn oo_with_a_commit_count_not_githubs_is_an_error() {
 }
 
 /// `setup`, with a commit on `feature` by another author.
-fn setup_two_authors(ctx: &mut TestContext) {
+pub(super) fn setup_two_authors(ctx: &mut TestContext) {
     setup(ctx);
     fs::write(ctx.dir.join("other.txt"), "other\n").unwrap();
     run(&ctx.dir, &["git", "add", "other.txt"]);

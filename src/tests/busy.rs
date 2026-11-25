@@ -33,6 +33,28 @@ fn a_slow_action_says_what_it_is_busy_with() {
     assert_eq!(busy(&ctx), ["Open the current branch's PR"]);
 }
 
+/// An action that asks something, as opening a PR whose commits are by several authors does, says
+/// what it is busy with once the question is answered, as opening the PR fetches its reviews over a
+/// slow network: the question doesn't end the spinner.
+#[test]
+fn an_action_says_what_it_is_busy_with_once_its_question_is_answered() {
+    let mut ctx = setup_clone!();
+    super::local_pr::setup_two_authors(&mut ctx);
+    let github = super::local_pr::github_at_head(&ctx);
+    *github.threads_delay.borrow_mut() = Duration::from_millis(500);
+    let mut app = ctx.init_app();
+    app.state.github = github;
+
+    ctx.update(&mut app, keys("OOy"));
+
+    assert_eq!(busy(&ctx), ["Open the current branch's PR"]);
+    assert!(
+        ctx.redact_buffer().contains("added: other.txt"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
 /// A quick action says nothing of being busy.
 #[test]
 fn a_quick_action_says_nothing() {

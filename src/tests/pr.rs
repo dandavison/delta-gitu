@@ -60,6 +60,8 @@ pub(super) struct FakeGitHub {
     pub(super) loses_replies: RefCell<usize>,
     /// How long GitHub takes to say what a PR is, as over a slow network.
     pub(super) delay: RefCell<std::time::Duration>,
+    /// How long GitHub takes to give a PR's threads.
+    pub(super) threads_delay: RefCell<std::time::Duration>,
     /// Where branches are on GitHub, by name, other than the PR's base, which is at `base_oid`
     /// unless given here.
     pub(super) branches: RefCell<HashMap<String, String>>,
@@ -138,6 +140,7 @@ impl GitHub for FakeGitHub {
     }
 
     fn threads(&self, _pr: &GitHubPr) -> Result<Vec<Thread>, Error> {
+        std::thread::sleep(*self.threads_delay.borrow());
         Ok(self.threads.borrow().clone())
     }
 
@@ -370,6 +373,7 @@ impl FakeGitHub {
             submitted_by_me: RefCell::new(false),
             loses_replies: RefCell::new(0),
             delay: RefCell::new(std::time::Duration::ZERO),
+            threads_delay: RefCell::new(std::time::Duration::ZERO),
             branches: RefCell::new(HashMap::new()),
         }
     }
