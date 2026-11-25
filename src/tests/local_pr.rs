@@ -2869,3 +2869,102 @@ fn i_on_a_side_by_side_row_with_only_a_removed_line_comments_on_it() {
         .unwrap();
     assert_eq!(bar, 1 + 2, "{screen}");
 }
+
+/// The short id of `feature`'s last commit.
+fn feature_commit(ctx: &TestContext) -> String {
+    run(&ctx.dir, &["git", "rev-parse", "--short=7", "feature"])
+        .trim()
+        .to_owned()
+}
+
+/// A message says which commit the PR's diff shows: the branch's last commit when the PR was
+/// last read, not one made since.
+#[test]
+fn a_message_says_which_commit_the_diff_shows() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OOgg"));
+    let shown = feature_commit(&ctx);
+    commit(&ctx.dir, "more.txt", "more\n");
+
+    ctx.update(&mut app, keys("@<enter>"));
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(printed.contains(&format!(" at {shown}")), "{printed}");
+
+    ctx.update(&mut app, keys("grgg@<enter>"));
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(
+        printed.contains(&format!(" at {}", feature_commit(&ctx))),
+        "{printed}"
+    );
+}
+
+/// `listen` prints a message's thread as at the message's commit: its line, the lines around
+/// it, and its comments.
+#[test]
+fn review_listen_prints_the_thread_as_at_the_messages_commit() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>/hello<enter>"));
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Lines added above the thread's, after the PR was read: the diff shows it on line 2 still.
+    commit(&ctx.dir, "lines.txt", "top\ntop\nkeep\nnew\nkeep\n");
+
+    ctx.update(&mut app, keys("@<enter>"));
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(printed.contains("## lines.txt:2\n"), "{printed}");
+    assert!(
+        printed.contains(&format!("Thread id: {thread}")),
+        "{printed}"
+    );
+    assert!(printed.contains("  keep\n> new\n  keep\n"), "{printed}");
+    assert!(printed.contains("hello"), "{printed}");
+
+    ctx.update(&mut app, keys("gr/hello<enter>@<enter>"));
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(printed.contains("## lines.txt:4\n"), "{printed}");
+    assert!(printed.contains("  top\n  keep\n> new\n"), "{printed}");
+}
+
+/// A message about the whole PR has `listen` print every thread.
+#[test]
+fn review_listen_prints_every_thread_for_a_message_about_the_pr() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
+    review_cli_with_input(
+        &ctx.dir,
+        &["comment", "--local", "--path", "added.txt", "--line", "1"],
+        "second\n",
+    )
+    .unwrap();
+
+    ctx.update(&mut app, keys("grgg@<enter>"));
+
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(printed.contains("## lines.txt:2\n"), "{printed}");
+    assert!(printed.contains("hello"), "{printed}");
+    assert!(printed.contains("## added.txt:1\n"), "{printed}");
+    assert!(printed.contains("second"), "{printed}");
+}
+
+/// `review show` quotes the lines around a thread's line as they are, not as they were when the
+/// thread was started.
+#[test]
+fn review_show_quotes_the_lines_as_they_are() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
+    commit(&ctx.dir, "lines.txt", "keep\nnew\nchanged\n");
+
+    let printed = review_cli(&ctx.dir, &["show"]);
+
+    assert!(printed.contains("> new\n  changed\n"), "{printed}");
+}
