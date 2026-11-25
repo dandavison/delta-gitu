@@ -338,14 +338,15 @@ impl OpTrait for MessageAgent {
                 app.display_error("Only a local PR can message an agent");
                 return Ok(());
             };
-            let prompt = match thread {
-                Some(_) => "Message to the agent about the thread",
-                None => "Message to the agent",
+            let default = match thread {
+                Some(_) => "Please respond to this thread",
+                None => "Please respond to the comments",
             };
             let body = match app.prompt(
                 term,
                 &PromptParams {
-                    prompt: prompt.into(),
+                    prompt: "Send message".into(),
+                    create_default_value: Box::new(move |_| Some(default.to_owned())),
                     history: Some(HistoryKind::AgentMessage),
                     ..Default::default()
                 },
@@ -354,11 +355,8 @@ impl OpTrait for MessageAgent {
                 Err(Error::PromptAborted) => return Ok(()),
                 Err(e) => return Err(e),
             };
-            if body.trim().is_empty() {
-                return Ok(());
-            }
             local.send_message(&body, thread.as_deref())?;
-            app.display_info("Message left for the agent");
+            app.display_info("Message sent");
             Ok(())
         }))
     }
@@ -368,7 +366,7 @@ impl OpTrait for MessageAgent {
     }
 
     fn display(&self, _state: &State) -> String {
-        "Message the agent".into()
+        "Send message".into()
     }
 }
 
