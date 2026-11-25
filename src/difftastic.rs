@@ -356,14 +356,27 @@ pub(crate) enum Layout {
 }
 
 impl Layout {
-    /// The layout the renderer is asked for: side by side if its `side-by-side` feature is
-    /// enabled, in the session or by the user's configuration. The renderer may still lay out some
-    /// hunks a line to a row, as delta does with `side-by-side = hunk` for a hunk that only adds or
-    /// only removes lines, or on a narrow terminal with `side-by-side = N`.
+    /// The layout the renderer draws in at the screen's width with the features in force, as
+    /// the renderer says when it has said how to ask; otherwise side by side if its
+    /// `side-by-side` feature is enabled, in the session or by the user's configuration. The
+    /// renderer may still lay out some hunks a line to a row, as delta does with
+    /// `side-by-side = hunk` for a hunk that only adds or only removes lines.
     pub(crate) fn of(params: &RenderParams, config: &Config, repo: &Repository) -> Self {
         let dir = repo.workdir().unwrap_or(repo.path());
-        let enabled = config.general.diff_renderer.enabled_features.get(dir);
-        if crate::ops::editor::is_enabled_in(&params.features, "side-by-side", &enabled) {
+        let renderer = &config.general.diff_renderer;
+        let features = crate::diff_renderer::drawing_env(params)
+            .into_iter()
+            .find_map(|(name, value)| {
+                (name == crate::diff_renderer::FEATURES_VAR).then_some(value)
+            });
+        let side_by_side = renderer
+            .side_by_side
+            .get(dir, features.as_deref(), params.width())
+            .unwrap_or_else(|| {
+                let enabled = renderer.enabled_features.get(dir);
+                crate::ops::editor::is_enabled_in(&params.features, "side-by-side", &enabled)
+            });
+        if side_by_side {
             Layout::SideBySide
         } else {
             Layout::Unified

@@ -116,6 +116,33 @@ fn a_changed_line_with_nothing_removed_is_shown_once() {
     assert!(!screen.contains("pub lhs_name: String,"), "{screen}");
 }
 
+/// With delta's `side-by-side = N` and a screen narrower than `N`, delta draws a line to a row, so
+/// a changed line is shown once, as it is when side-by-side is off.
+#[test]
+fn a_changed_line_is_shown_once_where_side_by_side_needs_a_wider_screen() {
+    let mut ctx = setup_clone!();
+    commit(
+        &ctx.dir,
+        "fields.rs",
+        include_str!("fixtures/difftastic/optional-field/old.rs"),
+    );
+    fs::write(
+        ctx.dir.join("fields.rs"),
+        include_str!("fixtures/difftastic/optional-field/new.rs"),
+    )
+    .unwrap();
+    ctx.config().general.difftastic.command = recorded_difftastic("optional-field");
+    let renderer = &mut ctx.config().general.diff_renderer;
+    renderer.enabled_features =
+        crate::config::EnabledFeatures::new(|_| vec!["side-by-side".to_owned()]);
+    renderer.side_by_side = crate::config::RendererSideBySide::new(|_, _, columns| columns >= 120);
+    let mut app = ctx.init_app();
+    ctx.update(&mut app, keys("*jj<tab>"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("pub lhs_name: Option<String>,"), "{screen}");
+    assert!(!screen.contains("pub lhs_name: String,"), "{screen}");
+}
+
 /// Staging the line shown once stages its change: the old field is removed and the new one
 /// added, as git's patch has them.
 #[test]

@@ -198,7 +198,8 @@ pub struct DifftasticConfig {
 pub struct DiffRendererConfig {
     /// Renderer command as `[executable, ...args]`, set by `delta --gitu` to
     /// itself rather than read from config. It receives a unified diff on stdin
-    /// and emits ANSI-colored output carrying OSC-1717 diff-line metadata.
+    /// and emits ANSI-colored output carrying OSC-1717 diff-line metadata
+    /// (<https://github.com/stefanhaller/diff-line-metadata-spec/blob/main/diff-line-metadata-osc-1717.md>).
     #[serde(skip)]
     pub command: Vec<String>,
     /// Named renderer features offered by `renderer_features`, to turn on and
@@ -238,6 +239,11 @@ pub struct DiffRendererConfig {
     /// uses its defaults.
     #[serde(skip)]
     pub options: RendererOptions,
+    /// Whether the renderer draws side by side at a width. Set by `delta --gitu`, since delta's
+    /// `side-by-side = N` draws side by side only at a width of at least `N`; without it, gitu
+    /// takes the renderer to draw side by side when its `side-by-side` feature is enabled.
+    #[serde(skip)]
+    pub side_by_side: RendererSideBySide,
 }
 
 /// Asks the renderer what its config sets options to, in the repository at a path, with features
@@ -294,6 +300,34 @@ impl std::fmt::Debug for RendererOptions {
             "RendererOptions(..)"
         } else {
             "RendererOptions(none)"
+        })
+    }
+}
+
+/// Asks the renderer whether it draws side by side in the repository at a path, with features in
+/// force as `DELTA_FEATURES` gives them, at a width of a number of columns, as `COLUMNS` gives it.
+#[derive(Clone, Default)]
+pub struct RendererSideBySide(Option<Arc<AskSideBySide>>);
+
+type AskSideBySide = dyn Fn(&Path, Option<&str>, usize) -> bool + Send + Sync;
+
+impl RendererSideBySide {
+    pub fn new(ask: impl Fn(&Path, Option<&str>, usize) -> bool + Send + Sync + 'static) -> Self {
+        Self(Some(Arc::new(ask)))
+    }
+
+    /// Whether the renderer draws side by side, or `None` if the renderer has not said how to ask.
+    pub fn get(&self, dir: &Path, features: Option<&str>, columns: usize) -> Option<bool> {
+        self.0.as_ref().map(|ask| ask(dir, features, columns))
+    }
+}
+
+impl std::fmt::Debug for RendererSideBySide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "RendererSideBySide(..)"
+        } else {
+            "RendererSideBySide(none)"
         })
     }
 }
@@ -625,6 +659,7 @@ impl Config {
         resolved.enabled_features = renderer.enabled_features.clone();
         resolved.git_config = renderer.git_config.clone();
         resolved.options = renderer.options.clone();
+        resolved.side_by_side = renderer.side_by_side.clone();
         Ok(config)
     }
 }
