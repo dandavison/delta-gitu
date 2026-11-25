@@ -25,6 +25,7 @@ mod rebase_todo;
 mod review;
 mod screen;
 mod search;
+mod show_config;
 mod stream;
 mod style;
 pub mod term;

@@ -54,6 +54,7 @@ mod reverse;
 mod right;
 mod search;
 mod show;
+mod show_config;
 mod stage;
 mod stash;
 mod status;

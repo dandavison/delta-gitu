@@ -48,6 +48,18 @@ pub struct Args {
     #[clap(long, value_enum, value_name = "FORMAT")]
     pub pr_state_machine_diagram: Option<DiagramFormat>,
 
+    /// Print every setting the TUI takes from git config's [delta] section, with what it does
+    /// and its value here, as git config (the default), or as JSON with `--show-config=json`.
+    #[clap(
+        long,
+        value_enum,
+        value_name = "FORMAT",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "text"
+    )]
+    pub show_config: Option<ConfigFormat>,
+
     /// Config file to use
     #[clap(short, long)]
     pub config: Option<PathBuf>,
@@ -93,6 +105,13 @@ pub enum Commands {
 pub enum ReviewSide {
     New,
     Old,
+}
+
+/// The formats `--show-config` can print.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum ConfigFormat {
+    Text,
+    Json,
 }
 
 /// The formats `--pr-state-machine-diagram` can print.
