@@ -4,7 +4,7 @@
 
 use super::{
     ADDED_TO_DRAFT as ADDED, Backend, Comment, PendingReview, Place, Reaction, Side, Subject,
-    Thread, ViewedState,
+    Thread, ViewedState, Working,
     github::{GitHub, GitHubBackend, GitHubPr, GitHubReviewState},
     missing_commit,
     remote::{self, Change, Consent},
@@ -1172,6 +1172,7 @@ impl LocalBackend {
                 thread: thread.map(str::to_owned),
                 created_at: now,
                 delivered_at: None,
+                done_at: None,
             });
         })
     }
@@ -1221,7 +1222,8 @@ impl LocalBackend {
         }
     }
 
-    /// The messages to agents that no `listen` has printed, marked printed.
+    /// The messages to agents that no `listen` has printed, marked printed. Those printed before
+    /// are marked done, as the agent listening again has done what they asked.
     fn take_messages(&self) -> Res<Vec<Message>> {
         // Looked for first without writing, which would wake every listener.
         if self
@@ -1229,7 +1231,7 @@ impl LocalBackend {
             .read()?
             .messages
             .iter()
-            .all(|m| m.delivered_at.is_some())
+            .all(|m| m.delivered_at.is_some() && m.done_at.is_some())
         {
             return Ok(vec![]);
         }
@@ -1237,7 +1239,9 @@ impl LocalBackend {
         let mut taken = vec![];
         self.store.update(|file| {
             for message in &mut file.messages {
-                if message.delivered_at.is_none() {
+                if message.delivered_at.is_some() && message.done_at.is_none() {
+                    message.done_at = Some(now);
+                } else if message.delivered_at.is_none() {
                     message.delivered_at = Some(now);
                     taken.push(Message {
                         from: self.reviewer.clone(),
@@ -1860,6 +1864,22 @@ impl Backend for LocalBackend {
         Ok(pending_review(&self.store.read()?))
     }
 
+    fn working(&self) -> Res<Vec<Working>> {
+        Ok(self
+            .store
+            .read()?
+            .messages
+            .into_iter()
+            .filter(|message| message.done_at.is_none())
+            .filter_map(|message| {
+                Some(Working {
+                    thread: message.thread,
+                    since: message.delivered_at?,
+                })
+            })
+            .collect())
+    }
+
     fn summary(&self) -> Res<Option<String>> {
         let summary = summarize(&self.repo, &self.store.read()?, &self.base_ref, &self.head)?;
         Ok(Some(summary.line()))
@@ -2179,6 +2199,9 @@ struct StoredMessage {
     /// When `listen` printed it to an agent; none until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     delivered_at: Option<chrono::DateTime<chrono::FixedOffset>>,
+    /// When the agent listened for the next message, having done what this one asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    done_at: Option<chrono::DateTime<chrono::FixedOffset>>,
 }
 
 /// A GitHub PR, as a local PR's link to it records it.

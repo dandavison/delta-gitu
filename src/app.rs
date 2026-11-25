@@ -311,6 +311,13 @@ impl App {
             self.stage_redraw();
         }
 
+        // A thread an agent is working on pulses: its PR is drawn again on each tick, until none
+        // is.
+        if self.screen().pr.as_ref().is_some_and(|pr| pr.pulsing.get()) {
+            self.screen_mut().redecorate();
+            self.stage_redraw();
+        }
+
         if self.state.needs_redraw {
             self.redraw_now(term)?;
         }

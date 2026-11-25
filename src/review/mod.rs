@@ -85,6 +85,11 @@ pub(crate) trait Backend {
     fn pending_review(&self) -> Res<Option<PendingReview>> {
         Ok(None)
     }
+    /// The messages agents are working on: printed by `delta tui review listen`, and the agent
+    /// not yet listening for the next.
+    fn working(&self) -> Res<Vec<Working>> {
+        Ok(vec![])
+    }
     /// The PR in one line, as the top of its screen shows it, if the backend can say.
     fn summary(&self) -> Res<Option<String>> {
         Ok(None)
@@ -198,6 +203,15 @@ pub(crate) struct Reactor {
     pub url: String,
 }
 
+/// A message an agent is working on.
+#[derive(Clone, Debug)]
+pub(crate) struct Working {
+    /// The thread the message is about, or none for the whole PR.
+    pub thread: Option<String>,
+    /// When the agent started: when `listen` printed the message.
+    pub since: chrono::DateTime<chrono::FixedOffset>,
+}
+
 /// The user's pending review on GitHub: only they can see its comments until they submit it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PendingReview {
@@ -210,6 +224,8 @@ pub(crate) struct OpenPr {
     pub backend: Rc<dyn Backend>,
     pub viewed: RefCell<HashMap<String, ViewedState>>,
     pub threads: RefCell<Vec<Thread>>,
+    /// The messages agents are working on.
+    pub working: RefCell<Vec<Working>>,
     pub pending_review: RefCell<Option<PendingReview>>,
     /// The PR in one line (see [`Backend::summary`]).
     pub summary: RefCell<Option<String>>,
@@ -221,6 +237,9 @@ pub(crate) struct OpenPr {
     pub editor: RefCell<Option<CommentEditor>>,
     /// The time to draw the PR at, when a test sets it: otherwise, the current time.
     pub now: std::cell::Cell<Option<chrono::DateTime<chrono::FixedOffset>>>,
+    /// Whether a thread was pulsing when the PR was last drawn, so that it is drawn again on each
+    /// tick until none is.
+    pub pulsing: std::cell::Cell<bool>,
 }
 
 /// A comment being written, in a box in the diff.
@@ -260,19 +279,22 @@ impl OpenPr {
         Ok(Self {
             viewed: RefCell::new(backend.viewed()?),
             threads: RefCell::new(backend.threads()?),
+            working: RefCell::new(backend.working()?),
             pending_review: RefCell::new(backend.pending_review()?),
             summary: RefCell::new(backend.summary()?),
             options: RefCell::new(None),
             editor: RefCell::new(None),
             now: std::cell::Cell::new(None),
+            pulsing: std::cell::Cell::new(false),
             backend,
         })
     }
 
-    /// Read the threads, the user's pending review on GitHub, and the summary of the PR from
-    /// the backend again.
+    /// Read the threads, the messages agents are working on, the user's pending review on GitHub,
+    /// and the summary of the PR from the backend again.
     pub fn reread_threads(&self) -> Res<()> {
         *self.threads.borrow_mut() = self.backend.threads()?;
+        *self.working.borrow_mut() = self.backend.working()?;
         *self.pending_review.borrow_mut() = self.backend.pending_review()?;
         *self.summary.borrow_mut() = self.backend.summary()?;
         Ok(())

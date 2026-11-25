@@ -34,6 +34,23 @@ pub(crate) fn with_threads(
 ) -> Vec<Item> {
     let items = with_comment_counts(items, pr, layout.width, options.count);
     let threads = pr.threads.borrow();
+    let now = pr
+        .now
+        .get()
+        .unwrap_or_else(|| chrono::Local::now().fixed_offset());
+    let pulses = pulses(&threads, &pr.working.borrow(), now, options.pulse_timeout);
+    pr.pulsing.set(!pulses.is_empty());
+    let decoration = |thread: &Thread| match pulses.get(&thread.id) {
+        Some(&amount) => DecorationStyle {
+            style: mix(
+                options.decoration.style,
+                options.decoration.style.patch(options.pulse),
+                amount,
+            ),
+            ..options.decoration
+        },
+        None => options.decoration,
+    };
     let mut editor = pr.editor.borrow_mut();
     let editor_path = match editor.as_ref().map(|editor| &editor.target) {
         Some(EditorTarget::Line { path, .. }) => Some(path.clone()),
@@ -207,9 +224,24 @@ pub(crate) fn with_threads(
                 Some(comment_id) => {
                     let mut thread = thread.clone();
                     thread.comments.retain(|comment| comment.id != comment_id);
-                    out.extend(thread_rows(&thread, depth, on_line, panel, options));
+                    let decoration = decoration(&thread);
+                    out.extend(thread_rows(
+                        &thread,
+                        depth,
+                        on_line,
+                        panel,
+                        options,
+                        &decoration,
+                    ));
                 }
-                None => out.extend(thread_rows(thread, depth, on_line, panel, options)),
+                None => out.extend(thread_rows(
+                    thread,
+                    depth,
+                    on_line,
+                    panel,
+                    options,
+                    &decoration(thread),
+                )),
             }
             if let (true, Some(editor)) = (in_box, editor.as_mut()) {
                 out.extend(editor_rows(editor, depth, panel, options));
@@ -343,7 +375,7 @@ pub(crate) struct CommentOption {
 
 /// The delta options gitu draws comments with. delta's config sets them, as it sets its own,
 /// so that a delta feature can.
-pub(crate) const OPTIONS: [CommentOption; 13] = [
+pub(crate) const OPTIONS: [CommentOption; 15] = [
     CommentOption {
         name: "comment-style",
         description: "A comment: its text, and the background of the box around it. By default, \
@@ -417,11 +449,25 @@ pub(crate) const OPTIONS: [CommentOption; 13] = [
                       submit it, drawn over comment-style.",
         default: None,
     },
+    CommentOption {
+        name: "comment-pulse-style",
+        description: "What is drawn around a thread pulses to this, and back, every 2 seconds, \
+                      while an agent works on a message about the thread, drawn over \
+                      comment-decoration-style. A #rrggbb color fades into another.",
+        default: Some("bold"),
+    },
+    CommentOption {
+        name: "comment-pulse-timeout",
+        description: "How many seconds a thread pulses for at most, from when an agent starts on \
+                      a message about it. It stops sooner when an agent replies in the thread, \
+                      or listens for the next message.",
+        default: Some("600"),
+    },
 ];
 
 /// The names of [`OPTIONS`], in order.
-pub(crate) const OPTION_NAMES: [&str; 13] = {
-    let mut names = [""; 13];
+pub(crate) const OPTION_NAMES: [&str; 15] = {
+    let mut names = [""; 15];
     let mut i = 0;
     while i < OPTIONS.len() {
         names[i] = OPTIONS[i].name;
@@ -471,6 +517,10 @@ pub(crate) struct CommentOptions {
     pub submitted: Option<Style>,
     /// What a markdown link's text is drawn in over the comment's text.
     pub link: Style,
+    /// What the decoration of a thread an agent is working on pulses to, over `decoration`.
+    pub pulse: Style,
+    /// How long a thread pulses for at most.
+    pub pulse_timeout: chrono::Duration,
     /// An option whose value is not a style, as what to tell the user. Its default is used.
     pub errors: Vec<String>,
 }
@@ -500,6 +550,7 @@ impl CommentOptions {
         let count = style(3, default(3), false).style;
         let decoration = style(4, default(4), true);
         let link = style(9, default(9), false).style;
+        let pulse = style(13, default(13), false).style;
         let mut set_style = |i: usize, decoration: bool| {
             let value = values.get(i).cloned().flatten()?;
             parse_delta_style(&value, decoration)
@@ -512,7 +563,24 @@ impl CommentOptions {
         let draft = set_style(10, false).map(|parsed| parsed.style);
         let local_only = set_style(11, false).map(|parsed| parsed.style);
         let pending = set_style(12, false).map(|parsed| parsed.style);
+        let pulse_timeout = values
+            .get(14)
+            .cloned()
+            .flatten()
+            .and_then(|value| match value.parse::<u32>() {
+                Ok(seconds) => Some(seconds),
+                Err(_) => {
+                    errors.push(format!(
+                        "{}: {value} is not a whole number of seconds",
+                        OPTION_NAMES[14]
+                    ));
+                    None
+                }
+            })
+            .unwrap_or_else(|| default(14).parse().expect("a number"));
         CommentOptions {
+            pulse,
+            pulse_timeout: chrono::Duration::seconds(pulse_timeout.into()),
             editor_text,
             editor_decoration,
             local_only,
@@ -621,6 +689,7 @@ fn thread_rows(
     on_line: bool,
     panel: Panel,
     options: &CommentOptions,
+    decoration: &DecorationStyle,
 ) -> Vec<Item> {
     let Some(first) = thread.comments.first() else {
         return vec![];
@@ -642,7 +711,7 @@ fn thread_rows(
         notes.push("thread deleted on GitHub".to_owned());
     }
 
-    let frame = Frame::new(panel, &options.decoration);
+    let frame = Frame::new(panel, decoration);
     let mut rows: Vec<(usize, usize, Row)> = vec![];
     for (comment_i, comment) in thread.comments.iter().enumerate() {
         let mut notes = if comment_i == 0 {
@@ -710,6 +779,76 @@ fn thread_rows(
     // as the decoration above it does.
     items.extend(frame.bottom(hash(("review_thread_bottom", &thread.id)), depth));
     items
+}
+
+/// How long a thread takes to pulse to comment-pulse-style and back.
+const PULSE_PERIOD_SECONDS: f64 = 2.0;
+
+/// How far through its pulse each thread an agent is working on is at `now`, by id, from 0, as
+/// comment-decoration-style draws it, to 1, as comment-pulse-style does. A thread pulses from
+/// when `listen` prints a message about it to an agent, or, for a message about the whole PR,
+/// each unresolved thread whose last comment is the user's, until an agent comments in it or
+/// `timeout` has passed.
+fn pulses(
+    threads: &[Thread],
+    working: &[review::Working],
+    now: chrono::DateTime<chrono::FixedOffset>,
+    timeout: chrono::Duration,
+) -> HashMap<String, f64> {
+    let mut since: HashMap<String, chrono::DateTime<chrono::FixedOffset>> = HashMap::new();
+    for message in working.iter().filter(|m| now - m.since < timeout) {
+        for thread in threads {
+            let about = match &message.thread {
+                Some(id) => *id == thread.id,
+                None => {
+                    !thread.resolved
+                        && thread
+                            .comments
+                            .last()
+                            .is_some_and(|c| c.editable && c.agent.is_none())
+                }
+            };
+            let answered = thread
+                .comments
+                .iter()
+                .any(|c| c.agent.is_some() && c.created_at > message.since);
+            if about && !answered {
+                // The latest message's pulse, when several are about the thread.
+                let latest = since.entry(thread.id.clone()).or_insert(message.since);
+                *latest = (*latest).max(message.since);
+            }
+        }
+    }
+    since
+        .into_iter()
+        .map(|(id, since)| {
+            let elapsed = (now - since).as_seconds_f64();
+            let angle = std::f64::consts::TAU * elapsed / PULSE_PERIOD_SECONDS;
+            (id, (1.0 + angle.cos()) / 2.0)
+        })
+        .collect()
+}
+
+/// `from` moved toward `to` by `amount`, from 0 to 1: each color mixed when both are #rrggbb,
+/// and otherwise `to`'s once `amount` is past half, as its attributes are.
+fn mix(from: Style, to: Style, amount: f64) -> Style {
+    use crate::style::Color;
+    let past_half = amount > 0.5;
+    let color = |from: Option<Color>, to: Option<Color>| match (from, to) {
+        (Some(Color::Rgb(r, g, b)), Some(Color::Rgb(r2, g2, b2))) => {
+            let mix = |a: u8, b: u8| {
+                (f64::from(a) + (f64::from(b) - f64::from(a)) * amount).round() as u8
+            };
+            Some(Color::Rgb(mix(r, r2), mix(g, g2), mix(b, b2)))
+        }
+        _ if past_half => to,
+        _ => from,
+    };
+    Style {
+        fg: color(from.fg, to.fg),
+        bg: color(from.bg, to.bg),
+        ..if past_half { to } else { from }
+    }
 }
 
 /// The rows of `editor`, a comment being written, in `panel`, in the editor's styles: what it is,
