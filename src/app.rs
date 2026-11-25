@@ -43,11 +43,19 @@ use crate::rebase_todo::RebaseTodo;
 use crate::screen;
 use crate::screen::Screen;
 use crate::screen::pager::Paged;
-use crate::term::Term;
+use crate::term::{Busy, Term};
 use crate::text_input;
 use crate::ui;
 
 use super::Res;
+
+/// The spinner saying what the action running is busy with (see [`Term::busy`]), and what it says,
+/// so that it can be started again.
+struct Busying {
+    spinner: Busy,
+    what: String,
+    style: crate::style::Style,
+}
 
 pub(crate) struct State {
     pub repo: Rc<Repository>,
@@ -61,6 +69,9 @@ pub(crate) struct State {
     pub screens: Vec<Screen>,
     pub pending_menu: Option<PendingMenu>,
     pending_cmd: Option<PendingCmd>,
+    /// The spinner saying what the action running is busy with, which a question it asks stops
+    /// until it is answered.
+    busy: Option<Busying>,
     enable_async_cmds: bool,
     pub debug: bool,
     pub current_cmd_log: CmdLog,
@@ -202,6 +213,7 @@ impl App {
                 },
                 screens,
                 pending_cmd: None,
+                busy: None,
                 pending_menu: None,
                 current_cmd_log: CmdLog::new(),
                 prompt,
@@ -691,12 +703,17 @@ impl App {
         let implementation = op.clone().implementation();
 
         if let Some(mut action) = implementation.get_action(&item_data) {
-            let busy = term.busy(
-                &op.description(),
-                crate::style::Style::from(&self.state.config.style.info_msg),
-            );
+            let what = op.description().into_owned();
+            let style = crate::style::Style::from(&self.state.config.style.info_msg);
+            self.state.busy = Some(Busying {
+                spinner: term.busy(&what, style),
+                what,
+                style,
+            });
             let result = Rc::get_mut(&mut action).unwrap()(self, term);
-            if busy.finish() {
+            if let Some(busying) = self.state.busy.take()
+                && busying.spinner.finish()
+            {
                 self.stage_redraw();
             }
             self.handle_result(result)?;
@@ -985,7 +1002,36 @@ impl App {
         self.screen().get_selected_item().data.rev()
     }
 
+    /// Ask the user something, while the action that asks waits for the answer: the spinner saying
+    /// what it is busy with stops while they answer, and, once they have, the question goes at
+    /// once, and the spinner starts again, as the action goes on and may block again.
+    fn asking<T>(
+        &mut self,
+        term: &mut Term,
+        ask: impl FnOnce(&mut Self, &mut Term) -> Res<T>,
+    ) -> Res<T> {
+        let paused = self.state.busy.take().map(|busying| {
+            busying.spinner.finish();
+            (busying.what, busying.style)
+        });
+        let answer = ask(self, term);
+        // An action not answered, as when the question is cancelled, ends at once.
+        if let (Some((what, style)), Ok(_)) = (paused, &answer) {
+            self.redraw_now(term)?;
+            self.state.busy = Some(Busying {
+                spinner: term.busy(&what, style),
+                what,
+                style,
+            });
+        }
+        answer
+    }
+
     pub(crate) fn prompt(&mut self, term: &mut Term, params: &PromptParams) -> Res<String> {
+        self.asking(term, |app, term| app.ask_prompt(term, params))
+    }
+
+    fn ask_prompt(&mut self, term: &mut Term, params: &PromptParams) -> Res<String> {
         let default = (params.create_default_value)(self);
 
         // A prompt with nothing to say says nothing: the key that opened it
@@ -1053,9 +1099,14 @@ impl App {
     }
 
     pub fn confirm(&mut self, term: &mut Term, prompt: impl Into<Cow<'static, str>>) -> Res<()> {
+        let prompt = prompt.into();
+        self.asking(term, |app, term| app.ask_confirm(term, prompt))
+    }
+
+    fn ask_confirm(&mut self, term: &mut Term, prompt: Cow<'static, str>) -> Res<()> {
         self.hide_menu();
         self.state.prompt.set(prompt::PromptData {
-            prompt_text: prompt.into(),
+            prompt_text: prompt,
             bare: false,
         });
 
@@ -1131,12 +1182,12 @@ impl App {
         term: &mut Term,
         picker_state: PickerState,
     ) -> Res<Option<Picked>> {
-        self.state.picker = Some(picker_state);
-        let result = self.handle_picker(term, &mut |_, _| Ok(()));
-
-        self.state.picker = None;
-
-        result
+        self.asking(term, |app, term| {
+            app.state.picker = Some(picker_state);
+            let result = app.handle_picker(term, &mut |_, _| Ok(()));
+            app.state.picker = None;
+            result
+        })
     }
 
     /// [`App::pick`], calling `preview` with each item the cursor stops on.
@@ -1146,10 +1197,12 @@ impl App {
         picker_state: PickerState,
         preview: &mut dyn FnMut(&mut App, &PickerData) -> Res<()>,
     ) -> Res<Option<PickerData>> {
-        self.state.picker = Some(picker_state);
-        let result = self.handle_picker(term, preview);
-
-        self.state.picker = None;
+        let result = self.asking(term, |app, term| {
+            app.state.picker = Some(picker_state);
+            let result = app.handle_picker(term, preview);
+            app.state.picker = None;
+            result
+        });
 
         Ok(result?.map(|picked| match picked {
             Picked::Item(data) => data,
