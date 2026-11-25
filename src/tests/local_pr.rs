@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 /// A repository with `feature` checked out, which changes `lines.txt` and adds `added.txt`, and
 /// `main`, which has moved on since with `main-only.txt`.
-fn setup(ctx: &mut TestContext) {
+pub(super) fn setup(ctx: &mut TestContext) {
     ctx.debug = false;
     commit(&ctx.dir, "lines.txt", "keep\nold\nkeep\n");
     run(&ctx.dir, &["git", "checkout", "-b", "feature"]);
@@ -22,7 +22,7 @@ fn setup(ctx: &mut TestContext) {
 
 /// The app in the repository, with a GitHub on which `feature` has no PR, and whose default
 /// branch is `main`.
-fn init_app(ctx: &mut TestContext) -> crate::app::App {
+pub(super) fn init_app(ctx: &mut TestContext) -> crate::app::App {
     let dir = ctx.dir.clone();
     init_app_at(ctx, dir)
 }
@@ -466,13 +466,13 @@ fn a_thread_on_a_repeated_line_follows_the_one_with_its_surrounding_lines() {
 }
 
 /// What `gitu review <args>` prints, run in `dir`.
-fn review_cli(dir: &std::path::Path, args: &[&str]) -> String {
+pub(super) fn review_cli(dir: &std::path::Path, args: &[&str]) -> String {
     review_cli_with_input(dir, args, "").unwrap()
 }
 
 /// What `gitu review <args>` prints, run in `dir` with `input` on stdin, with a GitHub on which
 /// the branch has no PR.
-fn review_cli_with_input(
+pub(super) fn review_cli_with_input(
     dir: &std::path::Path,
     args: &[&str],
     input: &str,

@@ -32,6 +32,7 @@ mod editor;
 mod editor_failure;
 mod fetch;
 mod file_names;
+mod file_view;
 mod file_watcher;
 mod keys;
 mod lifecycle;
