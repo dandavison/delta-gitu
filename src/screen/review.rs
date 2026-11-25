@@ -735,7 +735,9 @@ fn editor_rows(
         EditorTarget::Line { .. } => "New comment",
         EditorTarget::Edit { .. } => "Edit comment",
     };
-    let hint = if editor.focused {
+    let hint = if editor.focused && editor.text.value().is_empty() {
+        "(ctrl+s saves, esc cancels)"
+    } else if editor.focused {
         "(ctrl+s saves, esc leaves)"
     } else {
         "(i to go on writing)"

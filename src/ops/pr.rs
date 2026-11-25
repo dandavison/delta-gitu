@@ -590,20 +590,25 @@ pub(crate) fn editor_has_focus(app: &App) -> bool {
     })
 }
 
-/// Edit the comment box that has focus as `key` says, or leave it.
+/// Edit the comment box that has focus as `key` says, or leave it: a box with nothing written in
+/// it goes when left.
 pub(crate) fn handle_editor_key(app: &mut App, term: &mut Term, key: KeyEvent) -> Res<()> {
     let Some(pr) = app.screen().pr.clone() else {
         return Ok(());
     };
     let outcome = {
-        let mut editor = pr.editor.borrow_mut();
-        let Some(editor) = editor.as_mut() else {
+        let mut slot = pr.editor.borrow_mut();
+        let Some(editor) = slot.as_mut() else {
             return Ok(());
         };
         let width = editor.width;
         let outcome = editor.text.handle_key(key, width);
         if outcome == Outcome::Leave {
-            editor.focused = false;
+            if editor.text.value().is_empty() {
+                *slot = None;
+            } else {
+                editor.focused = false;
+            }
         }
         outcome
     };
