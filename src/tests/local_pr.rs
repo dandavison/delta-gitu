@@ -1665,8 +1665,15 @@ fn the_summary_shows_a_pending_review_on_github_with_no_comments() {
     ctx.update(&mut app, keys("OO"));
 
     let screen = ctx.redact_buffer();
+    // The summary, which wraps onto the rows under it before the blank row after it.
+    let summary = screen
+        .lines()
+        .map(|line| line.trim_end_matches('|').trim())
+        .take_while(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        screen.contains("pending review on GitHub with no comments"),
+        summary.contains("pending review on GitHub with no comments"),
         "{screen}"
     );
     assert!(!screen.contains("won't post"), "{screen}");
@@ -2129,9 +2136,14 @@ fn oo_without_github_or_a_local_pr_is_an_error() {
     );
 }
 
-/// The status view shows the current branch's local PR, as one line: its base, whether it is on
-/// GitHub, and how many commits and draft comments it has. Its commits are not listed: they are
-/// in its log.
+/// The name of the repository: its main worktree's directory's.
+fn repo_name(ctx: &TestContext) -> String {
+    ctx.dir.file_name().unwrap().to_str().unwrap().to_owned()
+}
+
+/// The status view shows the current branch's local PR, as one line: the repository and branch,
+/// its base, whether it is on GitHub, and how many commits it has, but not its comments. Its
+/// commits are not listed: they are in its log.
 #[test]
 fn the_status_view_shows_the_branchs_pr_as_a_summary() {
     let mut ctx = setup_clone!();
@@ -2142,9 +2154,14 @@ fn the_status_view_shows_the_branchs_pr_as_a_summary() {
     ctx.update(&mut app, keys(""));
 
     let header = line_with(&ctx, "PR into main");
-    assert!(header.contains("not on GitHub"), "{header}");
-    assert!(header.contains("2 commits"), "{header}");
-    assert!(header.contains("1 draft comment"), "{header}");
+    assert!(
+        header.contains(&format!(
+            "{}/feature · PR into main · not on GitHub · 2 commits",
+            repo_name(&ctx)
+        )),
+        "{header}"
+    );
+    assert!(!header.contains("comment"), "{header}");
     let screen = ctx.redact_buffer();
     let lines: Vec<&str> = screen.lines().collect();
     let at = lines
@@ -2167,8 +2184,41 @@ fn the_pr_screen_starts_with_a_summary_of_the_pr() {
     let screen = ctx.redact_buffer();
     let first = screen.lines().next().unwrap();
     assert!(
-        first.contains("PR into main · not on GitHub · 2 commits · 1 draft comment"),
+        first.contains(&format!(
+            "{}/feature · PR into main · not on GitHub · 2 commits",
+            repo_name(&ctx)
+        )),
         "{screen}"
+    );
+    assert!(!first.contains("comment"), "{screen}");
+}
+
+/// In a linked worktree, the summary names the repository by its main worktree, as the linked
+/// one's directory may be named anything.
+#[test]
+fn the_pr_summary_in_a_linked_worktree_names_the_repository() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    let worktree = ctx.dir.parent().unwrap().join("elsewhere");
+    run(
+        &ctx.dir,
+        &[
+            "git",
+            "worktree",
+            "add",
+            worktree.to_str().unwrap(),
+            "feature",
+        ],
+    );
+    let mut app = init_app_at(&mut ctx, worktree);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let first = ctx.redact_buffer().lines().next().unwrap().to_owned();
+    assert!(
+        first.contains(&format!("{}/feature · PR into main", repo_name(&ctx))),
+        "{first}"
     );
 }
 
