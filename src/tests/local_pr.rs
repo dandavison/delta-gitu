@@ -2578,16 +2578,61 @@ fn review_listen_prints_each_message_once() {
     assert!(!printed.contains("first"), "{printed}");
 }
 
-/// Nothing typed at the prompt sends nothing.
+/// `@` asks for the message to send, which is by default to respond to the comments: from the
+/// PR's summary, to all of them.
 #[test]
-fn at_with_nothing_typed_sends_nothing() {
+fn at_with_nothing_typed_asks_to_respond_to_the_comments() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OOgg"));
+
+    ctx.update(&mut app, keys("@"));
+    assert_eq!(
+        ctx.prompt_line(),
+        "Send message (Please respond to the comments): |"
+    );
+    ctx.update(&mut app, keys("@<enter>"));
+
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(
+        printed.contains("Please respond to the comments"),
+        "{printed}"
+    );
+}
+
+/// From a thread, the message is by default to respond to the thread.
+#[test]
+fn at_on_a_thread_with_nothing_typed_asks_to_respond_to_the_thread() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>/hello<enter>"));
+
+    ctx.update(&mut app, keys("@"));
+    assert_eq!(
+        ctx.prompt_line(),
+        "Send message (Please respond to this thread): |"
+    );
+    ctx.update(&mut app, keys("@<enter>"));
+
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(
+        printed.contains("Please respond to this thread"),
+        "{printed}"
+    );
+}
+
+/// `esc` at the prompt sends nothing.
+#[test]
+fn esc_at_the_message_prompt_sends_nothing() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
     ctx.update(&mut app, keys("OOgg"));
     let listen = listen_in_background(&ctx.dir);
 
-    ctx.update(&mut app, keys("@<enter>"));
+    ctx.update(&mut app, keys("@hello<esc>"));
 
     assert!(still_listening(&listen));
     ctx.update(&mut app, keys("@done<enter>"));
