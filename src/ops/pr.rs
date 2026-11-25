@@ -177,7 +177,7 @@ fn show_pr(app: &mut App, term: &mut Term, backend: Rc<dyn Backend>) -> Res<()> 
         Arc::clone(&app.state.config),
         Rc::clone(&app.state.repo),
         app.render_params((width.saturating_sub(review::FILE_PREFIX_WIDTH), height)),
-        vec!["git".into(), "diff".into(), pr.backend.diff_range()],
+        vec!["git".into(), "diff".into(), pr.diff_range()],
         Rc::new(move |params, items| {
             let config = &params.config;
             let dir = repo.workdir().unwrap_or(repo.path());
@@ -198,6 +198,7 @@ fn show_pr(app: &mut App, term: &mut Term, backend: Rc<dyn Backend>) -> Res<()> 
             )
         }),
     )?;
+    *pr.git.borrow_mut() = screen.git_command.clone();
     screen.pr = Some(pr);
     app.state.screens.push(screen);
     Ok(())
@@ -209,7 +210,7 @@ pub(crate) fn reread_pr(app: &mut App) -> Res<()> {
     if let Some(pr) = app.screen().pr.clone() {
         pr.backend.refresh()?;
         *pr.viewed.borrow_mut() = pr.backend.viewed()?;
-        pr.reread_threads()?;
+        pr.repin()?;
         *pr.options.borrow_mut() = None;
     }
     Ok(())
@@ -338,6 +339,12 @@ impl OpTrait for MessageAgent {
                 app.display_error("Only a local PR can message an agent");
                 return Ok(());
             };
+            let Some(version) = pr.version.get() else {
+                app.display_error(
+                    "Couldn't send: the diff is not the PR's, as its command was changed with :",
+                );
+                return Ok(());
+            };
             let default = match thread {
                 Some(_) => "Please respond to this thread",
                 None => "Please respond to the comments",
@@ -355,7 +362,7 @@ impl OpTrait for MessageAgent {
                 Err(Error::PromptAborted) => return Ok(()),
                 Err(e) => return Err(e),
             };
-            local.send_message(&body, thread.as_deref())?;
+            local.send_message(&body, thread.as_deref(), &version)?;
             app.display_info("Message sent");
             Ok(())
         }))

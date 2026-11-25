@@ -116,7 +116,8 @@ delta tui review show --head <branch> --base <branch>
    when it was written: `**dan** (draft, 2026-11-22 10:15)`.
 
    Threads follow their lines as the code changes. A thread whose line has gone says so in its
-   heading: `## src/main.rs (outdated: was line 42)`.
+   heading, `## src/main.rs (outdated: was line 42)`, and its quoted lines are those it was
+   started on.
 
    The same, as JSON, with the ids of comments and reviews, each comment's `agent` (the name of
    the agent that wrote it, or `null`) and `local_only`, and each review's author and state
@@ -188,15 +189,25 @@ delta tui review listen
 ```
 
 It waits for messages to the current branch's PR, prints them, and exits. Each message starts
-with `# Message from <person> on <branch> into <base>`, followed by `, about thread <thread-id>`
-if it is about a thread. Do what each asks, and answer one about a thread in that thread,
-local-only, as in "Read and answer a review" above. Then run `delta tui review listen` again. A
-message sent while you work is kept, and the next listen prints it at once. Each message is printed
-only once, so run one listen at a time for each branch.
+with `# Message from <person> on <branch> into <base> at <commit>`, followed by
+`, about thread <thread-id>` if it is about a thread. `<commit>` is the commit the person was
+looking at. Then come what the message says, and the thread it is about, or every thread for a
+message about the whole PR, as `delta tui review show` prints them but in `<commit>`. You don't
+need to run `review show`.
+
+Do what each message asks, and answer one about a thread in that thread, local-only, as in "Read
+and answer a review" above. Then run `delta tui review listen` again. A message sent while you work
+is kept, and the next listen prints it at once. Each message is printed only once, so run one
+listen at a time for each branch.
 
 Run these commands, and make and commit the changes messages ask for, in the worktree where the
 branch is checked out, which may not be the one you were started in: `git worktree list` shows
 each worktree's branch. To listen to several branches, run a listen in each one's worktree.
+
+If HEAD is not `<commit>`, or the worktree has uncommitted changes, the files you see are not the
+ones the person saw: read theirs with `git show <commit>:<path>`. Make your changes on the branch
+as it is now. If a file you need to change has uncommitted changes, don't change it: say so in
+your answer.
 
 ## 4. Post your review as a review of its own
 

@@ -203,6 +203,14 @@ pub(crate) struct Reactor {
     pub url: String,
 }
 
+/// `backend`'s threads: a local PR's placed in `version`, its commits as the screen shows them.
+fn threads_in(backend: &dyn Backend, version: Option<local::Version>) -> Res<Vec<Thread>> {
+    match (backend.as_local(), version) {
+        (Some(local), Some(version)) => local.threads_at(&version),
+        _ => backend.threads(),
+    }
+}
+
 /// A message an agent is working on.
 #[derive(Clone, Debug)]
 pub(crate) struct Working {
@@ -240,6 +248,12 @@ pub(crate) struct OpenPr {
     /// Whether a thread was pulsing when the PR was last drawn, so that it is drawn again on each
     /// tick until none is.
     pub pulsing: std::cell::Cell<bool>,
+    /// For a local PR, the commits its diff on screen is of, as last read, which its threads are
+    /// placed in; none once the diff's range is changed with `:`, as it is then not the PR's.
+    pub version: std::cell::Cell<Option<local::Version>>,
+    /// The git command the PR's screen shows its diff with, whose range [`OpenPr::repin`] keeps
+    /// at `version`.
+    pub git: RefCell<Option<Rc<RefCell<crate::calling_process::GitCommand>>>>,
 }
 
 /// A comment being written, in a box in the diff.
@@ -276,9 +290,15 @@ pub(crate) const FILE_PREFIX_WIDTH: u16 = 4;
 impl OpenPr {
     /// Open the PR `backend` is for, reading its checkboxes and threads.
     pub fn new(backend: Rc<dyn Backend>) -> Res<Self> {
+        let version = backend
+            .as_local()
+            .map(local::LocalBackend::version)
+            .transpose()?;
         Ok(Self {
             viewed: RefCell::new(backend.viewed()?),
-            threads: RefCell::new(backend.threads()?),
+            threads: RefCell::new(threads_in(backend.as_ref(), version)?),
+            version: std::cell::Cell::new(version),
+            git: RefCell::new(None),
             working: RefCell::new(backend.working()?),
             pending_review: RefCell::new(backend.pending_review()?),
             summary: RefCell::new(backend.summary()?),
@@ -293,11 +313,36 @@ impl OpenPr {
     /// Read the threads, the messages agents are working on, the user's pending review on GitHub,
     /// and the summary of the PR from the backend again.
     pub fn reread_threads(&self) -> Res<()> {
-        *self.threads.borrow_mut() = self.backend.threads()?;
+        *self.threads.borrow_mut() = threads_in(self.backend.as_ref(), self.version.get())?;
         *self.working.borrow_mut() = self.backend.working()?;
         *self.pending_review.borrow_mut() = self.backend.pending_review()?;
         *self.summary.borrow_mut() = self.backend.summary()?;
         Ok(())
+    }
+
+    /// Read a local PR's commits again, as its branch may have moved, have its screen's diff show
+    /// them, and read its threads in them, as [`OpenPr::reread_threads`] does. The screen's rows
+    /// are to be built again after.
+    pub fn repin(&self) -> Res<()> {
+        if let (Some(local), Some(old)) = (self.backend.as_local(), self.version.get()) {
+            let new = local.version()?;
+            if new != old {
+                let replaced =
+                    self.git.borrow().as_ref().is_some_and(|git| {
+                        git.borrow_mut().replace_arg(&old.range(), &new.range())
+                    });
+                self.version.set(replaced.then_some(new));
+            }
+        }
+        self.reread_threads()
+    }
+
+    /// What to give `git diff` for the PR's diff: a local PR's in the commits it was last read in.
+    pub fn diff_range(&self) -> String {
+        match self.version.get() {
+            Some(version) => version.range(),
+            None => self.backend.diff_range(),
+        }
     }
 
     /// The checkbox drawn before the file at `path`: blank for a file the backend does not have
@@ -518,9 +563,20 @@ pub(crate) mod cli {
                     head.clone(),
                     base.clone(),
                 )?;
-                for message in pr.wait_for_messages()? {
-                    out.write_all(message.markdown().as_bytes())
-                        .map_err(|e| Error::LocalPr(format!("Couldn't print the messages: {e}")))?;
+                let messages = pr.wait_for_messages()?;
+                // Made waiting again if they can't be printed, so that none is lost.
+                let printed = messages
+                    .iter()
+                    .map(|message| pr.message_markdown(message))
+                    .collect::<Res<String>>()
+                    .and_then(|printed| {
+                        out.write_all(printed.as_bytes()).map_err(|e| {
+                            Error::LocalPr(format!("Couldn't print the messages: {e}"))
+                        })
+                    });
+                if let Err(e) = printed {
+                    pr.undeliver(&messages)?;
+                    return Err(e);
                 }
                 Ok(())
             }

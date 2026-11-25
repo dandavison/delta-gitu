@@ -97,6 +97,21 @@ impl GitCommand {
             })
     }
 
+    /// Replace the argument `from`, after the subcommand, with `to`, returning whether there was
+    /// one.
+    pub(crate) fn replace_arg(&mut self, from: &str, to: &str) -> bool {
+        match self.argv[self.subcommand + 1..]
+            .iter_mut()
+            .find(|arg| *arg == from)
+        {
+            Some(arg) => {
+                *arg = to.to_owned();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The same command run in `prefix` (see [`Self::prefix`]).
     pub(crate) fn run_in(self, prefix: String) -> Self {
         Self { prefix, ..self }

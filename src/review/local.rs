@@ -541,6 +541,102 @@ impl LocalBackend {
         self.branch_commit(&self.head)
     }
 
+    /// The commits the PR's diff is of now.
+    pub fn version(&self) -> Res<Version> {
+        Ok(Version {
+            head: self.head_commit()?,
+            merge_base: self.merge_base()?,
+        })
+    }
+
+    /// The PR's threads, on their lines in `version`. A thread is on the line its anchor records
+    /// while the commit the line is numbered against is unchanged, and otherwise on the line it
+    /// is found at (see [`locate`]).
+    pub fn threads_at(&self, version: &Version) -> Res<Vec<Thread>> {
+        let file = self.store.read()?;
+        let review_of = |review: &Option<String>| {
+            review
+                .as_ref()
+                .and_then(|id| file.reviews.iter().find(|r| r.id == *id))
+        };
+        // A local-only comment is in no review, and is local as a draft is.
+        let local = |review: &Option<String>| {
+            review.is_none() || review_of(review).is_some_and(|r| r.state == ReviewState::Draft)
+        };
+        let draft = |review: &Option<String>| {
+            review_of(review).is_some_and(|r| r.state == ReviewState::Draft)
+        };
+        let mine = |review: &Option<String>| review_of(review).is_some_and(|r| r.mine);
+        let submitted = |review: &Option<String>| {
+            review_of(review)
+                .is_some_and(|r| matches!(r.state, ReviewState::Submitted | ReviewState::Dismissed))
+        };
+        let Version { head, merge_base } = *version;
+        let mut files: HashMap<(Oid, String), Vec<String>> = HashMap::new();
+        let mut threads = vec![];
+        for thread in &file.threads {
+            let anchor = &thread.anchor;
+            let commit = match anchor.side {
+                Side::New => head,
+                Side::Old => merge_base,
+            };
+            let line = if thread.subject == Subject::File || anchor.text.is_empty() {
+                // A thread on a whole file has no line, nor one fetched from GitHub already
+                // outdated.
+                None
+            } else if anchor.commit == commit.to_string() {
+                Some(anchor.line)
+            } else {
+                let key = (commit, anchor.path.clone());
+                if !files.contains_key(&key) {
+                    files.insert(key.clone(), self.file_lines(commit, &anchor.path)?);
+                }
+                locate(anchor, &files[&key])
+            };
+            // A thread on several lines keeps as many, ending where its line now is.
+            let start_line = line.and_then(|line| {
+                let span = anchor.line.checked_sub(anchor.start_line?)?;
+                line.checked_sub(span)
+            });
+            threads.push(Thread {
+                id: thread.id.clone(),
+                path: thread.anchor.path.clone(),
+                line: line.map(|line| (thread.anchor.side, line)),
+                start_line,
+                subject: thread.subject,
+                resolved: thread.resolved,
+                // On GitHub, and with none of its comments copied from there.
+                deleted_on_github: thread.github.is_some()
+                    && !thread.comments.is_empty()
+                    && thread.comments.iter().all(|c| local(&c.review)),
+                comments: thread
+                    .comments
+                    .iter()
+                    .map(|comment| Comment {
+                        id: comment.id.clone(),
+                        author: comment.author.clone(),
+                        agent: comment.agent.clone(),
+                        body: comment.body.clone(),
+                        url: comment.url.clone(),
+                        created_at: comment.created_at,
+                        draft: draft(&comment.review),
+                        local_only: comment.review.is_none(),
+                        reactions: comment.reactions.clone(),
+                        // In the TUI the user edits their own comments, and replies to an
+                        // agent's; they can delete any local comment.
+                        editable: (local(&comment.review) && comment.agent.is_none())
+                            || mine(&comment.review),
+                        deletable: local(&comment.review) || mine(&comment.review),
+                        pending: review_of(&comment.review)
+                            .is_some_and(|r| r.state == ReviewState::Pending),
+                        submitted: submitted(&comment.review),
+                    })
+                    .collect(),
+            });
+        }
+        Ok(threads)
+    }
+
     /// Delete the comment `comment_id`, wherever it is: see [`Backend::delete_comment`].
     pub fn delete(&self, comment_id: &str, consent: Consent) -> Res<()> {
         let file = self.store.read()?;
@@ -1116,12 +1212,25 @@ impl LocalBackend {
         Ok(added)
     }
 
-    /// The PR's review threads as markdown, for `delta tui review show` (see [`markdown`]).
+    /// The PR's review threads as markdown, for `delta tui review show` (see
+    /// [`threads_markdown`]).
     pub fn markdown(&self) -> Res<String> {
+        Ok(format!(
+            "# Review of {} into {}\n{}",
+            self.head,
+            self.base,
+            self.markdown_in(&self.version()?, None)?
+        ))
+    }
+
+    /// The PR's threads in `version`, or only the thread `only`, as [`threads_markdown`] prints
+    /// them, each with the lines it is on in `version`.
+    fn markdown_in(&self, version: &Version, only: Option<&str>) -> Res<String> {
         let file = self.store.read()?;
-        let threads = self.threads()?;
+        let threads = self.threads_at(version)?;
         let entries = threads
             .iter()
+            .filter(|thread| only.is_none_or(|id| thread.id == id))
             .map(|thread| {
                 let anchor = &file
                     .threads
@@ -1138,23 +1247,82 @@ impl LocalBackend {
                     thread,
                     old_side: anchor.side == Side::Old,
                     recorded_line: Some(anchor.line),
-                    quote: Quote {
-                        before: anchor.before.clone(),
-                        text: anchor.text.clone(),
-                        after: anchor.after.clone(),
-                    },
+                    quote: self.quote(version, thread, anchor)?,
                 })
             })
             .collect::<Res<Vec<_>>>()?;
-        Ok(markdown(
-            &format!("Review of {} into {}", self.head, self.base),
-            entries,
-        ))
+        Ok(threads_markdown(entries))
     }
 
-    /// Leave `body` for an agent, about the thread `thread`, or else the whole PR, for `delta tui
-    /// review listen` to print.
-    pub fn send_message(&self, body: &str, thread: Option<&str>) -> Res<()> {
+    /// The lines `thread` is on in `version`, with up to [`CONTEXT`] lines either side. For a
+    /// thread whose line has gone, the lines `anchor` recorded when it was started.
+    fn quote(&self, version: &Version, thread: &Thread, anchor: &Anchor) -> Res<Quote> {
+        let Some((side, line)) = thread.line else {
+            return Ok(Quote {
+                before: anchor.before.clone(),
+                text: anchor.text.clone(),
+                after: anchor.after.clone(),
+            });
+        };
+        let commit = match side {
+            Side::New => version.head,
+            Side::Old => version.merge_base,
+        };
+        let lines = self.file_lines(commit, &thread.path)?;
+        let (start, end) = (thread.start_line.unwrap_or(line) as usize, line as usize);
+        if start == 0 || start > end || end > lines.len() {
+            return Err(Error::LocalPr(format!(
+                "Couldn't quote thread {}: {}:{line} is not a line of {} in commit {commit}",
+                thread.id, thread.path, thread.path
+            )));
+        }
+        Ok(Quote {
+            before: lines[(start - 1).saturating_sub(CONTEXT)..start - 1].to_vec(),
+            text: lines[start - 1..end].to_vec(),
+            after: lines[end..(end + CONTEXT).min(lines.len())].to_vec(),
+        })
+    }
+
+    /// `message` as `delta tui review listen` prints it: who sent it, about which PR, at which
+    /// commit, and about which thread, then what it says, then the thread it is about, or every
+    /// thread for a message about the whole PR, as in the commit it was sent at.
+    pub fn message_markdown(&self, message: &Message) -> Res<String> {
+        let at = match &message.version {
+            Some(version) => format!(" at {}", &version.head.to_string()[..7]),
+            None => String::new(),
+        };
+        let about = match &message.thread {
+            Some(thread) => format!(", about thread {thread}"),
+            None => String::new(),
+        };
+        let mut out = format!(
+            "# Message from {} on {} into {}{at}{about}\n\n{}\n",
+            message.from, message.head, message.base, message.body
+        );
+        if let Some(version) = &message.version {
+            let threads = self.markdown_in(version, message.thread.as_deref())?;
+            if threads.is_empty() && message.thread.is_some() {
+                out += "\nThe thread has been deleted since.\n";
+            }
+            out += &threads;
+        }
+        Ok(out)
+    }
+
+    /// Make `messages`, which `listen` took but couldn't print, waiting again.
+    pub fn undeliver(&self, messages: &[Message]) -> Res<()> {
+        self.store.update(|file| {
+            for message in &mut file.messages {
+                if messages.iter().any(|m| m.id == message.id) {
+                    message.delivered_at = None;
+                }
+            }
+        })
+    }
+
+    /// Leave `body` for an agent, about the thread `thread`, or else the whole PR, as its diff is
+    /// in `version`, for `delta tui review listen` to print.
+    pub fn send_message(&self, body: &str, thread: Option<&str>, version: &Version) -> Res<()> {
         if let Some(thread) = thread
             && !self.store.read()?.threads.iter().any(|t| t.id == thread)
         {
@@ -1168,6 +1336,8 @@ impl LocalBackend {
                 id: new_id(),
                 body: body.to_owned(),
                 thread: thread.map(str::to_owned),
+                commit: Some(version.head.to_string()),
+                merge_base: Some(version.merge_base.to_string()),
                 created_at: now,
                 delivered_at: None,
                 done_at: None,
@@ -1235,13 +1405,23 @@ impl LocalBackend {
         }
         let now = chrono::Local::now().fixed_offset();
         let mut taken = vec![];
+        let mut unreadable = None;
         self.store.update(|file| {
             for message in &mut file.messages {
                 if message.delivered_at.is_some() && message.done_at.is_none() {
                     message.done_at = Some(now);
                 } else if message.delivered_at.is_none() {
+                    let version = match message.version() {
+                        Ok(version) => version,
+                        Err(e) => {
+                            unreadable = Some(e);
+                            continue;
+                        }
+                    };
                     message.delivered_at = Some(now);
                     taken.push(Message {
+                        id: message.id.clone(),
+                        version,
                         from: self.reviewer.clone(),
                         head: self.head.clone(),
                         base: self.base.clone(),
@@ -1251,6 +1431,10 @@ impl LocalBackend {
                 }
             }
         })?;
+        if let Some(e) = unreadable {
+            self.undeliver(&taken)?;
+            return Err(e);
+        }
         Ok(taken)
     }
 
@@ -1366,7 +1550,7 @@ pub(crate) struct Quote {
     pub after: Vec<String>,
 }
 
-/// A thread as [`markdown`] prints it.
+/// A thread as [`threads_markdown`] prints it.
 pub(crate) struct MarkdownThread<'a> {
     pub thread: &'a Thread,
     pub old_side: bool,
@@ -1375,15 +1559,15 @@ pub(crate) struct MarkdownThread<'a> {
     pub quote: Quote,
 }
 
-/// `threads` as markdown, under the heading `title`: by file and line, each with its id, the
+/// `threads` as markdown: by file and line, each under a heading of its own with its id, the
 /// lines it is on (the line marked `>`), and its comments, saying which are drafts and which
 /// local-only.
-pub(crate) fn markdown(title: &str, mut threads: Vec<MarkdownThread>) -> String {
+fn threads_markdown(mut threads: Vec<MarkdownThread>) -> String {
     threads.sort_by_key(|entry| {
         let line = entry.thread.line.map(|(side, n)| (n, side == Side::Old));
         (entry.thread.path.clone(), line)
     });
-    let mut out = format!("# {title}\n");
+    let mut out = String::new();
     for MarkdownThread {
         thread,
         old_side,
@@ -1924,92 +2108,8 @@ impl Backend for LocalBackend {
         })
     }
 
-    /// A thread is on the line its anchor records while the commit the line is numbered against
-    /// is unchanged, and otherwise on the line it is found at (see [`locate`]).
     fn threads(&self) -> Res<Vec<Thread>> {
-        let file = self.store.read()?;
-        let review_of = |review: &Option<String>| {
-            review
-                .as_ref()
-                .and_then(|id| file.reviews.iter().find(|r| r.id == *id))
-        };
-        // A local-only comment is in no review, and is local as a draft is.
-        let local = |review: &Option<String>| {
-            review.is_none() || review_of(review).is_some_and(|r| r.state == ReviewState::Draft)
-        };
-        let draft = |review: &Option<String>| {
-            review_of(review).is_some_and(|r| r.state == ReviewState::Draft)
-        };
-        let mine = |review: &Option<String>| review_of(review).is_some_and(|r| r.mine);
-        let submitted = |review: &Option<String>| {
-            review_of(review)
-                .is_some_and(|r| matches!(r.state, ReviewState::Submitted | ReviewState::Dismissed))
-        };
-        let head = self.branch_commit(&self.head)?;
-        let merge_base = self.merge_base()?;
-        let mut files: HashMap<(Oid, String), Vec<String>> = HashMap::new();
-        let mut threads = vec![];
-        for thread in &file.threads {
-            let anchor = &thread.anchor;
-            let commit = match anchor.side {
-                Side::New => head,
-                Side::Old => merge_base,
-            };
-            let line = if thread.subject == Subject::File || anchor.text.is_empty() {
-                // A thread on a whole file has no line, nor one fetched from GitHub already
-                // outdated.
-                None
-            } else if anchor.commit == commit.to_string() {
-                Some(anchor.line)
-            } else {
-                let key = (commit, anchor.path.clone());
-                if !files.contains_key(&key) {
-                    files.insert(key.clone(), self.file_lines(commit, &anchor.path)?);
-                }
-                locate(anchor, &files[&key])
-            };
-            // A thread on several lines keeps as many, ending where its line now is.
-            let start_line = line.and_then(|line| {
-                let span = anchor.line.checked_sub(anchor.start_line?)?;
-                line.checked_sub(span)
-            });
-            threads.push(Thread {
-                id: thread.id.clone(),
-                path: thread.anchor.path.clone(),
-                line: line.map(|line| (thread.anchor.side, line)),
-                start_line,
-                subject: thread.subject,
-                resolved: thread.resolved,
-                // On GitHub, and with none of its comments copied from there.
-                deleted_on_github: thread.github.is_some()
-                    && !thread.comments.is_empty()
-                    && thread.comments.iter().all(|c| local(&c.review)),
-                comments: thread
-                    .comments
-                    .iter()
-                    .map(|comment| Comment {
-                        id: comment.id.clone(),
-                        author: comment.author.clone(),
-                        agent: comment.agent.clone(),
-                        body: comment.body.clone(),
-                        url: comment.url.clone(),
-                        created_at: comment.created_at,
-                        draft: draft(&comment.review),
-                        local_only: comment.review.is_none(),
-                        reactions: comment.reactions.clone(),
-                        // In the TUI the user edits their own comments, and replies to an
-                        // agent's; they can delete any local comment.
-                        editable: (local(&comment.review) && comment.agent.is_none())
-                            || mine(&comment.review),
-                        deletable: local(&comment.review) || mine(&comment.review),
-                        pending: review_of(&comment.review)
-                            .is_some_and(|r| r.state == ReviewState::Pending),
-                        submitted: submitted(&comment.review),
-                    })
-                    .collect(),
-            });
-        }
-        Ok(threads)
+        self.threads_at(&self.version()?)
     }
 
     /// A reply is local-only if its thread's first comment is, unless [`LocalBackend::with_bucket`]
@@ -2136,8 +2236,24 @@ impl Backend for LocalBackend {
     }
 }
 
+/// The commits a local PR's diff is of: its head branch's last commit, whose lines the new side's
+/// are, and where it branched from its base, whose lines the old side's are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Version {
+    pub head: Oid,
+    pub merge_base: Oid,
+}
+
+impl Version {
+    /// What to give `git diff` for the diff.
+    pub fn range(&self) -> String {
+        format!("{}...{}", self.merge_base, self.head)
+    }
+}
+
 /// A message from the reviewer to an agent.
 pub(crate) struct Message {
+    pub id: String,
     pub from: String,
     /// The PR's branch and base branch.
     pub head: String,
@@ -2145,20 +2261,9 @@ pub(crate) struct Message {
     pub body: String,
     /// The thread the message is about, if it is about one rather than the whole PR.
     pub thread: Option<String>,
-}
-
-impl Message {
-    /// The message as markdown, for `delta tui review listen`.
-    pub fn markdown(&self) -> String {
-        let about = match &self.thread {
-            Some(thread) => format!(", about thread {thread}"),
-            None => String::new(),
-        };
-        format!(
-            "# Message from {} on {} into {}{about}\n\n{}\n",
-            self.from, self.head, self.base, self.body
-        )
-    }
+    /// The commits the PR's diff was of when the message was sent; none for a message from
+    /// before messages recorded them.
+    pub version: Option<Version>,
 }
 
 /// The version of [`PrFile`] this gitu writes. Version 1 had a draft review for each author,
@@ -2193,6 +2298,27 @@ struct PrFile {
     messages: Vec<StoredMessage>,
 }
 
+impl StoredMessage {
+    /// The commits the PR's diff was of when it was sent, if it records them.
+    fn version(&self) -> Res<Option<Version>> {
+        let (Some(head), Some(merge_base)) = (&self.commit, &self.merge_base) else {
+            return Ok(None);
+        };
+        let oid = |id: &str| {
+            Oid::from_str(id).map_err(|e| {
+                Error::LocalPr(format!(
+                    "Couldn't read message {}: {id} is not a commit id: {e}",
+                    self.id
+                ))
+            })
+        };
+        Ok(Some(Version {
+            head: oid(head)?,
+            merge_base: oid(merge_base)?,
+        }))
+    }
+}
+
 /// A message from the reviewer to an agent, which `delta tui review listen` prints.
 #[derive(Serialize, Deserialize)]
 struct StoredMessage {
@@ -2201,6 +2327,12 @@ struct StoredMessage {
     /// The thread the message is about, if it is about one rather than the whole PR.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     thread: Option<String>,
+    /// The commits the PR's diff was of when it was sent: its head's last commit, and where it
+    /// branched from its base. None in a message from before messages recorded them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    merge_base: Option<String>,
     created_at: chrono::DateTime<chrono::FixedOffset>,
     /// When `listen` printed it to an agent; none until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]

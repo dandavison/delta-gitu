@@ -402,8 +402,9 @@ impl App {
                             .to_owned(),
                     ));
                 }
-                // A local PR's threads, pending review and summary are read from the store.
-                pr.reread_threads()?;
+                // A local PR's threads, pending review and summary are read from the store, and
+                // its branch may have moved.
+                pr.repin()?;
             }
         }
         Ok(())
