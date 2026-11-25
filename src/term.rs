@@ -221,7 +221,7 @@ const ATTRS: &[(Modifier, Attribute)] = &[
     (Modifier::CROSSED_OUT, Attribute::CrossedOut),
 ];
 
-fn print_crossterm_span(text: &str, style: &Style, t: &mut Stdout) -> Result<(), io::Error> {
+fn print_crossterm_span(text: &str, style: &Style, t: &mut impl Write) -> Result<(), io::Error> {
     let fg = style.fg.unwrap_or(Color::Reset);
     let bg = style.bg.unwrap_or(Color::Reset);
 
@@ -236,6 +236,16 @@ fn print_crossterm_span(text: &str, style: &Style, t: &mut Stdout) -> Result<(),
     crossterm::queue!(t, SetColors(Colors::new(fg.into(), bg.into())))?;
     crossterm::queue!(t, Print(text))?;
     Ok(())
+}
+
+/// `text` with the escape sequences that draw it in `style` on a terminal, as the TUI draws it,
+/// and then reset.
+pub(crate) fn styled(text: &str, style: &Style) -> String {
+    let mut out = vec![];
+    print_crossterm_span(text, style, &mut out).expect("writing to memory doesn't fail");
+    crossterm::queue!(out, SetAttribute(Attribute::Reset), ResetColor)
+        .expect("writing to memory doesn't fail");
+    String::from_utf8(out).expect("text and escape sequences are UTF-8")
 }
 
 impl TermBackend {

@@ -8,10 +8,11 @@
 use crate::{
     Res,
     config::{Config, DEFAULT_CONFIG},
-    config_git::{self, Kind},
+    config_git::{self, Kind, parse_delta_style},
     config_migrate::quoted,
     error::Error,
     screen::review::{OPTION_NAMES, OPTIONS, comment_style_default},
+    term::styled,
 };
 use figment::{
     Figment,
@@ -34,6 +35,16 @@ pub(crate) struct Shown {
     pub default: Vec<String>,
     /// Whether the user set it, in git config or in gitu's config file.
     pub set: bool,
+    /// Whether its value is a style, and which kind.
+    pub style: Option<StyleKind>,
+}
+
+/// The kinds of style a setting can be, as delta reads them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum StyleKind {
+    Style,
+    /// A style that can also ask for one of delta's decorations, such as a box.
+    Decoration,
 }
 
 /// What `bind` does, which has no comment of its own in gitu's defaults.
@@ -69,6 +80,7 @@ pub(crate) fn settings(config: &Config, dir: &Path) -> Res<Vec<Shown>> {
             values: strings(values.find_value(&path).ok(), setting.kind, &setting.name)?,
             default: strings(defaults.find_value(&path).ok(), setting.kind, &setting.name)?,
             set: git.contains(&path) || config.file.contains(&path),
+            style: (setting.kind == Kind::Style).then_some(StyleKind::Style),
             name: setting.name,
             description,
         });
@@ -82,7 +94,15 @@ pub(crate) fn settings(config: &Config, dir: &Path) -> Res<Vec<Shown>> {
         }
         .filter(|default| !default.is_empty())
         .map(str::to_owned);
+        let style = if option.name.ends_with("-decoration-style") {
+            Some(StyleKind::Decoration)
+        } else if option.name.ends_with("-style") {
+            Some(StyleKind::Style)
+        } else {
+            None
+        };
         shown.push(Shown {
+            style,
             name: option.name.to_owned(),
             description: option.description.to_owned(),
             set: value.is_some(),
@@ -256,12 +276,9 @@ fn bindings(menus: &Dict) -> Vec<String> {
 /// `settings` as git config's `[delta]` section: each setting under a comment saying what it
 /// does, a list as an entry for each item, a setting with no value commented out, and the
 /// default of one the user set to something else after it. With `paint`, a style is drawn in
-/// itself, as `delta --show-config` draws one.
-pub(crate) fn text(settings: &[Shown], _paint: bool) -> String {
-    let mut out = String::from(
-        "# delta tui's settings, as they go in git config's [delta] section, with their values \
-         here.\n\n[delta]\n",
-    );
+/// itself, as `delta --show-config` draws one. A value that is not a style says why.
+pub(crate) fn text(settings: &[Shown], paint: bool) -> String {
+    let mut out = String::from("# delta tui settings\n\n[delta]\n");
     for setting in settings {
         out.push('\n');
         for line in setting.description.lines() {
@@ -272,7 +289,19 @@ pub(crate) fn text(settings: &[Shown], _paint: bool) -> String {
             out.push_str(&format!("# {} =\n", setting.name));
         }
         for value in &setting.values {
-            out.push_str(&format!("{} = {}\n", setting.name, quoted(value)));
+            let mut shown = quoted(value);
+            let mut not_a_style = None;
+            if let Some(kind) = setting.style {
+                match parse_delta_style(value, kind == StyleKind::Decoration) {
+                    Ok(parsed) if paint => shown = styled(&shown, &parsed.style),
+                    Ok(_) => {}
+                    Err(error) => not_a_style = Some(error),
+                }
+            }
+            out.push_str(&format!("{} = {shown}\n", setting.name));
+            if let Some(error) = not_a_style {
+                out.push_str(&format!("# This is not a style: {error}\n"));
+            }
         }
         if setting.set && setting.values != setting.default {
             let default = match setting.default.as_slice() {
