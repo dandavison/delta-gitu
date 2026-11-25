@@ -5,7 +5,7 @@ expression: ctx.redact_buffer()
 ▌Cherry-picking other-branch                                                    |
                                                                                 |
  Unstaged changes (1)                                                           |
- conflict-file                                                                  |
+ conflict-file…                                                                 |
                                                                                 |
  Staged changes (1)                                                             |
  unmerged   conflict-file                                                       |

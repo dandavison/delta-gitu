@@ -9,6 +9,7 @@ expression: ctx.redact_buffer()
  non_utf8.txt                                                                   |
  @@ -1 +1 @@                                                                    |
  -File with valid UTF-8                                                         |
+ \ No newline at end of file                                                    |
  +File with invalid UTF-8: ��                                                   |
                                                                                 |
  Recent commits                                                                 |
@@ -21,5 +22,4 @@ expression: ctx.redact_buffer()
                                                                                 |
                                                                                 |
                                                                                 |
-                                                                                |
-styles_hash: d62ccd25d9ee68dc
+styles_hash: 522e17f015cc5f24

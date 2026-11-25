@@ -919,7 +919,8 @@ pub(super) fn awk_path(path: &std::path::Path) -> String {
 /// `commit-regex = ^(▸|commit )`. It draws a file's header as delta does, in
 /// place of git's header rows, and keeps git's colours only off a hunk's lines.
 /// Only a hunk's lines are content: a commit message's are indented as context
-/// lines are.
+/// lines are. A combined diff's merge conflict is drawn as delta draws it: each
+/// side's lines as added to the ancestor's, under the side's name.
 pub(super) fn annotating_renderer() -> Vec<String> {
     // The program has no `\\`: on Windows, awk (MSYS2's) reads `\\` in its
     // command-line argument as a single backslash, so a backslash is `bs`.
@@ -944,13 +945,34 @@ pub(super) fn annotating_renderer() -> Vec<String> {
         /^new mode /{suffix=oldmode=="100644"&&$3=="100755"?" (mode +x)":oldmode=="100755"&&$3=="100644"?" (mode -x)":" (mode " oldmode " ⟶   " $3 ")"}
         /^Binary files /{suffix=" (binary file)"}
         header{next}
-        /^@@ /{o=$2;n=$3;sub(/^-/,"",o);sub(/^\+/,"",n);split(o,a,",");split(n,b,",");old=a[1];new=b[1];hunk=1;printf "%s;h;%d;;%s%s%s\n",osc,new,file,st,raw;next}
+        /^@@ /{o=$2;n=$3;sub(/^-/,"",o);sub(/^\+/,"",n);split(o,a,",");split(n,b,",");old=a[1];new=b[1];np=1;hunk=1;printf "%s;h;%d;;%s%s%s\n",osc,new,file,st,raw;next}
+        /^@@@+ /{np=index($0," ")-2;for(i=1;i<=np;i++){o=$(i+1);sub(/^-/,"",o);split(o,a,",");p[i]=a[1]}n=$(np+2);sub(/^\+/,"",n);split(n,b,",");new=b[1];hunk=1;printf "%s;h;%d;;%s%s%s\n",osc,new,file,st,raw;next}
+        hunk&&np>1&&sec==""&&/^\+\+<<<<<<< ./{record();ours=substr($0,11);no=na=nt=0;sec="o";next}
+        hunk&&np>1&&sec!=""{conflict_line();next}
+        hunk&&np>1{printf "%s;%s;%s%s%s\n",osc,record(),file,st,$0;next}
         hunk&&/^\+/{printf "%s;a;%d;;%s%s%s\n",osc,new++,file,st,$0;next}
         hunk&&/^-/{printf "%s;d;%d;%d;%s%s%s\n",osc,new,old++,file,st,$0;next}
         hunk&&/^ /{printf "%s;c;%d;;%s%s%s\n",osc,new++,file,st,$0;old++;next}
         {print raw}
         END{if(header)file_header();printf "%s",handshake}
         function file_header(){printf "\n%s;f;;;%s%s%s%s\n",osc,file,st,label,suffix;header=0}
+        function record(  pre,i,d,k){pre=substr($0,1,np);d=index(pre,"-");if(d){k=sprintf("d;%d;%d",new,p[d]);for(i=1;i<=np;i++)if(substr(pre,i,1)=="-")p[i]++;return k}k=(index(pre,"+")?"a":"c") ";" new ";";for(i=1;i<=np;i++)if(substr(pre,i,1)==" ")p[i]++;new++;return k}
+        function conflict_line(){
+          if(sec=="o"&&/^\+\+[|][|][|][|][|][|][|] ./){record();ancestor=substr($0,11);sec="a";return}
+          if(sec!="t"&&/^\+\+=======/){record();sec="t";return}
+          if(/^\+\+>>>>>>> ./){record();theirs=substr($0,11);conflict();sec="";return}
+          if(sec=="o"){ok[++no]=record();ot[no]=substr($0,np+1)}
+          else if(sec=="a"){ak[++na]=record();at[na]=substr($0,np+1)}
+          else{tk[++nt]=record();tt[nt]=substr($0,np+1)}
+        }
+        function conflict(){print repeat("▼",ENVIRON["COLUMNS"]);side(ours,ok,ot,no);side(theirs,tk,tt,nt);print repeat("▲",ENVIRON["COLUMNS"])}
+        function side(name,k,t,n,  i,w){
+          w=ancestor==""?length(name):14+length(name)
+          print repeat("─",w) "┐";print (ancestor==""?name:"ancestor ⟶   " name " ") "│";print repeat("─",w) "┘"
+          for(i=1;i<=na;i++)printf "%s;%s;%s%s-%s\n",osc,ak[i],file,st,at[i]
+          for(i=1;i<=n;i++)printf "%s;%s;%s%s+%s\n",osc,k[i],file,st,t[i]
+        }
+        function repeat(c,n,  r){r="";while(n-->0)r=r c;return r}
         "#,
     ]
     .map(String::from)

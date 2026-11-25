@@ -1157,6 +1157,22 @@ mod tests {
     }
 
     #[test]
+    fn conflicted_file_hunks() {
+        let input = "diff --cc f\nindex 7dcdb15,b097ba1..0000000\n--- a/f\n+++ b/f\n@@@ -1,5 -1,4 +1,8 @@@\n  a\n- b\n  c\n++<<<<<<< HEAD\n +hi\n++=======\n+ hey\n++>>>>>>> other\n  z\n";
+
+        let diffs = Parser::new(input).parse_diff().unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].hunks.len(), 1);
+        let hunk = &diffs[0].hunks[0];
+        assert_eq!(hunk.header.new_line_start, 1);
+        assert_eq!(hunk.header.new_line_count, 8);
+        assert_eq!(
+            &input[hunk.content.range.clone()],
+            "  a\n- b\n  c\n++<<<<<<< HEAD\n +hi\n++=======\n+ hey\n++>>>>>>> other\n  z\n"
+        );
+    }
+
+    #[test]
     fn unmerged_path() {
         let input = "* Unmerged path new-file\n* Unmerged path new-file-2\n";
         let mut parser = Parser::new(input);

@@ -1,0 +1,25 @@
+---
+source: src/tests/mod.rs
+expression: ctx.redact_buffer()
+---
+ Merging other-branch                                                           |
+                                                                                |
+ Unstaged changes (1)                                                           |
+ new-file                                                                       |
+ @@@ -1,1 -1,1 +1,5 @@@                                                         |
+ ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ |
+ ────┐                                                                          |
+ HEAD│                                                                          |
+ ────┘                                                                          |
+▌+hi                                                                            |
+ ────────────┐                                                                  |
+ other-branch│                                                                  |
+ ────────────┘                                                                  |
+ +hey                                                                           |
+                                                                                |
+ Staged changes (1)                                                             |
+ unmerged   new-file                                                            |
+                                                                                |
+────────────────────────────────────────────────────────────────────────────────|
+! Git cannot apply a merge conflict's diff: edit the file, then stage it        |
+styles_hash: 12282ae3d3bafb0b
