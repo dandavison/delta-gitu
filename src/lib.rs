@@ -112,7 +112,10 @@ pub fn run(config: Arc<Config>, args: &cli::Args, term: &mut Term) -> Res<i32> {
         let dir = std::env::current_dir().map_err(Error::Term)?;
         let settings = show_config::settings(&config, &dir)?;
         match format {
-            cli::ConfigFormat::Text => print!("{}", show_config::text(&settings)),
+            cli::ConfigFormat::Text => print!(
+                "{}",
+                show_config::text(&settings, io::stdout().is_terminal())
+            ),
             cli::ConfigFormat::Json => println!(
                 "{}",
                 serde_json::to_string_pretty(&show_config::json(&settings)).expect("JSON")

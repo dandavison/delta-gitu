@@ -255,8 +255,9 @@ fn bindings(menus: &Dict) -> Vec<String> {
 
 /// `settings` as git config's `[delta]` section: each setting under a comment saying what it
 /// does, a list as an entry for each item, a setting with no value commented out, and the
-/// default of one the user set to something else after it.
-pub(crate) fn text(settings: &[Shown]) -> String {
+/// default of one the user set to something else after it. With `paint`, a style is drawn in
+/// itself, as `delta --show-config` draws one.
+pub(crate) fn text(settings: &[Shown], _paint: bool) -> String {
     let mut out = String::from(
         "# delta tui's settings, as they go in git config's [delta] section, with their values \
          here.\n\n[delta]\n",

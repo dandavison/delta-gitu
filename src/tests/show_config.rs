@@ -92,7 +92,7 @@ fn the_text_is_git_config_saying_what_each_setting_does() {
     let mut ctx = setup_clone!();
     let shown = shown(&mut ctx, &[("section-header-style", "bold red")]);
 
-    let text = show_config::text(&shown);
+    let text = show_config::text(&shown, false);
 
     let lines: Vec<&str> = text.lines().collect();
     let at = lines
@@ -101,6 +101,41 @@ fn the_text_is_git_config_saying_what_each_setting_does() {
         .unwrap_or_else(|| panic!("{text}"));
     assert!(lines[at - 1].starts_with("# "), "{text}");
     assert!(lines.contains(&"# alt-editor ="), "{text}");
+}
+
+/// Painted, as for a terminal, a style is drawn in itself, a decoration style too, and nothing
+/// else is; unpainted, as for a file, nothing is.
+#[test]
+fn the_text_paints_each_style_in_itself() {
+    let mut ctx = setup_clone!();
+    let shown = shown(
+        &mut ctx,
+        &[
+            ("section-header-style", "bold red"),
+            ("comment-decoration-style", "blue box"),
+        ],
+    );
+
+    let painted = show_config::text(&shown, true);
+
+    let line = |name: &str| {
+        painted
+            .lines()
+            .find(|line| line.starts_with(&format!("{name} = ")))
+            .unwrap_or_else(|| panic!("no {name}:\n{painted}"))
+            .to_owned()
+    };
+    for (name, value) in [
+        ("section-header-style", "bold red"),
+        ("comment-decoration-style", "blue box"),
+    ] {
+        let line = line(name);
+        let value_at = line.find(value).unwrap_or_else(|| panic!("{line:?}"));
+        assert!(line[..value_at].contains("\x1b["), "{line:?}");
+        assert!(line[value_at..].contains("\x1b["), "{line:?}");
+    }
+    assert!(!line("stash-list-limit").contains('\x1b'));
+    assert!(!show_config::text(&shown, false).contains('\x1b'));
 }
 
 #[test]
