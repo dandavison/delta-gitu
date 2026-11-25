@@ -181,18 +181,22 @@ delta tui review show --head <branch> --base <branch>
 ## 3. Listen for messages from the person
 
 The person can send you messages from a PR in `delta tui`, with `@`: about a thread, or about the
-whole PR. When they ask you to listen to delta, run this in the background, in the branch's
-worktree:
+whole PR. When they ask you to listen to delta, run this in the background:
 
 ```sh
 delta tui review listen
 ```
 
 It waits for messages to the current branch's PR, prints them, and exits. Each message starts
-with `# Message from <person>`, followed by `about thread <thread-id>` if it is about a thread.
-Do what each asks, and answer one about a thread in that thread, local-only, as in "Read and
-answer a review" above. Then run `delta tui review listen` again. A message sent while you work is kept, and the next listen prints
-it at once. Each message is printed only once, so run one listen at a time.
+with `# Message from <person> on <branch> into <base>`, followed by `, about thread <thread-id>`
+if it is about a thread. Do what each asks, and answer one about a thread in that thread,
+local-only, as in "Read and answer a review" above. Then run `delta tui review listen` again. A
+message sent while you work is kept, and the next listen prints it at once. Each message is printed
+only once, so run one listen at a time for each branch.
+
+Run these commands, and make and commit the changes messages ask for, in the worktree where the
+branch is checked out, which may not be the one you were started in: `git worktree list` shows
+each worktree's branch. To listen to several branches, run a listen in each one's worktree.
 
 ## 4. Post your review as a review of its own
 

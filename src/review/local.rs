@@ -1245,6 +1245,8 @@ impl LocalBackend {
                     message.delivered_at = Some(now);
                     taken.push(Message {
                         from: self.reviewer.clone(),
+                        head: self.head.clone(),
+                        base: self.base.clone(),
                         body: message.body.clone(),
                         thread: message.thread.clone(),
                     });
@@ -2139,6 +2141,9 @@ impl Backend for LocalBackend {
 /// A message from the reviewer to an agent.
 pub(crate) struct Message {
     pub from: String,
+    /// The PR's branch and base branch.
+    pub head: String,
+    pub base: String,
     pub body: String,
     /// The thread the message is about, if it is about one rather than the whole PR.
     pub thread: Option<String>,
@@ -2148,10 +2153,13 @@ impl Message {
     /// The message as markdown, for `delta tui review listen`.
     pub fn markdown(&self) -> String {
         let about = match &self.thread {
-            Some(thread) => format!(" about thread {thread}"),
+            Some(thread) => format!(", about thread {thread}"),
             None => String::new(),
         };
-        format!("# Message from {}{about}\n\n{}\n", self.from, self.body)
+        format!(
+            "# Message from {} on {} into {}{about}\n\n{}\n",
+            self.from, self.head, self.base, self.body
+        )
     }
 }
 
