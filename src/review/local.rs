@@ -168,7 +168,9 @@ impl LocalBackend {
     }
 
     /// Refuse a PR whose branch is behind its remote's, so that what is reviewed is the branch
-    /// as it is. Sync, which brings the branch up to GitHub's head itself, doesn't ask this.
+    /// as it is. A branch whose upstream is gone, as git says of one deleted on the remote, has
+    /// nothing to be behind. Sync, which brings the branch up to GitHub's head itself, doesn't
+    /// ask this.
     pub fn check_not_behind(&self) -> Res<()> {
         let local = format!("refs/heads/{}", self.head);
         let upstream = match self.repo.branch_upstream_name(&local) {
@@ -187,11 +189,7 @@ impl LocalBackend {
             }
         };
         let Some(upstream_commit) = ref_commit(&self.repo, &upstream)? else {
-            return Err(opening(Error::LocalPr(format!(
-                "{}'s upstream, {}, is not there. Fetch it, or unset it",
-                self.head,
-                short_ref(&upstream)
-            ))));
+            return Ok(());
         };
         let behind = self.count_commits(upstream_commit, self.head_commit()?)?;
         if behind > 0 {
