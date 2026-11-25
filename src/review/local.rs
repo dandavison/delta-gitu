@@ -1154,6 +1154,102 @@ impl LocalBackend {
         ))
     }
 
+    /// Leave `body` for an agent, about the thread `thread`, or else the whole PR, for `delta tui
+    /// review listen` to print.
+    pub fn send_message(&self, body: &str, thread: Option<&str>) -> Res<()> {
+        if let Some(thread) = thread
+            && !self.store.read()?.threads.iter().any(|t| t.id == thread)
+        {
+            return Err(Error::LocalPr(format!(
+                "Couldn't send the message: the PR has no thread {thread}"
+            )));
+        }
+        let now = chrono::Local::now().fixed_offset();
+        self.store.update(|file| {
+            file.messages.push(StoredMessage {
+                id: new_id(),
+                body: body.to_owned(),
+                thread: thread.map(str::to_owned),
+                created_at: now,
+                delivered_at: None,
+            });
+        })
+    }
+
+    /// The messages to agents that no `listen` has printed, marked printed, once there are any.
+    /// While there are none, it waits, watching the directory the PR is recorded in.
+    pub fn wait_for_messages(&self) -> Res<Vec<Message>> {
+        let dir = self
+            .store
+            .path
+            .parent()
+            .expect("the store is in a directory");
+        fs::create_dir_all(dir).map_err(|e| self.store.error("watch", e))?;
+        // FSEvents gives the real paths of what changed, which a path through a symlink, such as
+        // macOS's /var, is not.
+        let dir = dir
+            .canonicalize()
+            .map_err(|e| self.store.error("watch", e))?;
+        let watch_error = |e: notify::Error| {
+            Error::LocalPr(format!(
+                "Couldn't watch {} for messages: {e}",
+                dir.display()
+            ))
+        };
+        use notify::Watcher;
+        let (sender, events) = std::sync::mpsc::channel();
+        let mut watcher = notify::recommended_watcher(sender).map_err(watch_error)?;
+        // Before looking, so that a message sent after looking wakes it.
+        watcher
+            .watch(&dir, notify::RecursiveMode::NonRecursive)
+            .map_err(watch_error)?;
+        loop {
+            let messages = self.take_messages()?;
+            if !messages.is_empty() {
+                return Ok(messages);
+            }
+            match events.recv() {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(watch_error(e)),
+                Err(_) => {
+                    return Err(Error::LocalPr(format!(
+                        "Couldn't watch {} for messages: the watcher stopped",
+                        dir.display()
+                    )));
+                }
+            }
+        }
+    }
+
+    /// The messages to agents that no `listen` has printed, marked printed.
+    fn take_messages(&self) -> Res<Vec<Message>> {
+        // Looked for first without writing, which would wake every listener.
+        if self
+            .store
+            .read()?
+            .messages
+            .iter()
+            .all(|m| m.delivered_at.is_some())
+        {
+            return Ok(vec![]);
+        }
+        let now = chrono::Local::now().fixed_offset();
+        let mut taken = vec![];
+        self.store.update(|file| {
+            for message in &mut file.messages {
+                if message.delivered_at.is_none() {
+                    message.delivered_at = Some(now);
+                    taken.push(Message {
+                        from: self.reviewer.clone(),
+                        body: message.body.clone(),
+                        thread: message.thread.clone(),
+                    });
+                }
+            }
+        })?;
+        Ok(taken)
+    }
+
     /// Change the comment `comment_id` in the thread `thread_id` as `change` says, given the
     /// thread and the comment's index in it, if the comment is local: in the draft review, or
     /// local-only. A thread left with no comments is deleted.
@@ -2020,6 +2116,25 @@ impl Backend for LocalBackend {
     }
 }
 
+/// A message from the reviewer to an agent.
+pub(crate) struct Message {
+    pub from: String,
+    pub body: String,
+    /// The thread the message is about, if it is about one rather than the whole PR.
+    pub thread: Option<String>,
+}
+
+impl Message {
+    /// The message as markdown, for `delta tui review listen`.
+    pub fn markdown(&self) -> String {
+        let about = match &self.thread {
+            Some(thread) => format!(" about thread {thread}"),
+            None => String::new(),
+        };
+        format!("# Message from {}{about}\n\n{}\n", self.from, self.body)
+    }
+}
+
 /// The version of [`PrFile`] this gitu writes. Version 1 had a draft review for each author,
 /// an agent's among them; version 2 has one, the reviewer's (see [`merge_drafts`]). Version 3
 /// records the GitHub PR the local PR is linked to, which a gitu writing version 2 would drop.
@@ -2027,8 +2142,9 @@ impl Backend for LocalBackend {
 /// started, which posting no longer needs. Version 5 records a thread's subject and the first of
 /// its lines, which a gitu writing version 4 would drop. Version 6 records when posting a draft
 /// comment began, which a gitu writing version 5 would drop. Version 7 has local-only comments,
-/// in no review, which a gitu writing version 6 can't read.
-const VERSION: u32 = 7;
+/// in no review, which a gitu writing version 6 can't read. Version 8 records messages to agents,
+/// which a gitu writing version 7 would drop.
+const VERSION: u32 = 8;
 
 /// What is recorded about a local PR, as JSON.
 #[derive(Serialize, Deserialize)]
@@ -2047,6 +2163,22 @@ struct PrFile {
     /// The GitHub PR the local PR is linked to, once it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     github_pr: Option<GitHubLink>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    messages: Vec<StoredMessage>,
+}
+
+/// A message from the reviewer to an agent, which `delta tui review listen` prints.
+#[derive(Serialize, Deserialize)]
+struct StoredMessage {
+    id: String,
+    body: String,
+    /// The thread the message is about, if it is about one rather than the whole PR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thread: Option<String>,
+    created_at: chrono::DateTime<chrono::FixedOffset>,
+    /// When `listen` printed it to an agent; none until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delivered_at: Option<chrono::DateTime<chrono::FixedOffset>>,
 }
 
 /// A GitHub PR, as a local PR's link to it records it.
@@ -2249,6 +2381,7 @@ impl Store {
                     reviews: vec![],
                     threads: vec![],
                     github_pr: None,
+                    messages: vec![],
                 });
             }
             Err(e) => return Err(self.error("read", e)),

@@ -351,6 +351,9 @@ root.toggle_viewed = ["x"]
 root.show_on_github = ["o"]
 root.write_comment = ["i"]
 root.toggle_local_only = ["p"]
+# Leave a message for an agent running `delta tui review listen`, about the
+# thread under the cursor, or else the whole PR.
+root.message_agent = ["@"]
 # Enable or disable a renderer feature (side-by-side, line numbers, ...) in place.
 # In the list, space enables or disables the selected feature and keeps the list
 # open, enter does so and closes it, a letter sets its key, and this key closes

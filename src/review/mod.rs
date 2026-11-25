@@ -486,6 +486,19 @@ pub(crate) mod cli {
                 writeln!(out, "{json}")
                     .map_err(|e| Error::LocalPr(format!("Couldn't print the review: {e}")))
             }
+            ReviewCommand::Listen { head, base } => {
+                let pr = LocalBackend::new(
+                    Rc::new(repo),
+                    Rc::clone(&github),
+                    head.clone(),
+                    base.clone(),
+                )?;
+                for message in pr.wait_for_messages()? {
+                    out.write_all(message.markdown().as_bytes())
+                        .map_err(|e| Error::LocalPr(format!("Couldn't print the messages: {e}")))?;
+                }
+                Ok(())
+            }
             ReviewCommand::Show { head, base, .. } => {
                 let pr = LocalBackend::new(
                     Rc::new(repo),

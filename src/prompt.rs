@@ -22,6 +22,8 @@ pub(crate) enum HistoryKind {
     Search,
     /// What was typed for `{input}` in the command or view of this name.
     Input(String),
+    /// Messages to agents.
+    AgentMessage,
 }
 
 pub(crate) struct Prompt {
@@ -273,6 +275,7 @@ fn history_path(dir: &Path, kind: &HistoryKind) -> PathBuf {
         HistoryKind::GitCommand => dir.join("git-command-history"),
         HistoryKind::FilePatterns => dir.join("file-pattern-history"),
         HistoryKind::Search => dir.join("search-history"),
+        HistoryKind::AgentMessage => dir.join("agent-message-history"),
         // A name is any string, so it is escaped to be one file name.
         HistoryKind::Input(name) => dir
             .join("input-history")

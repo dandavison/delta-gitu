@@ -232,6 +232,14 @@ pub enum ReviewCommand {
         #[clap(long)]
         base: Option<String>,
     },
+    /// Wait for messages to agents, which the person sends from the PR in delta tui with @, print
+    /// them, and exit. Each message is printed once, by the first listen after it is sent.
+    Listen {
+        #[clap(long)]
+        head: Option<String>,
+        #[clap(long)]
+        base: Option<String>,
+    },
     /// Move a local comment to local-only, which sync never posts, or to your draft review, which
     /// sync posts to GitHub.
     Move {

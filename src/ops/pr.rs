@@ -9,6 +9,7 @@ use crate::{
     error::Error,
     git::{self, diff::Diff},
     item_data::ItemData,
+    prompt::HistoryKind,
     review::{
         self, Backend, CommentEditor, EditorTarget, OpenPr, Side, ViewedState,
         local::{LocalBackend, NOT_DRAFT},
@@ -315,6 +316,59 @@ impl OpTrait for ToggleLocalOnly {
 
     fn display(&self, _state: &State) -> String {
         "Toggle local-only".into()
+    }
+}
+
+/// Leave a message for an agent running `delta tui review listen`, about the thread under the
+/// cursor, or else the whole PR.
+pub(crate) struct MessageAgent;
+impl OpTrait for MessageAgent {
+    fn get_action(&self, target: &ItemData) -> Option<Action> {
+        let thread = comment_of(target).map(|(thread_id, _)| thread_id);
+        // On the rows `i` comments from: a comment, the PR's summary, or a diff.
+        if thread.is_none() && !matches!(target, ItemData::PrSummary) && file_of(target).is_none() {
+            return None;
+        }
+        Some(Rc::new(move |app, term| {
+            let Some(pr) = app.screen().pr.clone() else {
+                app.display_error(NO_REVIEW);
+                return Ok(());
+            };
+            let Some(local) = pr.backend.as_local() else {
+                app.display_error("Only a local PR can message an agent");
+                return Ok(());
+            };
+            let prompt = match thread {
+                Some(_) => "Message to the agent about the thread",
+                None => "Message to the agent",
+            };
+            let body = match app.prompt(
+                term,
+                &PromptParams {
+                    prompt: prompt.into(),
+                    history: Some(HistoryKind::AgentMessage),
+                    ..Default::default()
+                },
+            ) {
+                Ok(body) => body,
+                Err(Error::PromptAborted) => return Ok(()),
+                Err(e) => return Err(e),
+            };
+            if body.trim().is_empty() {
+                return Ok(());
+            }
+            local.send_message(&body, thread.as_deref())?;
+            app.display_info("Message left for the agent");
+            Ok(())
+        }))
+    }
+
+    fn is_target_op(&self) -> bool {
+        true
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Message the agent".into()
     }
 }
 

@@ -278,7 +278,6 @@ mod tests {
              [delta-tui \"general.commands\"]\n\
              \tsend = redis-cli XADD delta '*' message \"{input}\"\n\
              [delta-tui \"general.diff-renderer.feature-keys\"]\n\
-             \tsend = @\n\
              \tdiff = D\n\
              [delta-tui \"bindings.root\"]\n\
              \tquit = q\n\
@@ -313,7 +312,7 @@ mod tests {
                 .feature_keys
                 .iter()
                 .collect::<Vec<_>>(),
-            [(&"diff".to_owned(), &'D'), (&"send".to_owned(), &'@')]
+            [(&"diff".to_owned(), &'D')]
         );
         let quit: Vec<&str> = config
             .bindings
