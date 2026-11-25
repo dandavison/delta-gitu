@@ -870,9 +870,16 @@ fn editor_rows(
         frame.row(row)
     };
     let what = match editor.target {
-        EditorTarget::Reply { .. } => "Reply",
-        EditorTarget::Line { .. } => "New comment",
-        EditorTarget::Edit { .. } => "Edit comment",
+        EditorTarget::Reply { .. } => "Reply".to_owned(),
+        EditorTarget::Line {
+            line: (Side::New, n),
+            ..
+        } => format!("New comment on line {n}"),
+        EditorTarget::Line {
+            line: (Side::Old, n),
+            ..
+        } => format!("New comment on removed line {n}"),
+        EditorTarget::Edit { .. } => "Edit comment".to_owned(),
     };
     let hint = if editor.focused && editor.text.value().is_empty() {
         "(ctrl+s saves, esc cancels)"
@@ -882,7 +889,7 @@ fn editor_rows(
         "(i to go on writing)"
     };
     let header = vec![
-        (what.to_owned(), text.patch(options.author)),
+        (what, text.patch(options.author)),
         (" ".to_owned(), text),
         (hint.to_owned(), text.patch(options.editor_decoration.style)),
     ];

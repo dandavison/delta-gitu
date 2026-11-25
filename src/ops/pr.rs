@@ -455,8 +455,19 @@ fn line_of(target: &ItemData) -> Option<(Side, u32)> {
             file_i,
             hunk_i,
             line_i,
+            line_indices,
             ..
-        } => (diff, *file_i, *hunk_i, *line_i),
+        } => {
+            // A side-by-side row of a removed line and an added line is the added line's.
+            let content = diff.hunk_content(*file_i, *hunk_i);
+            let added = line_indices.iter().copied().find(|&i| {
+                content
+                    .lines()
+                    .nth(i)
+                    .is_some_and(|line| line.starts_with('+'))
+            });
+            (diff, *file_i, *hunk_i, added.unwrap_or(*line_i))
+        }
         _ => return None,
     };
     let removed = diff
