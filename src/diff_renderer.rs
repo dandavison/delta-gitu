@@ -33,7 +33,7 @@ const OSC1717_ADVERTISED: &str = "V1";
 /// Where delta reads named features from. A leading `+` means "in addition to
 /// the features already in git config", so what the user configured stays the
 /// base and gitu's selection is only an overlay on top of it.
-const FEATURES_VAR: &str = "DELTA_FEATURES";
+pub(crate) const FEATURES_VAR: &str = "DELTA_FEATURES";
 
 /// What a rendered row is, per its OSC-1717 `type`. `Context`/`Added`/`Deleted`
 /// are content lines; `HunkHeader`/`FileHeader` are the renderer's own header rows
