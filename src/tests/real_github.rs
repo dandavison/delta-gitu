@@ -1,4 +1,4 @@
-//! gitu against GitHub itself, in the private repository `dandavison/gitu-review-test`, through
+//! gitu against GitHub itself, in the private repository `dandavison/delta-test`, through
 //! gh as gitu runs it. `cargo test` leaves them out, as ignored; `cargo test-github` runs them,
 //! which needs the network, gh logged in, and SSH access to the repository. Each test pushes branches of its own and opens a PR between
 //! them, which is closed, and the branches deleted, when the test ends.
@@ -14,7 +14,7 @@ use crate::{
 };
 use std::{path::PathBuf, process::Command, rc::Rc};
 
-const REPOSITORY: &str = "dandavison/gitu-review-test";
+const REPOSITORY: &str = "dandavison/delta-test";
 
 /// A clone of the repository, with a PR of `head` into `base`, both branches of this test's own.
 struct RealPr {
