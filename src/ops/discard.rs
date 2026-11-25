@@ -17,6 +17,9 @@ impl OpTrait for Discard {
                 kind: Ref::Head(branch),
                 ..
             } => discard_branch(branch.clone()),
+            target if super::is_patch_of_merge_conflict(target, true) => {
+                super::refuse_patch_of_merge_conflict()
+            }
             ItemData::Untracked(file) => clean_file(file.clone()),
             ItemData::Delta { diff, file_i, .. } => {
                 let patch = diff.format_file_patch(*file_i);

@@ -1,4 +1,4 @@
-use crate::gitu_diff::FileDiff;
+use crate::gitu_diff::{ContentLine, FileDiff};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -119,15 +119,36 @@ impl Diff {
         format!("{file_header}{hunk_header}{modified_content}")
     }
 
+    /// Whether a file's hunks are a combined diff's, which have a column per
+    /// parent and which `git apply` cannot apply.
+    pub(crate) fn is_combined(&self, file_i: usize) -> bool {
+        self.file_diffs[file_i]
+            .hunks
+            .iter()
+            .any(|hunk| hunk.header.old_line_starts.len() > 1)
+    }
+
+    /// Each line of a hunk's content, with what it is (`None` for a line that is
+    /// no line of a file).
+    fn content_lines(
+        &self,
+        file_i: usize,
+        hunk_i: usize,
+    ) -> impl Iterator<Item = (&str, Option<ContentLine>)> {
+        let header = &self.file_diffs[file_i].hunks[hunk_i].header;
+        self.hunk_content(file_i, hunk_i)
+            .lines()
+            .map(move |line| (line, header.content_line(line)))
+    }
+
     pub(crate) fn hunk_first_changed_line_num(&self, file_i: usize, hunk_i: usize) -> u32 {
         let new_line_start = self.file_diffs[file_i].hunks[hunk_i].header.new_line_start;
         let mut new_line = new_line_start;
-        for line in self.hunk_content(file_i, hunk_i).lines() {
-            if line.starts_with('+') {
-                return new_line;
-            }
-            if !line.starts_with('-') {
-                new_line += 1;
+        for (_, content_line) in self.content_lines(file_i, hunk_i) {
+            match content_line {
+                Some(ContentLine::Added) => return new_line,
+                Some(ContentLine::Removed { .. }) => {}
+                _ => new_line += 1,
             }
         }
         new_line_start
@@ -141,10 +162,9 @@ impl Diff {
     ) -> u32 {
         let hunk = &self.file_diffs[file_i].hunks[hunk_i];
         let non_minus_before = self
-            .hunk_content(file_i, hunk_i)
-            .lines()
+            .content_lines(file_i, hunk_i)
             .take(line_i)
-            .filter(|l| l.starts_with(' ') || l.starts_with('+'))
+            .filter(|(_, content_line)| content_line.is_some_and(|c| c.in_new()))
             .count() as u32;
         hunk.header.new_line_start + non_minus_before
     }
@@ -157,10 +177,9 @@ impl Diff {
     ) -> u32 {
         let hunk = &self.file_diffs[file_i].hunks[hunk_i];
         let non_plus_before = self
-            .hunk_content(file_i, hunk_i)
-            .lines()
+            .content_lines(file_i, hunk_i)
             .take(line_i)
-            .filter(|l| l.starts_with(' ') || l.starts_with('-'))
+            .filter(|(line, content_line)| content_line.is_some_and(|c| c.in_parent(0, line)))
             .count() as u32;
         hunk.header.old_line_start + non_plus_before
     }
@@ -169,9 +188,11 @@ impl Diff {
         let hunk = &self.file_diffs[file_i].hunks[hunk_i];
         let line = hunk.header.new_line_start as usize;
 
-        let hunk_content = &self.text[hunk.content.range.clone()];
-        for (i, content_line) in hunk_content.lines().enumerate() {
-            if content_line.starts_with('+') || content_line.starts_with('-') {
+        for (i, (_, content_line)) in self.content_lines(file_i, hunk_i).enumerate() {
+            if matches!(
+                content_line,
+                Some(ContentLine::Added | ContentLine::Removed { .. })
+            ) {
                 return line + i;
             }
         }
