@@ -8,6 +8,7 @@ expression: ctx.redact_buffer()
 ▌ o                 show-on-github         Open the PR file, hunk, line or comment on GitHub, to comment there                                        |
 ▌ i                 write-comment          Write a comment or a reply, or edit your own comment                                                       |
 ▌ @                 message-agent          Message an agent running delta tui review listen, about the thread or the PR                               |
+▌ .                 open-file              Open the file under the cursor whole, as committed, to comment on for an agent, or else pick one           |
 ▌ Y                 show-refs              List branches and tags                                                                                     |
 ▌ g+s               status                 Status view, from any view                                                                                 |
 ▌ H                 renderer-features      List delta features, shell commands and views, and set their keys                                          |
@@ -31,5 +32,4 @@ expression: ctx.redact_buffer()
 ▌ &                 file-patterns          Set which files to show                                                                                    |
 ▌ d                 hide-file              Hide the file under the cursor                                                                             |
 ▌ k up              move-up-line           Up a line, through a diff's lines too                                                                      |
-▌ j down            move-down-line         Down a line, through a diff's lines too                                                                    |
 styles_hash: e39343c74ddcf565

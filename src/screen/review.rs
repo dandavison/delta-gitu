@@ -190,7 +190,13 @@ pub(crate) fn with_threads(
     if pr.backend.head_mismatch(repo) {
         out.push(warning_row());
     }
-    for error in not_in_diff(&threads, &pr.viewed.borrow(), &files) {
+    // In the file view, which shows one file, a thread on another is as expected.
+    let files_review = pr.backend.as_local().is_some_and(|local| local.is_files());
+    let not_shown = match files_review {
+        true => vec![],
+        false => not_in_diff(&threads, &pr.viewed.borrow(), &files),
+    };
+    for error in not_shown {
         out.push(Item {
             unselectable: true,
             rendered: Some(Rc::new(vec![(error, error_style)])),

@@ -9,6 +9,8 @@ use crate::{
     error::Error,
     git::{self, diff::Diff},
     item_data::ItemData,
+    items::Item,
+    picker::{PickerData, PickerItem, PickerState},
     prompt::HistoryKind,
     review::{
         self, Backend, CommentEditor, EditorTarget, OpenPr, Side, ViewedState,
@@ -212,6 +214,144 @@ fn show_pr(app: &mut App, term: &mut Term, backend: Rc<dyn Backend>) -> Res<()> 
     screen.pr = Some(pr);
     app.state.screens.push(screen);
     Ok(())
+}
+
+/// Open the file under the cursor whole, as committed, at the cursor's line, to comment on its
+/// lines for an agent to answer (see [`LocalBackend::for_files`]); or, where no file is under the
+/// cursor, or in the file view, a file picked from those committed.
+pub(crate) struct OpenFile;
+impl OpTrait for OpenFile {
+    fn get_action(&self, target: &ItemData) -> Option<Action> {
+        let under_cursor = file_of(target).map(|(diff, file_i)| {
+            let line = line_of(target).map(|(_, line)| line);
+            (review::file_path(diff, file_i), line)
+        });
+        Some(Rc::new(move |app, term| {
+            let (path, line) = match (&under_cursor, app.screen().file.is_some()) {
+                (Some(under_cursor), false) => under_cursor.clone(),
+                _ => match pick_file(app, term)? {
+                    Some(path) => (path, None),
+                    None => return Ok(()),
+                },
+            };
+            open_file(app, term, path, line)
+        }))
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Open a file".into()
+    }
+}
+
+/// A file picked from those in HEAD's commit, or `None` if the picker is cancelled.
+fn pick_file(app: &mut App, term: &mut Term) -> Res<Option<String>> {
+    let error = |e: git2::Error| Error::LocalPr(format!("Couldn't list the files committed: {e}"));
+    let repo = Rc::clone(&app.state.repo);
+    let tree = repo
+        .head()
+        .and_then(|head| head.peel_to_tree())
+        .map_err(error)?;
+    let mut paths = vec![];
+    tree.walk(git2::TreeWalkMode::PreOrder, |dir, entry| {
+        if entry.kind() == Some(git2::ObjectType::Blob)
+            && let Some(name) = entry.name()
+        {
+            paths.push(format!("{dir}{name}"));
+        }
+        git2::TreeWalkResult::Ok
+    })
+    .map_err(error)?;
+    let items = paths
+        .into_iter()
+        .map(|path| PickerItem::new(path.clone(), PickerData::Item(path)))
+        .collect();
+    match app.pick(term, PickerState::new("Open file", items, false))? {
+        Some(PickerData::Item(path)) => Ok(Some(path)),
+        Some(PickerData::CustomInput(_)) => unreachable!("the picker takes no custom input"),
+        None => Ok(None),
+    }
+}
+
+/// Open the file view: the file at `path` whole, as in the branch's last commit, at `line`, with
+/// the threads of the branch's files review under their lines.
+fn open_file(app: &mut App, term: &mut Term, path: String, line: Option<u32>) -> Res<()> {
+    let repo = Rc::clone(&app.state.repo);
+    let backend = LocalBackend::for_files(Rc::clone(&repo), Rc::clone(&app.state.github), None)?;
+    let pr = Rc::new(OpenPr::new(Rc::new(backend))?);
+    // The commit the file is read in is the one its threads are placed in.
+    let pinned = Rc::clone(&pr);
+    let commit: Rc<dyn Fn() -> Res<git2::Oid>> = Rc::new(move || {
+        pinned
+            .version
+            .get()
+            .map(|version| version.head)
+            .ok_or_else(|| Error::LocalPr("The branch has no commit to open the file in".into()))
+    });
+    let (threads_pr, shown) = (Rc::clone(&pr), path.clone());
+    let (width, height) = term.size().map_err(Error::Term)?;
+    let mut screen = screen::pager::whole(
+        Arc::clone(&app.state.config),
+        Rc::clone(&repo),
+        app.render_params((width.saturating_sub(review::FILE_PREFIX_WIDTH), height)),
+        path.clone(),
+        commit,
+        Rc::new(move |params, items| {
+            let config = &params.config;
+            let dir = repo.workdir().unwrap_or(repo.path());
+            let options = comment_options(&threads_pr, config, dir, &params.features);
+            let layout = screen::review::Layout {
+                width: params.width(),
+            };
+            let error_style = Style::from(&config.style.error_msg);
+            let summary_style = Style::from(&config.style.pr_summary);
+            let mut rows = uncommitted_note(&repo, &shown, error_style);
+            rows.extend(items);
+            screen::review::with_threads(
+                rows,
+                &threads_pr,
+                &repo,
+                layout,
+                &options,
+                summary_style,
+                error_style,
+            )
+        }),
+    )?;
+    screen.pr = Some(pr);
+    screen.file = Some(path);
+    app.state.screens.push(screen);
+    if let Some(line) = line {
+        app.screen_mut()
+            .select_matching(|data| new_line_of(data) == Some(line));
+    }
+    Ok(())
+}
+
+/// A row saying that the file at `path` has changes not committed, which the file view doesn't
+/// show, if it has.
+fn uncommitted_note(repo: &git2::Repository, path: &str, style: Style) -> Vec<Item> {
+    let changed = repo
+        .status_file(std::path::Path::new(path))
+        .is_ok_and(|status| status != git2::Status::CURRENT && status != git2::Status::IGNORED);
+    if !changed {
+        return vec![];
+    }
+    vec![Item {
+        unselectable: true,
+        rendered: Some(Rc::new(vec![(
+            format!("{path} has changes not committed, which aren't shown"),
+            style,
+        )])),
+        ..Default::default()
+    }]
+}
+
+/// The new side's number of the line `data` is, if it is a line of a diff.
+fn new_line_of(data: &ItemData) -> Option<u32> {
+    match line_of(data)? {
+        (Side::New, line) => Some(line),
+        (Side::Old, _) => None,
+    }
 }
 
 /// Read the checkboxes and review threads of the PR on screen from its backend

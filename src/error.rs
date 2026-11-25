@@ -87,6 +87,8 @@ pub enum Error {
     PrCheckoutDirty,
     /// A local PR could not be opened, read or written: what went wrong.
     LocalPr(String),
+    /// The branch has no PR to review: why, as that it is the base branch.
+    NoPrToReview(String),
 }
 
 impl std::error::Error for Error {}
@@ -247,6 +249,7 @@ impl Display for Error {
                 f.write_str("Cannot check out PR: working tree has uncommitted changes")
             }
             Error::LocalPr(message) => f.write_str(message),
+            Error::NoPrToReview(why) => write!(f, "No PR to review: {why}"),
         }
     }
 }

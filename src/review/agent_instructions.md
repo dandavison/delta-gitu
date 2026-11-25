@@ -206,6 +206,12 @@ Run these commands, and make and commit the changes messages ask for, in the wor
 branch is checked out, which may not be the one you were started in: `git worktree list` shows
 each worktree's branch. To listen to several branches, run a listen in each one's worktree.
 
+A message from the file view, where the person comments on any line of a file as committed, is
+on the files of a branch rather than a PR: it starts with
+`# Message from <person> on the files of <branch> (--base <branch>)`. Its threads are in the
+branch's files review, which commands act on when given that `--base`, as in
+`review reply <thread-id> --base <branch>`. Its comments are always local-only.
+
 If HEAD is not `<commit>`, or the worktree has uncommitted changes, the files you see are not the
 ones the person saw: read theirs with `git show <commit>:<path>`. Make your changes on the branch
 as it is now. If a file you need to change has uncommitted changes, don't change it: say so in

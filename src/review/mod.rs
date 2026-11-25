@@ -327,10 +327,11 @@ impl OpenPr {
         if let (Some(local), Some(old)) = (self.backend.as_local(), self.version.get()) {
             let new = local.version()?;
             if new != old {
-                let replaced =
-                    self.git.borrow().as_ref().is_some_and(|git| {
-                        git.borrow_mut().replace_arg(&old.range(), &new.range())
-                    });
+                // The file view has no git command: it reads its file in `version` itself.
+                let replaced = match &*self.git.borrow() {
+                    Some(git) => git.borrow_mut().replace_arg(&old.range(), &new.range()),
+                    None => true,
+                };
                 self.version.set(replaced.then_some(new));
             }
         }
@@ -528,28 +529,34 @@ pub(crate) mod cli {
                 base,
                 ..
             } => {
-                let pr = LocalBackend::new(
-                    Rc::new(repo),
-                    Rc::clone(&github),
-                    head.clone(),
-                    base.clone(),
-                )?;
+                let pr = review_of(Rc::new(repo), Rc::clone(&github), head, base)?;
                 let json = serde_json::to_string_pretty(&pr.json()?).expect("JSON");
                 writeln!(out, "{json}")
                     .map_err(|e| Error::LocalPr(format!("Couldn't print the review: {e}")))
             }
             ReviewCommand::Listen { head, base } => {
-                let pr = LocalBackend::new(
-                    Rc::new(repo),
-                    Rc::clone(&github),
-                    head.clone(),
-                    base.clone(),
-                )?;
-                let messages = pr.wait_for_messages()?;
+                let repo = Rc::new(repo);
+                // The branch's files review, and its PR if it has one, unless --base says which.
+                let reviews = match base {
+                    Some(_) => vec![review_of(repo, Rc::clone(&github), head, base)?],
+                    None => {
+                        let files = LocalBackend::for_files(
+                            Rc::clone(&repo),
+                            Rc::clone(&github),
+                            head.clone(),
+                        )?;
+                        match LocalBackend::new(repo, Rc::clone(&github), head.clone(), None) {
+                            Ok(pr) => vec![files, pr],
+                            Err(Error::NoPrToReview(_)) => vec![files],
+                            Err(e) => return Err(e),
+                        }
+                    }
+                };
+                let messages = super::local::wait_for_messages(&reviews)?;
                 // Made waiting again if they can't be printed, so that none is lost.
                 let printed = messages
                     .iter()
-                    .map(|message| pr.message_markdown(message))
+                    .map(|(i, message)| reviews[*i].message_markdown(message))
                     .collect::<Res<String>>()
                     .and_then(|printed| {
                         out.write_all(printed.as_bytes()).map_err(|e| {
@@ -557,18 +564,20 @@ pub(crate) mod cli {
                         })
                     });
                 if let Err(e) = printed {
-                    pr.undeliver(&messages)?;
+                    for (i, review) in reviews.iter().enumerate() {
+                        let taken: Vec<_> = messages
+                            .iter()
+                            .filter(|(at, _)| *at == i)
+                            .map(|(_, message)| message.clone())
+                            .collect();
+                        review.undeliver(&taken)?;
+                    }
                     return Err(e);
                 }
                 Ok(())
             }
             ReviewCommand::Show { head, base, .. } => {
-                let pr = LocalBackend::new(
-                    Rc::new(repo),
-                    Rc::clone(&github),
-                    head.clone(),
-                    base.clone(),
-                )?;
+                let pr = review_of(Rc::new(repo), Rc::clone(&github), head, base)?;
                 let markdown = pr.markdown()?;
                 out.write_all(markdown.as_bytes())
                     .map_err(|e| Error::LocalPr(format!("Couldn't print the review: {e}")))
@@ -585,8 +594,9 @@ pub(crate) mod cli {
     }
 
     /// The local PR `head` into `base`, whose branch must have GitHub's commits (see
-    /// [`LocalBackend::compare_with_github`]), and whose comments are labelled with `agent`'s
-    /// name if given. What to tell the user about how it differs from GitHub goes to stderr.
+    /// [`LocalBackend::compare_with_github`]), unless it is a files review, and whose comments are
+    /// labelled with `agent`'s name if given. What to tell the user about how it differs from
+    /// GitHub goes to stderr.
     fn pr_by(
         repo: Repository,
         github: Rc<dyn GitHub>,
@@ -595,7 +605,9 @@ pub(crate) mod cli {
         agent: &Option<String>,
     ) -> Res<LocalBackend> {
         let pr = local_pr(repo, github, head, base)?;
+        // A files review is of the branch here, which GitHub has no say in.
         if pr.unchecked().is_none()
+            && !pr.is_files()
             && let Some(note) = pr.compare_with_github(pr.linked_pr(), Purpose::Review)?
         {
             eprintln!("{note}");
@@ -616,14 +628,30 @@ pub(crate) mod cli {
         }
     }
 
-    /// The local PR `head` into `base`, saying on stderr if it wasn't checked against GitHub.
+    /// The local PR `head` into `base`, or, with `base` the branch itself, the branch's files
+    /// review (see [`LocalBackend::for_files`]).
+    fn review_of(
+        repo: Rc<Repository>,
+        github: Rc<dyn GitHub>,
+        head: &Option<String>,
+        base: &Option<String>,
+    ) -> Res<LocalBackend> {
+        let files = LocalBackend::for_files(Rc::clone(&repo), Rc::clone(&github), head.clone())?;
+        if base.as_deref() == Some(files.head()) {
+            return Ok(files);
+        }
+        LocalBackend::new(repo, github, head.clone(), base.clone())
+    }
+
+    /// The local PR `head` into `base` (see [`review_of`]), saying on stderr if it wasn't checked
+    /// against GitHub.
     fn local_pr(
         repo: Repository,
         github: Rc<dyn GitHub>,
         head: &Option<String>,
         base: &Option<String>,
     ) -> Res<LocalBackend> {
-        let pr = LocalBackend::new(Rc::new(repo), github, head.clone(), base.clone())?;
+        let pr = review_of(Rc::new(repo), github, head, base)?;
         // On stderr, which is not what a command prints, such as JSON.
         if let Some(unchecked) = pr.unchecked() {
             eprintln!("{unchecked}");

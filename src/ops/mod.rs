@@ -104,6 +104,7 @@ pub(crate) enum Op {
     ShowOnGithub,
     WriteComment,
     MessageAgent,
+    OpenFile,
     RebaseAbort,
     RebaseContinue,
     RebaseElsewhere,
@@ -252,6 +253,10 @@ impl Op {
             }
             Op::ShowOnGithub => "Open the PR file, hunk, line or comment on GitHub, to comment there",
             Op::WriteComment => "Write a comment or a reply, or edit your own comment",
+            Op::OpenFile => {
+                "Open the file under the cursor whole, as committed, to comment on for an agent, \
+                 or else pick one"
+            }
             Op::MessageAgent => {
                 "Message an agent running delta tui review listen, about the thread or the PR"
             }
@@ -486,6 +491,7 @@ impl Op {
             Op::ShowOnGithub => Box::new(pr::ShowOnGithub),
             Op::WriteComment => Box::new(pr::WriteComment),
             Op::MessageAgent => Box::new(pr::MessageAgent),
+            Op::OpenFile => Box::new(pr::OpenFile),
             Op::RebaseAbort => Box::new(rebase::RebaseAbort),
             Op::RebaseContinue => Box::new(rebase::RebaseContinue),
             Op::RebaseElsewhere => Box::new(rebase::RebaseElsewhere),

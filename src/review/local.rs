@@ -66,25 +66,11 @@ impl LocalBackend {
         head: Option<String>,
         base: Option<String>,
     ) -> Res<Self> {
-        let not_on_branch = || no_pr("HEAD is not on a branch");
         let head = match head {
             Some(head) => head,
-            None => {
-                let head_ref = repo.head().map_err(|_| not_on_branch())?;
-                if !head_ref.is_branch() {
-                    return Err(not_on_branch());
-                }
-                head_ref.shorthand().ok_or_else(not_on_branch)?.to_owned()
-            }
+            None => current_branch(&repo)?,
         };
-        let reviewer = repo
-            .config()
-            .and_then(|config| config.get_string("user.name"))
-            .map_err(|_| {
-                Error::LocalPr(
-                    "Set git's user.name: your comments in a local PR are by that name".to_owned(),
-                )
-            })?;
+        let reviewer = reviewer(&repo)?;
         let (base, github_pr, unchecked) = match base {
             Some(base) => (base, None, None),
             None => find_pr(&repo, github.as_ref(), &head, &reviewer)?,
@@ -117,6 +103,40 @@ impl LocalBackend {
         })?;
         pr.record_link(&github_pr)?;
         Ok(pr)
+    }
+
+    /// The files review of the branch `head`, by default the current branch: comments on the
+    /// lines of its files as committed, which the file view opens whole, apart from any PR of the
+    /// branch. It is recorded as a review of the branch into itself, and its comments are
+    /// local-only, as there is no PR to post them to.
+    pub fn for_files(
+        repo: Rc<Repository>,
+        github: Rc<dyn GitHub>,
+        head: Option<String>,
+    ) -> Res<Self> {
+        let head = match head {
+            Some(head) => head,
+            None => current_branch(&repo)?,
+        };
+        let reviewer = reviewer(&repo)?;
+        Ok(Self {
+            store: Store::new(repo.commondir(), &head, &head, &reviewer),
+            base_ref: format!("refs/heads/{head}"),
+            base: head.clone(),
+            head,
+            reviewer,
+            agent: None,
+            local: Some(true),
+            github,
+            linked: None,
+            unchecked: None,
+            repo,
+        })
+    }
+
+    /// Whether this is a branch's files review (see [`LocalBackend::for_files`]) rather than a PR.
+    pub fn is_files(&self) -> bool {
+        self.head == self.base
     }
 
     /// Why the PR was not checked against GitHub, if it wasn't.
@@ -604,6 +624,10 @@ impl LocalBackend {
     /// Whether `line` of the file at `path` is in the PR's diff, as `git diff` shows it, with 3
     /// lines of context: only a line in the diff can be commented on, as on GitHub.
     pub fn in_diff(&self, path: &str, (side, line): (Side, u32)) -> Res<bool> {
+        if self.is_files() {
+            let lines = self.file_lines(self.head_commit()?, path)?;
+            return Ok(side == Side::New && line >= 1 && line as usize <= lines.len());
+        }
         let error = |e: git2::Error| Error::LocalPr(format!("Couldn't diff the PR: {e}"));
         let tree = |oid| {
             self.repo
@@ -1203,6 +1227,9 @@ impl LocalBackend {
     /// Move a local comment to local-only if `local`, and otherwise to the draft review,
     /// starting the draft review if there is none.
     pub fn move_comment(&self, comment_id: &str, local: bool) -> Res<()> {
+        if !local && self.is_files() {
+            return Err(Error::LocalPr(FILES_ARE_LOCAL_ONLY.to_owned()));
+        }
         let head = self.branch_commit(&self.head)?.to_string();
         let now = chrono::Local::now().fixed_offset();
         let mut result = Err(Error::LocalPr(format!(
@@ -1282,6 +1309,9 @@ impl LocalBackend {
         local: bool,
         add: impl FnOnce(&mut Vec<StoredThread>, StoredComment) -> bool,
     ) -> Res<bool> {
+        if !local && self.is_files() {
+            return Err(Error::LocalPr(FILES_ARE_LOCAL_ONLY.to_owned()));
+        }
         let head = self.branch_commit(&self.head)?.to_string();
         let now = chrono::Local::now().fixed_offset();
         let mut added = false;
@@ -1324,10 +1354,12 @@ impl LocalBackend {
     /// The PR's review threads as markdown, for `delta tui review show` (see
     /// [`threads_markdown`]).
     pub fn markdown(&self) -> Res<String> {
+        let title = match self.is_files() {
+            true => format!("Files of {}", self.head),
+            false => format!("Review of {} into {}", self.head, self.base),
+        };
         Ok(format!(
-            "# Review of {} into {}\n{}",
-            self.head,
-            self.base,
+            "# {title}\n{}",
             self.markdown_in(&self.version()?, None)?
         ))
     }
@@ -1404,9 +1436,13 @@ impl LocalBackend {
             Some(thread) => format!(", about thread {thread}"),
             None => String::new(),
         };
+        let on = match message.head == message.base {
+            true => format!("the files of {} (--base {})", message.head, message.base),
+            false => format!("{} into {}", message.head, message.base),
+        };
         let mut out = format!(
-            "# Message from {} on {} into {}{at}{about}\n\n{}\n",
-            message.from, message.head, message.base, message.body
+            "# Message from {} on {on}{at}{about}\n\n{}\n",
+            message.from, message.body
         );
         if let Some(version) = &message.version {
             let threads = self.markdown_in(version, message.thread.as_deref())?;
@@ -1454,54 +1490,9 @@ impl LocalBackend {
         })
     }
 
-    /// The messages to agents that no `listen` has printed, marked printed, once there are any.
-    /// While there are none, it waits, watching the directory the PR is recorded in.
-    pub fn wait_for_messages(&self) -> Res<Vec<Message>> {
-        let dir = self
-            .store
-            .path
-            .parent()
-            .expect("the store is in a directory");
-        fs::create_dir_all(dir).map_err(|e| self.store.error("watch", e))?;
-        // FSEvents gives the real paths of what changed, which a path through a symlink, such as
-        // macOS's /var, is not.
-        let dir = dir
-            .canonicalize()
-            .map_err(|e| self.store.error("watch", e))?;
-        let watch_error = |e: notify::Error| {
-            Error::LocalPr(format!(
-                "Couldn't watch {} for messages: {e}",
-                dir.display()
-            ))
-        };
-        use notify::Watcher;
-        let (sender, events) = std::sync::mpsc::channel();
-        let mut watcher = notify::recommended_watcher(sender).map_err(watch_error)?;
-        // Before looking, so that a message sent after looking wakes it.
-        watcher
-            .watch(&dir, notify::RecursiveMode::NonRecursive)
-            .map_err(watch_error)?;
-        loop {
-            let messages = self.take_messages()?;
-            if !messages.is_empty() {
-                return Ok(messages);
-            }
-            match events.recv() {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => return Err(watch_error(e)),
-                Err(_) => {
-                    return Err(Error::LocalPr(format!(
-                        "Couldn't watch {} for messages: the watcher stopped",
-                        dir.display()
-                    )));
-                }
-            }
-        }
-    }
-
     /// The messages to agents that no `listen` has printed, marked printed. Those printed before
     /// are marked done, as the agent listening again has done what they asked.
-    fn take_messages(&self) -> Res<Vec<Message>> {
+    pub(crate) fn take_messages(&self) -> Res<Vec<Message>> {
         // Looked for first without writing, which would wake every listener.
         if self
             .store
@@ -2121,8 +2112,33 @@ pub(crate) fn opening(e: Error) -> Error {
 }
 
 fn no_pr(why: &str) -> Error {
-    Error::LocalPr(format!("No PR to review: {why}"))
+    Error::NoPrToReview(why.to_owned())
 }
+
+/// The current branch's name.
+fn current_branch(repo: &Repository) -> Res<String> {
+    let not_on_branch = || no_pr("HEAD is not on a branch");
+    let head_ref = repo.head().map_err(|_| not_on_branch())?;
+    if !head_ref.is_branch() {
+        return Err(not_on_branch());
+    }
+    Ok(head_ref.shorthand().ok_or_else(not_on_branch)?.to_owned())
+}
+
+/// Who is reviewing: git's `user.name`.
+fn reviewer(repo: &Repository) -> Res<String> {
+    repo.config()
+        .and_then(|config| config.get_string("user.name"))
+        .map_err(|_| {
+            Error::LocalPr(
+                "Set git's user.name: your comments in a local PR are by that name".to_owned(),
+            )
+        })
+}
+
+/// Why a comment in a files review can't move to a draft review.
+const FILES_ARE_LOCAL_ONLY: &str =
+    "A comment on a file is local-only: there is no PR to post it to";
 
 impl Backend for LocalBackend {
     fn diff_range(&self) -> String {
@@ -2173,6 +2189,9 @@ impl Backend for LocalBackend {
     }
 
     fn summary(&self) -> Res<Option<String>> {
+        if self.is_files() {
+            return Ok(None);
+        }
         let summary = summarize(&self.repo, &self.store.read()?, &self.base_ref, &self.head)?;
         Ok(Some(summary.line()))
     }
@@ -2354,6 +2373,50 @@ pub(crate) enum Purpose {
     Post,
 }
 
+/// The messages to agents that no `listen` has printed in any of `reviews`, which are recorded in
+/// one directory, marked printed, with the index of the review each is in, once there are any.
+/// While there are none, it waits, watching the directory.
+pub(crate) fn wait_for_messages(reviews: &[LocalBackend]) -> Res<Vec<(usize, Message)>> {
+    let store = &reviews.first().expect("a review to listen to").store;
+    let dir = store.path.parent().expect("the store is in a directory");
+    fs::create_dir_all(dir).map_err(|e| store.error("watch", e))?;
+    // FSEvents gives the real paths of what changed, which a path through a symlink, such as
+    // macOS's /var, is not.
+    let dir = dir.canonicalize().map_err(|e| store.error("watch", e))?;
+    let watch_error = |e: notify::Error| {
+        Error::LocalPr(format!(
+            "Couldn't watch {} for messages: {e}",
+            dir.display()
+        ))
+    };
+    use notify::Watcher;
+    let (sender, events) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(sender).map_err(watch_error)?;
+    // Before looking, so that a message sent after looking wakes it.
+    watcher
+        .watch(&dir, notify::RecursiveMode::NonRecursive)
+        .map_err(watch_error)?;
+    loop {
+        let mut messages = vec![];
+        for (i, review) in reviews.iter().enumerate() {
+            messages.extend(review.take_messages()?.into_iter().map(|m| (i, m)));
+        }
+        if !messages.is_empty() {
+            return Ok(messages);
+        }
+        match events.recv() {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(watch_error(e)),
+            Err(_) => {
+                return Err(Error::LocalPr(format!(
+                    "Couldn't watch {} for messages: the watcher stopped",
+                    dir.display()
+                )));
+            }
+        }
+    }
+}
+
 /// The commits a local PR's diff is of: its head branch's last commit, whose lines the new side's
 /// are, and where it branched from its base, whose lines the old side's are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2370,6 +2433,7 @@ impl Version {
 }
 
 /// A message from the reviewer to an agent.
+#[derive(Clone)]
 pub(crate) struct Message {
     pub id: String,
     pub from: String,
@@ -2641,7 +2705,11 @@ impl Store {
                 .strip_prefix(&prefix)
                 .and_then(|rest| rest.strip_suffix(".json"))
             {
-                bases.push(base.replace("%2F", "/").replace("%25", "%"));
+                let base = base.replace("%2F", "/").replace("%25", "%");
+                // The branch's files review (see [`LocalBackend::for_files`]), which is no PR.
+                if base != head {
+                    bases.push(base);
+                }
             }
         }
         bases.sort();

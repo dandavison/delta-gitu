@@ -285,6 +285,8 @@ pub(crate) struct Screen {
     /// The PR this screen shows the diff of, whose files are drawn with their Viewed
     /// checkboxes.
     pub(crate) pr: Option<Rc<crate::review::OpenPr>>,
+    /// For the file view, the file it shows whole, by its path.
+    pub(crate) file: Option<String>,
     /// What adds rows of gitu's own to those built, such as a PR's review threads, each time
     /// they are built (see [`crate::screen::pager::Decorate`]).
     decorate: Option<crate::screen::pager::Decorate>,
@@ -346,6 +348,7 @@ impl Screen {
             unfolded: HashSet::new(),
             search: None,
             pr: None,
+            file: None,
             decorate: None,
             undecorated: vec![],
         };
