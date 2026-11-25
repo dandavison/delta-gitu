@@ -403,7 +403,7 @@ pub(crate) mod cli {
     use super::{
         Backend, Side,
         github::{GitHub, GitHubBackend},
-        local::{LocalBackend, Purpose},
+        local::LocalBackend,
     };
     use crate::{
         Res,
@@ -593,10 +593,9 @@ pub(crate) mod cli {
         Ok(GitHubBackend { github, pr })
     }
 
-    /// The local PR `head` into `base`, whose branch must have GitHub's commits (see
-    /// [`LocalBackend::compare_with_github`]), unless it is a files review, and whose comments are
-    /// labelled with `agent`'s name if given. What to tell the user about how it differs from
-    /// GitHub goes to stderr.
+    /// The local PR `head` into `base`, whose comments are labelled with `agent`'s name if given.
+    /// It isn't compared with GitHub, as opening the PR and sync compare it: what an agent writes
+    /// is about the branch as it is here.
     fn pr_by(
         repo: Repository,
         github: Rc<dyn GitHub>,
@@ -605,13 +604,6 @@ pub(crate) mod cli {
         agent: &Option<String>,
     ) -> Res<LocalBackend> {
         let pr = local_pr(repo, github, head, base)?;
-        // A files review is of the branch here, which GitHub has no say in.
-        if pr.unchecked().is_none()
-            && !pr.is_files()
-            && let Some(note) = pr.compare_with_github(pr.linked_pr(), Purpose::Review)?
-        {
-            eprintln!("{note}");
-        }
         Ok(match agent {
             Some(agent) => pr.with_agent(agent.clone()),
             None => pr,
