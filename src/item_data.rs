@@ -40,6 +40,9 @@ pub(crate) enum ItemData {
         /// Content lines this row stages/reverses as a unit. Usually `[line_i]`;
         /// a fused side-by-side change row also includes its replacement line.
         line_indices: Vec<usize>,
+        /// The columns the renderer starts the row's lines at, as its OSC 1717 records say: a
+        /// side-by-side row's right column starts at one past 0.
+        record_columns: Vec<usize>,
     },
     Stash {
         message: String,

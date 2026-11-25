@@ -603,6 +603,7 @@ fn rendered_diff_items(
                         line_i,
                         line_range,
                         line_indices,
+                        record_columns: line.record_columns.clone(),
                     },
                     rendered: Some(Rc::new(rendered_spans(line))),
                     ..Default::default()

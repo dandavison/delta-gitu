@@ -579,6 +579,7 @@ impl Screen {
             hunk_i,
             line_i,
             line_range,
+            record_columns,
             ..
         } = &self.get_selected_item().data
         else {
@@ -606,6 +607,7 @@ impl Screen {
             line_i: *line_i,
             line_range: line_range.clone(),
             line_indices,
+            record_columns: record_columns.clone(),
         }
     }
 
@@ -2334,6 +2336,7 @@ mod tests {
                             line_i,
                             line_range: 0..0,
                             line_indices: vec![line_i],
+                            record_columns: vec![0],
                         }
                     } else {
                         ItemData::default()

@@ -183,7 +183,6 @@ fn show_pr(app: &mut App, term: &mut Term, backend: Rc<dyn Backend>) -> Res<()> 
             let options = comment_options(&threads_pr, config, dir, &params.features);
             let layout = screen::review::Layout {
                 width: params.width(),
-                side_by_side: options.side_by_side,
             };
             let error_style = Style::from(&config.style.error_msg);
             let summary_style = Style::from(&config.style.pr_summary);
@@ -236,11 +235,10 @@ fn comment_options(
         overlay.as_deref(),
         &screen::review::OPTION_NAMES,
     );
-    let enabled = config.general.diff_renderer.enabled_features.get(dir);
-    let options = Rc::new(screen::review::CommentOptions {
-        side_by_side: super::editor::is_enabled_in(features, "side-by-side", &enabled),
-        ..screen::review::CommentOptions::of(&values, config.general.diff_renderer.color_mode)
-    });
+    let options = Rc::new(screen::review::CommentOptions::of(
+        &values,
+        config.general.diff_renderer.color_mode,
+    ));
     *pr.options.borrow_mut() = Some((overlay, Rc::clone(&options)));
     options
 }

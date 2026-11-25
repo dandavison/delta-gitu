@@ -50,7 +50,35 @@ pub(crate) fn with_threads(
     let mut files: HashMap<String, usize> = HashMap::new();
     let mut path_of: HashMap<usize, Option<String>> = HashMap::new();
     let mut hunk_lines: HashMap<(usize, usize), NumberedLines> = HashMap::new();
+    // The hunk, by file and hunk index, of each row a thread can go under.
+    let mut hunk_of: HashMap<usize, (usize, usize)> = HashMap::new();
+    // Where the right column starts in each hunk the renderer draws side by side: the first column
+    // past 0 that a record of one of its rows starts at. A hunk with none is drawn unified.
+    let mut split: HashMap<(usize, usize), usize> = HashMap::new();
+    /// A line's row: its depth, its lines and its hunk.
+    struct LineRow {
+        depth: usize,
+        keys: Vec<(String, Side, u32)>,
+        hunk: (usize, usize),
+    }
+    let mut last_line: Option<LineRow> = None;
     for (i, item) in items.iter().enumerate() {
+        // A row nested under a line's row, as the rest of a line the renderer draws on more rows,
+        // is part of the line, so that a thread on the line goes after it.
+        if let Some(line) = &last_line
+            && item.depth > line.depth
+            && !matches!(
+                item.data,
+                ItemData::HunkLine { .. } | ItemData::Delta { .. }
+            )
+        {
+            for key in &line.keys {
+                lines.insert(key.clone(), i);
+            }
+            hunk_of.insert(i, line.hunk);
+            continue;
+        }
+        last_line = None;
         let (ItemData::Delta { diff, file_i, .. } | ItemData::HunkLine { diff, file_i, .. }) =
             &item.data
         else {
@@ -72,16 +100,32 @@ pub(crate) fn with_threads(
             ItemData::HunkLine {
                 hunk_i,
                 line_indices,
+                record_columns,
                 ..
             } => {
+                let hunk = (*file_i, *hunk_i);
+                if let Some(&column) = record_columns.iter().filter(|&&column| column > 0).min() {
+                    split
+                        .entry(hunk)
+                        .and_modify(|split| *split = (*split).min(column))
+                        .or_insert(column);
+                }
                 let numbered = hunk_lines
-                    .entry((*file_i, *hunk_i))
+                    .entry(hunk)
                     .or_insert_with(|| numbered_lines(diff, *file_i, *hunk_i));
+                let mut keys = vec![];
                 for &line_i in line_indices {
                     for &(side, n) in numbered.get(line_i).into_iter().flatten() {
                         lines.insert((path.clone(), side, n), i);
+                        keys.push((path.clone(), side, n));
                     }
                 }
+                hunk_of.insert(i, hunk);
+                last_line = Some(LineRow {
+                    depth: item.depth,
+                    keys,
+                    hunk,
+                });
             }
             _ => {}
         }
@@ -138,6 +182,7 @@ pub(crate) fn with_threads(
     }
     for (i, item) in items.into_iter().enumerate() {
         let threads = under.remove(&i).unwrap_or_default();
+        let split = hunk_of.get(&i).and_then(|hunk| split.get(hunk)).copied();
         // Under a file's header a thread is a level down; under a line, beside it.
         let depth = match item.data {
             ItemData::Delta { .. } => item.depth + 1,
@@ -147,7 +192,7 @@ pub(crate) fn with_threads(
         out.push(item);
         for thread in threads {
             let side = thread.line.filter(|_| on_line).map(|(side, _)| side);
-            let panel = layout.panel(side);
+            let panel = layout.panel(side, split);
             // A comment being changed is shown only in the box, which goes after its thread, as
             // a reply's does.
             let (in_box, edited) = match editor.as_ref().map(|editor| &editor.target) {
@@ -173,7 +218,12 @@ pub(crate) fn with_threads(
         if let (Some((_, side)), Some(editor)) =
             (editor_under.filter(|(at, _)| *at == i), &mut *editor)
         {
-            out.extend(editor_rows(editor, depth, layout.panel(side), options));
+            out.extend(editor_rows(
+                editor,
+                depth,
+                layout.panel(side, split),
+                options,
+            ));
         }
     }
     out
@@ -334,8 +384,6 @@ pub(crate) struct CommentOptions {
     pub link: Style,
     /// An option whose value is not a style, as what to tell the user. Its default is used.
     pub errors: Vec<String>,
-    /// Whether delta draws the diff side by side, which decides the panel a comment goes in.
-    pub side_by_side: bool,
 }
 
 impl CommentOptions {
@@ -394,7 +442,6 @@ impl CommentOptions {
             decoration,
             timestamp_format: values.get(5).cloned().flatten(),
             errors,
-            side_by_side: false,
         }
     }
 }
@@ -413,27 +460,25 @@ struct Panel {
     width: usize,
 }
 
-/// The width delta draws the diff at, and whether it draws the old and new
-/// files side by side, each in half of it.
+/// The width the renderer draws the diff at.
 #[derive(Clone, Copy)]
 pub(crate) struct Layout {
     pub width: usize,
-    pub side_by_side: bool,
 }
 
 impl Layout {
-    /// Where the rows of a thread on `side` go: in side-by-side, that side's
-    /// panel, and otherwise, or for a thread not on a line, the whole width.
-    fn panel(&self, side: Option<Side>) -> Panel {
-        let half = self.width / 2;
-        match (self.side_by_side, side) {
-            (true, Some(Side::Old)) => Panel {
+    /// Where the rows of a thread on `side` go, in a hunk whose right column starts at `split` if
+    /// the renderer draws it side by side: that side's column, and otherwise, or for a thread not
+    /// on a line, the whole width.
+    fn panel(&self, side: Option<Side>, split: Option<usize>) -> Panel {
+        match (split, side) {
+            (Some(split), Some(Side::Old)) => Panel {
                 column: 0,
-                width: half,
+                width: split,
             },
-            (true, Some(Side::New)) => Panel {
-                column: half,
-                width: half,
+            (Some(split), Some(Side::New)) => Panel {
+                column: split,
+                width: self.width.saturating_sub(split),
             },
             _ => Panel {
                 column: 0,
