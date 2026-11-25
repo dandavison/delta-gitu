@@ -5,7 +5,8 @@ use crate::app::State;
 use crate::error::Error;
 use crate::git;
 use crate::git::remote::{
-    get_push_remote, get_upstream_components, get_upstream_shortname, set_push_remote,
+    get_push_remote, get_upstream_components, get_upstream_shortname, is_upstream_gone,
+    set_push_remote,
 };
 use crate::item_data::ItemData;
 use crate::{Res, menu::arg::Arg, term::Term};
@@ -95,10 +96,14 @@ impl OpTrait for PushToUpstream {
     }
 
     fn display(&self, state: &State) -> String {
-        match get_upstream_shortname(&state.repo) {
-            Ok(Some(upstream)) => format!("to {upstream}"),
-            Ok(None) => "upstream, setting that".into(),
-            Err(e) => format!("error: {e}"),
+        match (
+            get_upstream_shortname(&state.repo),
+            is_upstream_gone(&state.repo),
+        ) {
+            (Ok(Some(upstream)), Ok(true)) => format!("to {upstream}, creating it"),
+            (Ok(Some(upstream)), Ok(false)) => format!("to {upstream}"),
+            (Ok(None), _) => "upstream, setting that".into(),
+            (Err(e), _) | (_, Err(e)) => format!("error: {e}"),
         }
     }
 }

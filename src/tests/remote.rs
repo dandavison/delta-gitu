@@ -80,11 +80,11 @@ fn set_push_remote_basic() {
 fn get_upstream_basic() {
     let ctx = repo_setup_clone!();
     let repo = ctx.local_repo;
-    let upstream = get_upstream(&repo).unwrap().unwrap();
-    assert_eq!(upstream.name().unwrap().unwrap(), "origin/main");
+    let upstream = get_upstream_shortname(&repo).unwrap();
+    assert_eq!(upstream.as_deref(), Some("origin/main"));
 
     run(&ctx.dir, &["git", "branch", "--unset-upstream"]);
-    let upstream = get_upstream(&repo).unwrap();
+    let upstream = get_upstream_shortname(&repo).unwrap();
     assert!(upstream.is_none());
 }
 
