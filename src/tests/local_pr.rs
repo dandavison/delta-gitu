@@ -2844,3 +2844,28 @@ fn an_agent_in_another_worktree_listens_with_head() {
     assert!(printed.contains("please respond"), "{printed}");
     assert!(printed.contains("feature into main"), "{printed}");
 }
+
+/// In side-by-side, a row with only a removed line, as in a hunk that only removes lines, has `i`
+/// comment on the removed line, in the left panel, and the box says so.
+#[test]
+fn i_on_a_side_by_side_row_with_only_a_removed_line_comments_on_it() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    commit(&ctx.dir, "lines.txt", "keep\nkeep\n");
+    ctx.config().general.diff_renderer.command = super::pager::layout_renderer("always", 0);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/old<enter>"));
+
+    ctx.update(&mut app, keys("i"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("New comment on removed line 2 "),
+        "{screen}"
+    );
+    let bar = line_with(&ctx, "New comment")
+        .chars()
+        .position(|c| c == '│')
+        .unwrap();
+    assert_eq!(bar, 1 + 2, "{screen}");
+}

@@ -944,6 +944,23 @@ fn side_by_side_draws_an_old_side_thread_in_the_left_panel() {
     assert_eq!(bar_column(&ctx, ALICE), 1 + 2);
 }
 
+/// In side-by-side, a row with a removed line and an added line has `i` comment on the added
+/// line, in the right panel, and the box says which line it is.
+#[test]
+fn i_on_a_side_by_side_row_with_an_added_line_comments_on_the_added_line() {
+    let mut ctx = setup_clone!();
+    side_by_side(&mut ctx);
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>"));
+
+    ctx.update(&mut app, keys("i"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("New comment on line 2 "), "{screen}");
+    assert_eq!(bar_column(&ctx, "New comment"), RIGHT_PANEL + 2);
+}
+
 /// A comment goes where its line is drawn, as the renderer's OSC 1717 records place it, not as
 /// the side-by-side setting says: with delta's `side-by-side = hunk`, a hunk that only adds lines
 /// is drawn unified, and a thread on it is as in a unified diff, while one on a hunk that removes
