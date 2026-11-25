@@ -108,6 +108,18 @@ pub fn run(config: Arc<Config>, args: &cli::Args, term: &mut Term) -> Res<i32> {
         print!("{}", review::AGENT_INSTRUCTIONS);
         return Ok(0);
     }
+    if let Some(format) = args.show_config {
+        let dir = std::env::current_dir().map_err(Error::Term)?;
+        let settings = show_config::settings(&config, &dir)?;
+        match format {
+            cli::ConfigFormat::Text => print!("{}", show_config::text(&settings)),
+            cli::ConfigFormat::Json => println!(
+                "{}",
+                serde_json::to_string_pretty(&show_config::json(&settings)).expect("JSON")
+            ),
+        }
+        return Ok(0);
+    }
     if let Some(cli::DiagramFormat::D2) = args.pr_state_machine_diagram {
         print!("{}", review::diagram::d2());
         return Ok(0);

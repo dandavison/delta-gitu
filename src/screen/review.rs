@@ -333,23 +333,112 @@ fn warning_row() -> Item {
     }
 }
 
+/// A delta option gitu draws comments with: its name, what it does, and its default where it has
+/// one of its own.
+pub(crate) struct CommentOption {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub default: Option<&'static str>,
+}
+
 /// The delta options gitu draws comments with. delta's config sets them, as it sets its own,
 /// so that a delta feature can.
-pub(crate) const OPTION_NAMES: [&str; 13] = [
-    "comment-style",
-    "comment-author-style",
-    "comment-timestamp-style",
-    "comment-count-style",
-    "comment-decoration-style",
-    "comment-timestamp-format",
-    "comment-editor-style",
-    "comment-editor-decoration-style",
-    "comment-submitted-style",
-    "comment-link-style",
-    "comment-draft-style",
-    "comment-local-only-style",
-    "comment-pending-style",
+pub(crate) const OPTIONS: [CommentOption; 13] = [
+    CommentOption {
+        name: "comment-style",
+        description: "A comment: its text, and the background of the box around it. By default, \
+                      GitHub's background for comments, for delta's light or dark mode.",
+        default: None,
+    },
+    CommentOption {
+        name: "comment-author-style",
+        description: "Who wrote a comment.",
+        default: Some("bold"),
+    },
+    CommentOption {
+        name: "comment-timestamp-style",
+        description: "When a comment was written, which links to it on GitHub.",
+        default: Some("dim"),
+    },
+    CommentOption {
+        name: "comment-count-style",
+        description: "How many comments a file's unresolved threads have, after its name.",
+        default: Some("blue"),
+    },
+    CommentOption {
+        name: "comment-decoration-style",
+        description: "What is drawn around a thread, as one of delta's decoration styles: a box, \
+                      or a line over or under it. Also the notes on its first row, such as that \
+                      it is resolved.",
+        default: Some("blue"),
+    },
+    CommentOption {
+        name: "comment-timestamp-format",
+        description: "A strftime format for when a comment was written, such as %Y-%m-%d. By \
+                      default, how long ago it was.",
+        default: None,
+    },
+    CommentOption {
+        name: "comment-editor-style",
+        description: "The box a comment is written in. By default, comment-style.",
+        default: None,
+    },
+    CommentOption {
+        name: "comment-editor-decoration-style",
+        description: "What is drawn around the box a comment is written in. By default, \
+                      comment-decoration-style.",
+        default: None,
+    },
+    CommentOption {
+        name: "comment-submitted-style",
+        description: "A comment in a submitted review, which everyone can see, drawn over \
+                      comment-style.",
+        default: None,
+    },
+    CommentOption {
+        name: "comment-link-style",
+        description: "The text of a markdown link in a comment, which links to its URL, drawn \
+                      over the comment's style.",
+        default: Some("ul"),
+    },
+    CommentOption {
+        name: "comment-draft-style",
+        description: "A comment in the draft review, which sync posts, drawn over comment-style.",
+        default: None,
+    },
+    CommentOption {
+        name: "comment-local-only-style",
+        description: "A local-only comment, which sync never posts, drawn over comment-style.",
+        default: None,
+    },
+    CommentOption {
+        name: "comment-pending-style",
+        description: "A comment in your pending review on GitHub, which only you see until you \
+                      submit it, drawn over comment-style.",
+        default: None,
+    },
 ];
+
+/// The names of [`OPTIONS`], in order.
+pub(crate) const OPTION_NAMES: [&str; 13] = {
+    let mut names = [""; 13];
+    let mut i = 0;
+    while i < OPTIONS.len() {
+        names[i] = OPTIONS[i].name;
+        i += 1;
+    }
+    names
+};
+
+/// comment-style's default: GitHub's background for comments, for a light or a dark background,
+/// or none when gitu is not run by delta.
+pub(crate) fn comment_style_default(color_mode: Option<ColorMode>) -> &'static str {
+    match color_mode {
+        Some(ColorMode::Light) => "normal #f6f8fa",
+        Some(ColorMode::Dark) => "normal #161b22",
+        None => "",
+    }
+}
 
 /// How comments are drawn, from the delta options in [`OPTION_NAMES`].
 pub(crate) struct CommentOptions {
@@ -404,17 +493,13 @@ impl CommentOptions {
                 });
             parsed.unwrap_or_else(|| parse_delta_style(default, decoration).unwrap())
         };
-        let text_default = match color_mode {
-            Some(ColorMode::Light) => "normal #f6f8fa",
-            Some(ColorMode::Dark) => "normal #161b22",
-            None => "",
-        };
-        let text = style(0, text_default, false).style;
-        let author = style(1, "bold", false).style;
-        let timestamp = style(2, "dim", false).style;
-        let count = style(3, "blue", false).style;
-        let decoration = style(4, "blue", true);
-        let link = style(9, "ul", false).style;
+        let default = |i: usize| OPTIONS[i].default.unwrap_or_default();
+        let text = style(0, comment_style_default(color_mode), false).style;
+        let author = style(1, default(1), false).style;
+        let timestamp = style(2, default(2), false).style;
+        let count = style(3, default(3), false).style;
+        let decoration = style(4, default(4), true);
+        let link = style(9, default(9), false).style;
         let mut set_style = |i: usize, decoration: bool| {
             let value = values.get(i).cloned().flatten()?;
             parse_delta_style(&value, decoration)

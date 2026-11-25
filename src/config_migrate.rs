@@ -122,7 +122,7 @@ fn dashed(name: &str) -> String {
 
 /// `value` as git config reads it back: in quotes, with `"` and `\` escaped, when it has what
 /// git would otherwise take as a comment, a quote or an escape, or space at either end.
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     let needs_quotes = value.contains(['"', '\\', '#', ';', '\n', '\t'])
         || value.starts_with(' ')
         || value.ends_with(' ');

@@ -12,16 +12,25 @@
 # be set there, since `hunk-header-style` is delta's.
 
 [general]
+# Show the list of keys at all times, rather than when ? is pressed.
 always_show_help.enabled = false
+# Ask before quitting from the first screen.
 confirm_quit.enabled = false
 # Sets initially collapsed sections in the editor. e.g.:
 # collapsed_sections = ["untracked", "recent_commits", "branch_status"]
 collapsed_sections = []
+# Draw the screen again when a file in the repository changes, as when
+# something outside gitu changes it.
 refresh_on_file_change.enabled = true
+# How many stashes the status view lists.
 stash_list_limit = 10
+# How many recent commits the status view lists.
 recent_commits_limit = 10
+# How many columns the log gives a commit's author.
 log_author_width = 15
+# Take mouse clicks and scrolling.
 mouse_support = false
+# How many lines a turn of the mouse wheel scrolls.
 mouse_scroll_lines = 3
 
 # The most input Gitu will read, whether piped to it as a pager or produced by
@@ -82,6 +91,7 @@ diff_renderer.feature_keys = { side-by-side = "S", line-numbers = "L", difftasti
 # sets `dark` or `light`, as delta defines one. `renderer_themes` writes your
 # choice to git config, as `diff-renderer-theme`, not here.
 # diff_renderer.theme = "my-theme"
+
 # delta's builtin features to offer as themes too, after those in git config,
 # e.g. ["diff-so-fancy"].
 diff_renderer.builtin_themes = []
@@ -184,41 +194,65 @@ confirm_discard = "line"
 # section_header = { fg = "#808080" }
 # section_header = { bg = "light green", mods = "UNDERLINED|ITALIC" }
 
+# The line between the screen and what is drawn under it: a menu, a prompt, or
+# the log of commands run.
 separator = { mods = "DIM" }
 
+# A message saying what was done.
 info_msg = { fg = "green", mods = "BOLD" }
+# A message saying what went wrong.
 error_msg = { fg = "red", mods = "BOLD" }
+# A git command, in the log of commands run.
 command = { fg = "blue", mods = "BOLD" }
 
+# A menu's headings.
 menu.heading = { fg = "blue", mods = "BOLD" }
+# A key, in a menu or the list of keys.
 menu.key = { fg = "magenta" }
+# An argument a menu has on, such as --interactive.
 menu.active_arg = { fg = "light red", mods = "BOLD" }
+# An argument a menu has off.
 menu.inactive_arg = {}
 
+# What a prompt asks for.
 prompt = { fg = "cyan", mods = "DIM" }
 
+# A section's heading in the status view, such as Unstaged changes.
 section_header = { fg = "yellow" }
+# A file's name over its diff, where gitu draws it rather than the renderer.
 file_header = { fg = "magenta" }
+# A hunk's header, where gitu draws it rather than the renderer. It can't be set
+# in git config, where hunk-header-style is delta's.
 hunk_header = { fg = "blue" }
 
 # The line atop a PR's screen that says what the PR is.
 pr_summary = { fg = "yellow" }
 
-
+# What a list you pick from by typing asks for, such as a branch.
 picker.prompt = { fg = "cyan" }
+# How many items a picker has, and how many match what is typed.
 picker.info = { mods = "DIM" }
+# The item a picker has selected.
 picker.selection_line = { mods = "BOLD" }
+# The letters of an item that match what is typed.
 picker.matched = { fg = "yellow", mods = "BOLD" }
 
+# Text that matches a search (/).
 search_match = { mods = "REVERSED" }
 
+# The bar at the left of the line the cursor is on. Its symbol can't be set in
+# git config.
 cursor = { symbol = "▌", fg = "blue" }
+# The bar at the left of the other lines selected. Its symbol can't be set in
+# git config.
 selection_bar = { symbol = "▌", fg = "blue", mods = "DIM" }
+# The line the cursor is on.
 selection_line = { mods = "BOLD" }
-# You may want to set `selection_area.bg` to a nice background color.
-# Looks horrible with regular terminal colors, so is therefore not set.
+# The other lines selected. You may want to give it a background color: it has
+# none by default, as one looks bad in a terminal's regular colors.
 selection_area = {}
 
+# A commit's hash.
 hash = { fg = "yellow" }
 
 # What the interactive rebase will do with each commit, where that isn't just
@@ -229,13 +263,20 @@ rebase_todo.squash = { fg = "cyan", mods = "BOLD" }
 rebase_todo.fixup = { fg = "yellow", mods = "BOLD" }
 rebase_todo.drop = { fg = "red", mods = "BOLD" }
 
+# A branch's name.
 branch = { fg = "green" }
+# A remote branch's name.
 remote = { fg = "red" }
+# A tag's name.
 tag = { fg = "yellow" }
+# A commit's author, in the log.
 author = { fg = "magenta" }
+# How long ago a commit was made, in the log.
 age = { mods = "DIM" }
 
+# The line numbers of a blame.
 blame.line_num = { mods = "DIM" }
+# The lines of code of a blame.
 blame.code_line = { mods = "DIM" }
 
 [bindings]
