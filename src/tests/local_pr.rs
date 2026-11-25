@@ -1913,6 +1913,22 @@ fn oo_on_a_branch_behind_its_remote_branch_is_an_error() {
     assert!(!screen.contains("added: added.txt"), "{screen}");
 }
 
+/// A branch whose remote branch is gone, as once it is deleted on GitHub, has no remote branch
+/// to be behind, so its PR opens.
+#[test]
+fn oo_on_a_branch_whose_remote_branch_is_gone_opens_its_pr() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
+    run(&ctx.dir, &["git", "push", "origin", "--delete", "feature"]);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("added: added.txt"), "{screen}");
+}
+
 /// A branch with no commits since its base, as once it is merged, has nothing to review.
 #[test]
 fn oo_on_a_branch_with_no_commits_since_its_base_is_an_error() {
