@@ -1816,13 +1816,33 @@ fn pending_review(file: &PrFile) -> Option<PendingReview> {
 
 /// A local PR, as the status view shows it.
 pub(crate) struct PrSummary {
+    /// The repository's name (see [`repo_name`]).
+    pub repo: String,
+    pub head: String,
     /// The base it is diffed against, as git shows a branch.
     pub base: String,
     pub link: Option<GitHubLink>,
     pub commits: usize,
-    pub drafts: usize,
-    pub local_only: usize,
     pub pending: Option<PendingReview>,
+}
+
+/// The repository's name: its main worktree's directory's, which a linked worktree's directory
+/// may not be, or for a bare repository, its own directory's, without `.git`.
+fn repo_name(repo: &Repository) -> Res<String> {
+    let common = repo.commondir();
+    let dir = match common.file_name() {
+        Some(name) if name == ".git" => common.parent(),
+        _ => Some(common),
+    };
+    dir.and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .map(|name| name.trim_end_matches(".git").to_owned())
+        .ok_or_else(|| {
+            Error::LocalPr(format!(
+                "Couldn't name the repository at {}",
+                common.display()
+            ))
+        })
 }
 
 /// The branch `head`'s local PR, as recorded in this repository, without asking GitHub; `None`
@@ -1864,55 +1884,34 @@ fn summarize(repo: &Repository, file: &PrFile, base_ref: &str, head: &str) -> Re
     let commits = walk
         .try_fold(0, |n, oid| oid.map(|_| n + 1))
         .map_err(error)?;
-    let drafts = file
-        .reviews
-        .iter()
-        .filter(|r| r.state == ReviewState::Draft)
-        .map(|draft| {
-            file.threads
-                .iter()
-                .flat_map(|t| &t.comments)
-                .filter(|c| c.review.as_deref() == Some(draft.id.as_str()))
-                .count()
-        })
-        .sum();
-    let local_only = file
-        .threads
-        .iter()
-        .flat_map(|t| &t.comments)
-        .filter(|c| c.review.is_none())
-        .count();
     Ok(PrSummary {
+        repo: repo_name(repo)?,
+        head: head.to_owned(),
         base: short_ref(base_ref).to_owned(),
         pending: pending_review(file),
         link: file.github_pr.clone(),
         commits,
-        drafts,
-        local_only,
     })
 }
 
 impl PrSummary {
-    /// The PR in one line, as the status view and the PR's screen show it: its base, its GitHub
-    /// PR or that it is not on GitHub, and how many commits and draft comments it has, with the
-    /// user's pending review on GitHub if they have one.
+    /// The PR in one line, as the status view and the PR's screen show it: the repository and
+    /// branch, its base, its GitHub PR or that it is not on GitHub, and how many commits it has,
+    /// with the user's pending review on GitHub if they have one, which no thread may show.
     pub fn line(&self) -> String {
         let count = |n: usize, noun: &str| match n {
             1 => format!("1 {noun}"),
             n => format!("{n} {noun}s"),
         };
-        let mut parts = vec![format!("PR into {}", self.base)];
+        let mut parts = vec![
+            format!("{}/{}", self.repo, self.head),
+            format!("PR into {}", self.base),
+        ];
         parts.push(match &self.link {
             Some(link) => format!("#{}", link.number),
             None => "not on GitHub".to_owned(),
         });
         parts.push(count(self.commits, "commit"));
-        if self.drafts > 0 {
-            parts.push(count(self.drafts, "draft comment"));
-        }
-        if self.local_only > 0 {
-            parts.push(count(self.local_only, "local-only comment"));
-        }
         if let Some(pending) = self.pending {
             let comments = match pending.comments {
                 0 => "no comments".to_owned(),
