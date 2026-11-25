@@ -219,6 +219,8 @@ pub(crate) struct OpenPr {
     pub options: RefCell<Option<(Option<String>, Rc<CommentOptions>)>>,
     /// The comment being written, if one is.
     pub editor: RefCell<Option<CommentEditor>>,
+    /// The time to draw the PR at, when a test sets it: otherwise, the current time.
+    pub now: std::cell::Cell<Option<chrono::DateTime<chrono::FixedOffset>>>,
 }
 
 /// A comment being written, in a box in the diff.
@@ -262,6 +264,7 @@ impl OpenPr {
             summary: RefCell::new(backend.summary()?),
             options: RefCell::new(None),
             editor: RefCell::new(None),
+            now: std::cell::Cell::new(None),
             backend,
         })
     }

@@ -2577,3 +2577,182 @@ fn at_with_nothing_typed_sends_nothing() {
     ctx.update(&mut app, keys("@done<enter>"));
     assert!(listened(listen).contains("done"));
 }
+
+/// When `listen` printed the message `i` to an agent.
+fn delivered_at(ctx: &TestContext, i: usize) -> chrono::DateTime<chrono::FixedOffset> {
+    let file = review_file(ctx);
+    let at = file["messages"][i]["delivered_at"]
+        .as_str()
+        .unwrap_or_else(|| panic!("not delivered: {file}"));
+    chrono::DateTime::parse_from_rfc3339(at).unwrap()
+}
+
+/// Draw the PR on screen as at `time`.
+fn draw_at(
+    ctx: &mut TestContext,
+    app: &mut crate::app::App,
+    time: chrono::DateTime<chrono::FixedOffset>,
+) {
+    app.screen().pr.as_ref().unwrap().now.set(Some(time));
+    app.update(&mut ctx.term, None).unwrap();
+}
+
+/// The color of the bar down the left of the thread showing `text`.
+fn bar_color(ctx: &TestContext, text: &str) -> crate::style::Color {
+    super::pr::cell(ctx, text, '│').fg
+}
+
+/// Options in which a thread's bar is blue, and pulses to red within a minute.
+const PULSE_OPTIONS: &[(&str, &str)] = &[
+    ("comment-decoration-style", "blue"),
+    ("comment-pulse-style", "red"),
+    ("comment-pulse-timeout", "60"),
+];
+
+/// While an agent works on a message about a thread, from when `listen` prints it, the thread's
+/// decoration pulses: to comment-pulse-style and back every 2 seconds, for at most
+/// comment-pulse-timeout seconds.
+#[test]
+fn a_thread_pulses_while_an_agent_works_on_a_message_about_it() {
+    use crate::style::Color;
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    super::pr::with_options(&mut ctx, PULSE_OPTIONS);
+    let mut app = init_app(&mut ctx);
+    ctx.update(
+        &mut app,
+        keys("OO/new<enter>ihello<ctrl+s>/hello<enter>@fix this<enter>"),
+    );
+    review_cli(&ctx.dir, &["listen"]);
+    ctx.update(&mut app, keys("gr"));
+    let since = delivered_at(&ctx, 0);
+
+    draw_at(&mut ctx, &mut app, since);
+    assert_eq!(bar_color(&ctx, "hello"), Color::Red);
+    draw_at(&mut ctx, &mut app, since + chrono::Duration::seconds(1));
+    assert_eq!(bar_color(&ctx, "hello"), Color::Blue);
+    draw_at(&mut ctx, &mut app, since + chrono::Duration::seconds(2));
+    assert_eq!(bar_color(&ctx, "hello"), Color::Red);
+    // Past the timeout, where the pulse would be red.
+    draw_at(&mut ctx, &mut app, since + chrono::Duration::seconds(62));
+    assert_eq!(bar_color(&ctx, "hello"), Color::Blue);
+}
+
+/// A message sent that no agent has listened for yet does not pulse.
+#[test]
+fn a_thread_does_not_pulse_before_an_agent_listens() {
+    use crate::style::Color;
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    super::pr::with_options(&mut ctx, PULSE_OPTIONS);
+    let mut app = init_app(&mut ctx);
+    ctx.update(
+        &mut app,
+        keys("OO/new<enter>ihello<ctrl+s>/hello<enter>@fix this<enter>"),
+    );
+
+    draw_at(&mut ctx, &mut app, chrono::Local::now().fixed_offset());
+
+    assert_eq!(bar_color(&ctx, "hello"), Color::Blue);
+}
+
+/// An agent's reply in the thread ends the pulse.
+#[test]
+fn a_thread_stops_pulsing_when_an_agent_replies_in_it() {
+    use crate::style::Color;
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    super::pr::with_options(&mut ctx, PULSE_OPTIONS);
+    let mut app = init_app(&mut ctx);
+    ctx.update(
+        &mut app,
+        keys("OO/new<enter>ihello<ctrl+s>/hello<enter>@fix this<enter>"),
+    );
+    review_cli(&ctx.dir, &["listen"]);
+    let since = delivered_at(&ctx, 0);
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    review_cli_with_input(
+        &ctx.dir,
+        &["reply", &thread, "--agent", "claude", "--local"],
+        "Fixed.\n",
+    )
+    .unwrap();
+    ctx.update(&mut app, keys("gr"));
+
+    draw_at(&mut ctx, &mut app, since);
+    assert_eq!(bar_color(&ctx, "hello"), Color::Blue);
+}
+
+/// The agent listening for the next message, as it does once it has done what the last asked,
+/// ends the pulse.
+#[test]
+fn a_thread_stops_pulsing_when_the_agent_listens_again() {
+    use crate::style::Color;
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    super::pr::with_options(&mut ctx, PULSE_OPTIONS);
+    let mut app = init_app(&mut ctx);
+    ctx.update(
+        &mut app,
+        keys("OO/new<enter>ihello<ctrl+s>/hello<enter>@fix this<enter>"),
+    );
+    review_cli(&ctx.dir, &["listen"]);
+    let since = delivered_at(&ctx, 0);
+
+    let listen = listen_in_background(&ctx.dir);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while review_file(&ctx)["messages"][0]["done_at"].is_null() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{}",
+            review_file(&ctx)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    ctx.update(&mut app, keys("gr"));
+
+    draw_at(&mut ctx, &mut app, since);
+    assert_eq!(bar_color(&ctx, "hello"), Color::Blue);
+    ctx.update(&mut app, keys("@done<enter>"));
+    listened(listen);
+}
+
+/// A message about the whole PR pulses the threads the agent is to answer: those whose last
+/// comment is mine.
+#[test]
+fn a_message_about_the_pr_pulses_the_threads_whose_last_comment_is_mine() {
+    use crate::style::Color;
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    super::pr::with_options(&mut ctx, PULSE_OPTIONS);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
+    review_cli_with_input(
+        &ctx.dir,
+        &[
+            "comment",
+            "--agent",
+            "claude",
+            "--local",
+            "--path",
+            "added.txt",
+            "--line",
+            "1",
+        ],
+        "Agent here.\n",
+    )
+    .unwrap();
+    ctx.update(&mut app, keys("grgg@please respond<enter>"));
+    review_cli(&ctx.dir, &["listen"]);
+    ctx.update(&mut app, keys("gr"));
+
+    let since = delivered_at(&ctx, 0);
+    draw_at(&mut ctx, &mut app, since);
+
+    assert_eq!(bar_color(&ctx, "hello"), Color::Red);
+    assert_eq!(bar_color(&ctx, "Agent here."), Color::Blue);
+}
