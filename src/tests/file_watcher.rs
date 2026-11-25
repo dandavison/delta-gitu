@@ -24,6 +24,13 @@ fn watcher_sees(workdir: &Path, cmd: &[&str]) -> bool {
 
 fn watcher_sees_effect_of(workdir: &Path, action: impl FnOnce()) -> bool {
     let watcher = FileWatcher::new(&git2::Repository::open(workdir).unwrap()).unwrap();
+    // It starts watching on a thread of its own, which has taken over half a second.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !watcher.is_watching() {
+        assert!(Instant::now() < deadline, "the watcher did not start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    // Events from setup can still arrive once it has started.
     thread::sleep(Duration::from_millis(500));
     watcher.pending_updates();
 

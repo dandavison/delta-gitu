@@ -11,6 +11,11 @@ use std::{
 
 pub struct FileWatcher {
     pending_updates: Arc<AtomicBool>,
+    /// Whether the watcher has started watching, which it does on a thread of its own some time
+    /// after [`FileWatcher::new`] returns: on macOS, registering with fseventsd has taken over
+    /// half a second. A change made before then is not seen. Only tests read it, to wait for it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    watching: Arc<AtomicBool>,
     /// What went wrong in the watcher's thread, for the user to be told: until they are, the
     /// screens may not show changes made elsewhere.
     errors: Arc<Mutex<Vec<String>>>,
@@ -22,23 +27,33 @@ impl FileWatcher {
         let pending_updates_w = pending_updates.clone();
         let errors = Arc::new(Mutex::new(vec![]));
         let errors_w = Arc::clone(&errors);
+        let watching = Arc::new(AtomicBool::new(false));
+        let watching_w = Arc::clone(&watching);
         let git_dir = repo.path().to_path_buf();
         let workdir = repo.workdir().expect("Bare repos unhandled").to_path_buf();
 
         std::thread::spawn(move || {
-            if let Err(e) = watch(&git_dir, &workdir, pending_updates_w, Arc::clone(&errors_w)) {
-                report(&errors_w, format!("File watcher stopped: {e}"));
+            match watch(&git_dir, &workdir, pending_updates_w, Arc::clone(&errors_w)) {
+                Ok(()) => watching_w.store(true, Ordering::Relaxed),
+                Err(e) => report(&errors_w, format!("File watcher stopped: {e}")),
             }
         });
 
         Ok(Self {
             pending_updates,
+            watching,
             errors,
         })
     }
 
     pub fn pending_updates(&self) -> bool {
         self.pending_updates.swap(false, Ordering::Relaxed)
+    }
+
+    /// Whether the watcher has started watching.
+    #[cfg(test)]
+    pub fn is_watching(&self) -> bool {
+        self.watching.load(Ordering::Relaxed)
     }
 
     /// What has gone wrong since last asked.
@@ -116,14 +131,19 @@ fn watch(
     })
     .map_err(Error::FileWatcher)?;
 
-    watcher
-        .watch(&workdir, RecursiveMode::Recursive)
+    // Adding both paths before committing starts one FSEvents stream. Calling
+    // `watch` for each would start a stream and then restart it, and each
+    // start registers the stream with fseventsd, which has taken over 100ms.
+    let mut paths = watcher.paths_mut();
+    paths
+        .add(&workdir, RecursiveMode::Recursive)
         .map_err(Error::FileWatcher)?;
     if let Some(common_dir) = common_dir_outside_workdir {
-        watcher
-            .watch(&common_dir, RecursiveMode::Recursive)
+        paths
+            .add(&common_dir, RecursiveMode::Recursive)
             .map_err(Error::FileWatcher)?;
     }
+    paths.commit().map_err(Error::FileWatcher)?;
 
     log::info!(
         "File watcher started (kind: {:?})",
