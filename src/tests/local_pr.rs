@@ -3018,3 +3018,54 @@ fn review_show_quotes_the_lines_as_they_are() {
 
     assert!(printed.contains("> new\n  changed\n"), "{printed}");
 }
+
+/// GitHub, on which `main` is where `origin/main` is, behind `main`: `feature` has a commit of
+/// `main` that GitHub's `main` doesn't have.
+fn github_behind_main(ctx: &TestContext) -> Rc<FakeGitHub> {
+    let github = FakeGitHub::new(
+        run(&ctx.dir, &["git", "rev-parse", "origin/main"]).trim(),
+        run(&ctx.dir, &["git", "rev-parse", "feature"]).trim(),
+    );
+    Rc::new(github)
+}
+
+/// What a user is told to do about a branch with a commit of its base that GitHub's base doesn't
+/// have, which GitHub counts as the PR's though the diff here doesn't.
+const PUSH_OR_REBASE: &str = "Push main, or rebase feature onto GitHub's main";
+
+/// Sync refuses to create a PR whose diff on GitHub would have commits of its base that the diff
+/// here doesn't, before pushing anything.
+#[test]
+fn review_sync_refuses_to_create_a_pr_whose_diff_on_github_would_not_be_the_one_here() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
+    let github = github_behind_main(&ctx);
+    *github.has_pr.borrow_mut() = false;
+
+    let error = review_cli_with_github(&ctx.dir, &["sync", "--create-pr"], "", Rc::clone(&github))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains(PUSH_OR_REBASE), "{error}");
+    assert!(github.created.borrow().is_empty());
+    let pushed = run(&ctx.remote_dir, &["git", "branch", "--list", "feature"]);
+    assert!(pushed.trim().is_empty(), "{pushed}");
+}
+
+/// A PR on GitHub whose diff there has commits of its base that the diff here doesn't says what
+/// to do about it.
+#[test]
+fn opening_a_pr_whose_diff_on_github_is_not_the_one_here_says_what_to_do() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let github = github_behind_main(&ctx);
+    let mut app = init_app(&mut ctx);
+    app.state.github = github;
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("feature has 1 commit of main"), "{screen}");
+}
