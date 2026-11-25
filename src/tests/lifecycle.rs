@@ -356,6 +356,15 @@ impl GitHub for User {
         Ok("main".to_owned())
     }
 
+    fn branch_commit(&self, branch: &str) -> Result<Option<String>, Error> {
+        let remote = self.server.borrow().remote.clone();
+        Ok(Some(
+            run(&remote, &["git", "rev-parse", branch])
+                .trim()
+                .to_owned(),
+        ))
+    }
+
     fn pr_for_branch(&self, head: &str) -> Result<Option<GitHubPr>, Error> {
         assert_eq!(head, "feature");
         self.pr(None).map(Some)

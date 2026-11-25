@@ -168,6 +168,9 @@ pub(crate) trait GitHub {
     /// The default branch of the repository a PR would be opened against, as `gh pr create`
     /// chooses it.
     fn default_branch(&self) -> Res<String>;
+    /// The commit the branch `branch` is at in that repository, or `None` if it has no such
+    /// branch.
+    fn branch_commit(&self, branch: &str) -> Res<Option<String>>;
     /// Create a draft PR of the branch `head`, already pushed, into the branch `base`.
     fn create_pr(&self, _: WriteToken, head: &str, base: &str) -> Res<GitHubPr>;
     /// Add `body` to the pending review `review_id` as a reply to the comment `comment_id`,
@@ -630,6 +633,15 @@ impl GitHub for Gh {
             ".defaultBranchRef.name",
         ])?;
         Ok(output.trim().to_owned())
+    }
+
+    fn branch_commit(&self, branch: &str) -> Res<Option<String>> {
+        let path = format!("repos/{{owner}}/{{repo}}/branches/{branch}");
+        match self.run(&["api", &path, "--jq", ".commit.sha"]) {
+            Ok(output) => Ok(Some(output.trim().to_owned())),
+            Err(Error::Gh(message)) if message.contains("HTTP 404") => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// gh's own PR for the branch, as `gh pr view <branch>` finds it, which handles forks.

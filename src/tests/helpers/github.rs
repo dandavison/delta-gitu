@@ -69,6 +69,9 @@ impl GitHub for NoGitHub {
     fn default_branch(&self) -> Res<String> {
         refused()
     }
+    fn branch_commit(&self, _branch: &str) -> Res<Option<String>> {
+        refused()
+    }
     fn create_pr(&self, _: WriteToken, _head: &str, _base: &str) -> Res<GitHubPr> {
         refused()
     }

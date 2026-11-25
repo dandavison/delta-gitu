@@ -121,6 +121,7 @@ pub(crate) fn sync(
                 local.head()
             )));
         }
+        local.check_would_be_githubs(github.as_ref())?;
         run(push_command(local.repo(), local.head())?)?;
         // The user asked for it, as create_pr says.
         let change = Change::CreatePr {

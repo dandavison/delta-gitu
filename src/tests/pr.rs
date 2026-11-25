@@ -145,6 +145,10 @@ impl GitHub for FakeGitHub {
         Ok(self.default_branch.borrow().clone())
     }
 
+    fn branch_commit(&self, branch: &str) -> Result<Option<String>, Error> {
+        Ok((branch == *self.base_ref.borrow()).then(|| self.base_oid.clone()))
+    }
+
     fn pr_for_branch(&self, head: &str) -> Result<Option<GitHubPr>, Error> {
         if *self.fails.borrow() {
             return Err(Error::Gh("error connecting to api.github.com".to_owned()));

@@ -237,44 +237,51 @@ impl LocalBackend {
         walk.try_fold(0, |n, oid| oid.map(|_| n + 1)).map_err(error)
     }
 
-    /// Why the local PR is not the GitHub PR `github_pr`, if it isn't: one that doesn't branch
-    /// from its base where GitHub's does, or, while the branch is where GitHub has the PR's head,
-    /// whose commits are not as many as GitHub says the PR has. GitHub's base for a PR is where
-    /// the base branch was when the PR was last updated, which the base branch may since have
-    /// moved on from, so the base here need only have it.
-    pub(crate) fn check_against(&self, github_pr: &GitHubPr) -> Res<()> {
-        let githubs_base = Oid::from_str(&github_pr.base_oid)
+    /// Refuse to create a GitHub PR whose diff there would not be the one here: see
+    /// [`LocalBackend::check_base_on_github`], with GitHub's base branch where it is now.
+    pub(crate) fn check_would_be_githubs(&self, github: &dyn GitHub) -> Res<()> {
+        let githubs_base = github.branch_commit(&self.base)?.ok_or_else(|| {
+            Error::Gh(format!(
+                "Couldn't create the PR: GitHub has no branch {}",
+                self.base
+            ))
+        })?;
+        self.check_base_on_github(&githubs_base, &self.base)
+    }
+
+    /// Refuse a PR whose diff on GitHub, from GitHub's base branch at `githubs_base`, is not the
+    /// one here: one whose base here doesn't have GitHub's, or whose branch has commits of its
+    /// base here that GitHub's base doesn't have, which GitHub counts as the PR's.
+    fn check_base_on_github(&self, githubs_base: &str, githubs_base_ref: &str) -> Res<()> {
+        let githubs = Oid::from_str(githubs_base)
             .ok()
             .filter(|oid| self.repo.find_commit(*oid).is_ok())
-            .ok_or_else(|| {
-                Error::Gh(missing_commit(
-                    "base",
-                    &github_pr.base_oid,
-                    &github_pr.base_ref,
-                ))
-            })?;
+            .ok_or_else(|| Error::Gh(missing_commit("base", githubs_base, githubs_base_ref)))?;
         // The base as this repository has it, not as the link to GitHub gives it.
         let base = ref_commit(&self.repo, &self.base_ref)?.ok_or_else(|| {
             Error::LocalPr(format!("Couldn't find the PR's base, {}", self.base_ref))
         })?;
         let error = |e: git2::Error| Error::LocalPr(format!("Couldn't compare with GitHub: {e}"));
-        let has_githubs = base == githubs_base
+        let has_githubs = base == githubs
             || self
                 .repo
-                .graph_descendant_of(base, githubs_base)
+                .graph_descendant_of(base, githubs)
                 .map_err(error)?;
         if !has_githubs {
             return Err(Error::Gh(format!(
                 "GitHub's {} is at {}, which {} doesn't have. Fetch, so that it does",
                 self.base,
-                short(&github_pr.base_oid),
+                short(githubs_base),
                 short_ref(&self.base_ref),
             )));
         }
         let head = self.head_commit()?;
         let here = self.repo.merge_base(base, head).map_err(error)?;
-        let on_github = self.repo.merge_base(githubs_base, head).map_err(error)?;
-        if here != on_github {
+        let on_github = self.repo.merge_base(githubs, head).map_err(error)?;
+        // Only a local base branch, ahead of its remote's, has commits GitHub's may not have:
+        // otherwise the base here is GitHub's, as last fetched, which GitHub's PR may record as
+        // where it was before.
+        if here != on_github && !self.base_ref.starts_with("refs/heads/") {
             return Err(Error::Gh(format!(
                 "The PR branched from {} at {} here, but at {} on GitHub, so its diff here \
                  would not be GitHub's",
@@ -283,6 +290,38 @@ impl LocalBackend {
                 short(&on_github.to_string()),
             )));
         }
+        if here != on_github {
+            let mut walk = self.repo.revwalk().map_err(error)?;
+            walk.push(here).map_err(error)?;
+            walk.hide(on_github).map_err(error)?;
+            let commits = walk
+                .map(|oid| oid.map(|oid| short(&oid.to_string()).to_owned()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(error)?;
+            let (count, them) = match commits.len() {
+                1 => ("1 commit".to_owned(), "it"),
+                n => (format!("{n} commits"), "them"),
+            };
+            return Err(Error::Gh(format!(
+                "{head_branch} has {count} of {base} that GitHub's {base} doesn't, {ids}, which \
+                 GitHub counts as the PR's but the diff here doesn't. Push {base}, or rebase \
+                 {head_branch} onto GitHub's {base}, to leave {them} out",
+                head_branch = self.head,
+                base = self.base,
+                ids = commits.join(", "),
+            )));
+        }
+        Ok(())
+    }
+
+    /// Why the local PR is not the GitHub PR `github_pr`, if it isn't: one that doesn't branch
+    /// from its base where GitHub's does, or, while the branch is where GitHub has the PR's head,
+    /// whose commits are not as many as GitHub says the PR has. GitHub's base for a PR is where
+    /// the base branch was when the PR was last updated, which the base branch may since have
+    /// moved on from, so the base here need only have it.
+    pub(crate) fn check_against(&self, github_pr: &GitHubPr) -> Res<()> {
+        self.check_base_on_github(&github_pr.base_oid, &github_pr.base_ref)?;
+        let head = self.head_commit()?;
         if head.to_string() != github_pr.head_oid {
             return Ok(());
         }
