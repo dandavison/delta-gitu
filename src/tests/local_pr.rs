@@ -943,9 +943,9 @@ fn review_sync_on_a_branch_behind_its_pr_says_to_check_the_pr_out() {
 
     assert!(
         error.contains(
-            "Your local branch feature is missing 1 commit that GitHub's PR #7 has. To sync a PR \
-             to GitHub, your local branch must be on exactly the same commit as the remote \
-             branch. To get there: gh pr checkout 7"
+            "Your local branch feature is 1 commit behind GitHub's PR #7. To sync a PR to \
+             GitHub, your local branch must be on exactly the same commit as the remote branch. \
+             To get there: gh pr checkout 7"
         ),
         "{error}"
     );
@@ -953,15 +953,52 @@ fn review_sync_on_a_branch_behind_its_pr_says_to_check_the_pr_out() {
     assert!(github.posted.borrow().is_empty());
 }
 
-/// `O O` on a branch behind its GitHub PR says how to bring in GitHub's commits, rather than
-/// showing the PR as it was.
+/// `O O` on a branch behind its GitHub PR says so, with how to bring in GitHub's commits, and
+/// opens the PR only if told to.
 #[test]
-fn oo_on_a_branch_behind_its_pr_says_to_check_the_pr_out() {
+fn oo_on_a_branch_behind_its_pr_asks_before_opening() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     commit(&ctx.dir, "more.txt", "more\n");
     let githubs = run(&ctx.dir, &["git", "rev-parse", "feature"]);
     run(&ctx.dir, &["git", "reset", "--hard", "HEAD~1"]);
+    let main = run(&ctx.dir, &["git", "rev-parse", "main"]);
+    let github = || Rc::new(FakeGitHub::new(main.trim(), githubs.trim()));
+    let mut app = init_app(&mut ctx);
+    app.state.github = github();
+
+    ctx.update(&mut app, keys("OO"));
+    let screen = super::pr::screen_text(&ctx);
+    assert!(
+        screen.contains(
+            "Your local branch feature is 1 commit behind GitHub's PR #7. To bring it in: gh pr \
+             checkout 7. Open anyway? [y/n]"
+        ),
+        "{screen}"
+    );
+
+    let mut app = init_app(&mut ctx);
+    app.state.github = github();
+    ctx.update(&mut app, keys("OOn"));
+    assert!(!ctx.redact_buffer().contains("added: added.txt"));
+
+    let mut app = init_app(&mut ctx);
+    app.state.github = github();
+    ctx.update(&mut app, keys("OOy"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("added: added.txt"), "{screen}");
+}
+
+/// A branch rebased since its PR was pushed has diverged from it: `O O` says where they part,
+/// whether that commit is on the base, and how many of GitHub's commits make the same changes as
+/// the branch's, as a rebase leaves them.
+#[test]
+fn oo_on_a_branch_rebased_since_its_pr_says_so() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let githubs = run(&ctx.dir, &["git", "rev-parse", "feature"]);
+    let parted = run(&ctx.dir, &["git", "rev-parse", "--short=7", "feature~2"]);
+    run(&ctx.dir, &["git", "rebase", "-q", "main"]);
     let mut app = init_app(&mut ctx);
     app.state.github = Rc::new(FakeGitHub::new(
         run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
@@ -970,9 +1007,17 @@ fn oo_on_a_branch_behind_its_pr_says_to_check_the_pr_out() {
 
     ctx.update(&mut app, keys("OO"));
 
-    let screen = ctx.redact_buffer();
-    assert!(screen.contains("gh pr checkout 7"), "{screen}");
-    assert!(!screen.contains("added: added.txt"), "{screen}");
+    let screen = super::pr::screen_text(&ctx);
+    assert!(
+        screen.contains(&format!(
+            "Your local branch feature and GitHub's PR #7 are the same until commit {}, which is \
+             on main: after that point, yours has 3 commits and GitHub's has 2, 2 of which make \
+             the same changes as some of yours. This is consistent with your branch having been \
+             rebased. Open anyway? [y/n]",
+            parted.trim()
+        )),
+        "{screen}"
+    );
 }
 
 /// A branch and its GitHub PR that have each moved on are refused, saying how they stand, with no
@@ -998,10 +1043,7 @@ fn review_sync_on_a_branch_diverged_from_its_pr_suggests_no_command() {
     // Whether to rebase or merge, or to force a rewrite onto GitHub, is the user's to judge: no
     // command is safe to suggest.
     assert!(
-        error.contains(
-            "Your local branch feature and GitHub's PR #7 have diverged: 1 commit only in \
-             yours, 1 commit only in GitHub's."
-        ),
+        error.contains("after that point, yours has 1 commit and GitHub's has 1."),
         "{error}"
     );
     assert!(!error.contains("To get there"), "{error}");
@@ -2116,10 +2158,10 @@ fn oo_with_commits_by_several_authors_asks_before_opening() {
     );
 }
 
-/// A branch behind GitHub's would be reviewed as it was, not as it is, so opening its PR is an
-/// error, which says how to bring in GitHub's commits.
+/// A branch behind GitHub's would be reviewed as it was, not as it is, so opening its PR says so,
+/// with how to bring in GitHub's commits, and asks first.
 #[test]
-fn oo_on_a_branch_behind_its_branch_on_github_says_to_pull() {
+fn oo_on_a_branch_behind_its_branch_on_github_asks_before_opening() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     commit(&ctx.dir, "more.txt", "more\n");
@@ -2138,15 +2180,10 @@ fn oo_on_a_branch_behind_its_branch_on_github_says_to_pull() {
 
     let screen = super::pr::screen_text(&ctx);
     assert!(
-        screen.contains(
-            "Your local branch feature is missing 1 commit that GitHub's feature has. To review \
-             a PR, your local branch must contain every commit of the remote branch. To get \
-             there: git pull --ff"
-        ),
+        screen.contains("Your local branch feature is 1 commit behind GitHub's feature."),
         "{screen}"
     );
-    // The row wraps at the hyphen.
-    assert!(screen.contains("-only origin feature"), "{screen}");
+    assert!(screen.contains("Open anyway? [y/n]"), "{screen}");
     assert!(!screen.contains("added: added.txt"), "{screen}");
 }
 
@@ -2344,7 +2381,14 @@ fn oo_without_github_opens_the_local_pr_and_says_github_was_not_checked() {
 
     let screen = ctx.redact_buffer();
     assert!(screen.contains("hello"), "{screen}");
-    assert!(screen.contains("Not checked against GitHub"), "{screen}");
+    assert!(
+        super::pr::screen_text(&ctx).contains("Couldn't check this branch against GitHub"),
+        "{screen}"
+    );
+    assert!(
+        super::pr::screen_text(&ctx).contains("it may need updating before you sync"),
+        "{screen}"
+    );
 }
 
 /// Without GitHub, and with no local PR for the branch, its base can't be known.
