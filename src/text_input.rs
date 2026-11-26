@@ -15,6 +15,8 @@ pub(crate) struct TextInput {
     position: usize,
     pub(crate) status: Status,
     pub(crate) focused: bool,
+    /// What the last kill took, for `ctrl+y` to put back.
+    pub(crate) killed: String,
 }
 
 impl TextInput {
@@ -47,12 +49,35 @@ impl TextInput {
         )
     }
 
+    /// Edit the line as `key` says, with readline's keys.
+    ///
+    /// Words come in the two kinds readline has: `alt+b`/`alt+f`/`alt+d`/`alt+backspace` step
+    /// over runs of letters and digits, so they move within a path, while `ctrl+w` takes back a
+    /// whole whitespace-delimited token, such as a pathspec. What a kill takes, `ctrl+y` puts back.
     pub(crate) fn handle_key_event(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
         }
 
+        const ALT: KeyModifiers = KeyModifiers::ALT;
+        const CTRL: KeyModifiers = KeyModifiers::CONTROL;
+        let chars: Vec<char> = self.value.chars().collect();
+        let cursor = self.position();
+
         match (key.code, key.modifiers) {
+            (KeyCode::Char('b'), ALT) | (KeyCode::Left, ALT | CTRL) => {
+                self.move_to(previous_word_start(&chars, cursor));
+            }
+            (KeyCode::Char('f'), ALT) | (KeyCode::Right, ALT | CTRL) => {
+                self.move_to(next_word_end(&chars, cursor));
+            }
+            (KeyCode::Char('w'), CTRL) => self.kill(previous_token_start(&chars, cursor)..cursor),
+            (KeyCode::Backspace, ALT) => self.kill(previous_word_start(&chars, cursor)..cursor),
+            (KeyCode::Char('d'), ALT) => self.kill(cursor..next_word_end(&chars, cursor)),
+            (KeyCode::Char('k'), CTRL) => self.kill(cursor..chars.len()),
+            (KeyCode::Char('u'), CTRL) => self.kill(0..chars.len()),
+            (KeyCode::Char('y'), CTRL) => self.yank(),
+            (KeyCode::Char('t'), CTRL) => self.transpose(),
             (KeyCode::Enter, _) => self.status = Status::Done,
             (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                 self.status = Status::Aborted;
@@ -78,13 +103,6 @@ impl TextInput {
                     self.remove(self.position);
                 }
             }
-            (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
-                self.value = self.value.chars().take(self.position).collect();
-            }
-            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                self.value.clear();
-                self.position = 0;
-            }
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 self.insert(c);
                 self.position += 1;
@@ -95,6 +113,47 @@ impl TextInput {
 
     fn len(&self) -> usize {
         self.value.chars().count()
+    }
+
+    /// Take the chars in `range` out of the line, for `ctrl+y` to put back. Taking nothing is not
+    /// a kill: it leaves what was killed before to be put back.
+    fn kill(&mut self, range: std::ops::Range<usize>) {
+        if range.is_empty() {
+            return;
+        }
+        let chars: Vec<char> = self.value.chars().collect();
+        self.killed = chars[range.clone()].iter().collect();
+        self.value = chars[..range.start]
+            .iter()
+            .chain(&chars[range.end..])
+            .collect();
+        self.move_to(range.start);
+    }
+
+    /// Put what the last kill took back at the cursor.
+    fn yank(&mut self) {
+        let chars: Vec<char> = self.value.chars().collect();
+        let cursor = self.position();
+        let killed: Vec<char> = self.killed.chars().collect();
+        self.value = chars[..cursor]
+            .iter()
+            .chain(&killed)
+            .chain(&chars[cursor..])
+            .collect();
+        self.move_to(cursor + killed.len());
+    }
+
+    /// Swap the two characters the cursor sits between, and step over them. At the end of the
+    /// line there is nothing to the right to swap with, so the last two change places instead.
+    fn transpose(&mut self) {
+        let mut chars: Vec<char> = self.value.chars().collect();
+        if chars.len() < 2 {
+            return;
+        }
+        let cursor = self.position().min(chars.len() - 1).max(1);
+        chars.swap(cursor - 1, cursor);
+        self.value = chars.iter().collect();
+        self.move_to(cursor + 1);
     }
 
     /// Editing goes via chars, as `String`'s own byte-indexed methods would
