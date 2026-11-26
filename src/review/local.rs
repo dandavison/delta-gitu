@@ -8,6 +8,7 @@ use super::{
     github::{GitHub, GitHubBackend, GitHubPr, GitHubReviewState},
     missing_commit,
     remote::{self, Change, Consent},
+    standing::{OutOfStep, Shortfall, Theirs},
 };
 use crate::{Res, error::Error};
 use git2::{Oid, Repository};
@@ -226,10 +227,9 @@ impl LocalBackend {
     }
 
     /// Compare the branch, and its base, with GitHub: with GitHub's PR `pr`, or with the branch
-    /// on GitHub when it has no PR. delta never pushes or pulls, so an error says how they
-    /// differ, and which command makes them agree. A PR whose diff on GitHub has commits of its
-    /// base, as GitHub saved where the base was before it had them, is shown as GitHub has it:
-    /// what to tell the user about that is returned.
+    /// on GitHub when it has no PR, as [`super::standing`] says delta requires. A PR whose diff on
+    /// GitHub has commits of its base, as GitHub saved where the base was before it had them, is
+    /// shown as GitHub has it: what to tell the user about that is returned.
     pub(crate) fn compare_with_github(
         &self,
         pr: Option<&GitHubPr>,
@@ -237,24 +237,36 @@ impl LocalBackend {
     ) -> Res<Option<String>> {
         let remote = self.remote_name()?;
         let head = self.head_commit()?;
-        let Some(pr) = pr else {
-            if purpose == Purpose::Post {
-                self.compare_base_with_github(&remote, head)?;
-            }
-            return match self.github.branch_commit(&self.head)? {
-                None if purpose == Purpose::Post => Err(Error::Gh(format!(
-                    "{branch} is not on GitHub. Push it: git push -u {remote} {branch}",
-                    branch = self.head
-                ))),
-                None => Ok(None),
-                Some(githubs) => {
-                    let pull = format!("git pull {remote} {}", self.head);
-                    let theirs = format!("GitHub's {}", self.head);
-                    self.compare_heads(&githubs, head, &theirs, &pull, &remote, purpose)?;
-                    Ok(None)
+        let out_of_step = |shortfall, theirs| {
+            Error::Gh(
+                OutOfStep {
+                    shortfall,
+                    purpose,
+                    theirs,
+                    branch: self.head.clone(),
+                    base: self.base.clone(),
+                    remote: remote.clone(),
                 }
+                .to_string(),
+            )
+        };
+        let Some(pr) = pr else {
+            if purpose == Purpose::Post
+                && let Some(shortfall) = self.base_shortfall(head)?
+            {
+                return Err(out_of_step(shortfall, Theirs::Branch));
+            }
+            let shortfall = match self.github.branch_commit(&self.head)? {
+                None if purpose == Purpose::Post => Some(Shortfall::NotOnGitHub),
+                None => None,
+                Some(githubs) => self.shortfall(&githubs, head, "GitHub's branch", purpose)?,
+            };
+            return match shortfall {
+                Some(shortfall) => Err(out_of_step(shortfall, Theirs::Branch)),
+                None => Ok(None),
             };
         };
+        let theirs = Theirs::Pr(pr.number);
         if pr.base_ref != self.base {
             return Err(Error::Gh(format!(
                 "GitHub's PR #{} is into {}, not {}, so its lines would not match. Open it with \
@@ -262,17 +274,16 @@ impl LocalBackend {
                 pr.number, pr.base_ref, self.base, pr.base_ref
             )));
         }
-        let theirs = format!("GitHub's PR #{}", pr.number);
-        let checkout = format!("gh pr checkout {}", pr.number);
-        self.compare_heads(&pr.head_oid, head, &theirs, &checkout, &remote, purpose)?;
+        let what = format!("GitHub's PR #{}", pr.number);
+        if let Some(shortfall) = self.shortfall(&pr.head_oid, head, &what, purpose)? {
+            return Err(out_of_step(shortfall, theirs));
+        }
         let Some(saved_base) = self.commit_here(&pr.base_oid) else {
-            return Err(Error::Gh(format!(
-                "GitHub's PR #{} is into {} at {}, which this repository doesn't have. Fetch it: \
-                 git fetch {remote}",
-                pr.number,
-                pr.base_ref,
-                short(&pr.base_oid)
-            )));
+            let shortfall = Shortfall::NotHere {
+                what: format!("GitHub's PR #{}'s base", pr.number),
+                commit: pr.base_oid.clone(),
+            };
+            return Err(out_of_step(shortfall, theirs));
         };
         if head.to_string() == pr.head_oid {
             let commits = self.commit_count()?;
@@ -308,102 +319,66 @@ impl LocalBackend {
         )))
     }
 
-    /// Compare the branch's commit, `head`, with GitHub's, `githubs`, which `theirs` describes:
-    /// an error unless the branch has GitHub's commits and, to post, no more. `bring_in` is the
-    /// command that brings in GitHub's.
-    fn compare_heads(
+    /// How the branch's commit, `head`, falls short of GitHub's, `githubs`, which `what` names,
+    /// for `purpose`, if it does.
+    fn shortfall(
         &self,
         githubs: &str,
         head: Oid,
-        theirs: &str,
-        bring_in: &str,
-        remote: &str,
+        what: &str,
         purpose: Purpose,
-    ) -> Res<()> {
-        let branch = &self.head;
-        let Some(githubs) = self.commit_here(githubs) else {
-            return Err(Error::Gh(format!(
-                "{theirs} is at {}, which this repository doesn't have. Fetch it: git fetch \
-                 {remote}",
-                short(githubs)
-            )));
+    ) -> Res<Option<Shortfall>> {
+        let Some(githubs_commit) = self.commit_here(githubs) else {
+            return Ok(Some(Shortfall::NotHere {
+                what: what.to_owned(),
+                commit: githubs.to_owned(),
+            }));
         };
-        let commits = |n: usize| match n {
-            1 => ("1 commit".to_owned(), "it"),
-            n => (format!("{n} commits"), "them"),
-        };
-        match (
-            self.count_commits(head, githubs)?,
-            self.count_commits(githubs, head)?,
-        ) {
-            (_, 0) if purpose == Purpose::Review => Ok(()),
-            (0, 0) => Ok(()),
-            (ahead, 0) => {
-                let (count, them) = commits(ahead);
-                Err(Error::Gh(format!(
-                    "{branch} has {count} that {theirs} doesn't. Push {them}: git push {remote} \
-                     {branch}"
-                )))
-            }
-            (0, behind) => {
-                let (count, them) = commits(behind);
-                Err(Error::Gh(format!(
-                    "{theirs} has {count} that {branch} doesn't. Bring {them} in: {bring_in}"
-                )))
-            }
-            _ => Err(Error::Gh(format!(
-                "{branch} and {theirs} have diverged: each has commits the other doesn't. Rebase \
-                 yours onto GitHub's: git pull --rebase {remote} {branch}"
-            ))),
-        }
+        let ahead = self.count_commits(head, githubs_commit)?;
+        let behind = self.count_commits(githubs_commit, head)?;
+        Ok(match (ahead, behind) {
+            (0, 0) => None,
+            (_, 0) if purpose == Purpose::Review => None,
+            (commits, 0) => Some(Shortfall::Ahead { commits }),
+            (0, commits) => Some(Shortfall::Behind { commits }),
+            (ahead, behind) => Some(Shortfall::Diverged { ahead, behind }),
+        })
     }
 
-    /// For a PR to be created: an error if the branch has commits of its base that GitHub's base
-    /// branch doesn't, which GitHub would show in the PR though the diff here doesn't.
-    fn compare_base_with_github(&self, remote: &str, head: Oid) -> Res<()> {
+    /// For a PR to be created: how the branch's base falls short of GitHub's base branch, if it
+    /// does, as GitHub would show commits of the base here in the PR though the diff here doesn't.
+    fn base_shortfall(&self, head: Oid) -> Res<Option<Shortfall>> {
         let base = &self.base;
         let githubs = self.github.branch_commit(base)?.ok_or_else(|| {
             Error::Gh(format!(
                 "GitHub has no branch {base}, which the PR would be into"
             ))
         })?;
-        let Some(githubs) = self.commit_here(&githubs) else {
-            return Err(Error::Gh(format!(
-                "GitHub's {base} is at {}, which this repository doesn't have. Fetch it: git \
-                 fetch {remote}",
-                short(&githubs)
-            )));
+        let Some(githubs_commit) = self.commit_here(&githubs) else {
+            return Ok(Some(Shortfall::NotHere {
+                what: format!("GitHub's {base}"),
+                commit: githubs,
+            }));
         };
         let error = |e: git2::Error| Error::LocalPr(format!("Couldn't compare with GitHub: {e}"));
         let here = self
             .repo
             .merge_base(self.base_here()?, head)
             .map_err(error)?;
-        let on_github = self.repo.merge_base(githubs, head).map_err(error)?;
+        let on_github = self.repo.merge_base(githubs_commit, head).map_err(error)?;
         if here == on_github {
-            return Ok(());
+            return Ok(None);
         }
         if !self
             .repo
             .graph_descendant_of(here, on_github)
             .map_err(error)?
         {
-            return Err(Error::Gh(format!(
-                "GitHub's {base} has commits that {} doesn't. Fetch them: git fetch {remote}",
-                short_ref(&self.base_ref)
-            )));
+            return Ok(Some(Shortfall::BaseBehind));
         }
-        let commits = self.commits_between(on_github, here)?;
-        let count = match commits.len() {
-            1 => "1 commit".to_owned(),
-            n => format!("{n} commits"),
-        };
-        Err(Error::Gh(format!(
-            "{branch} has {count} of {base} that GitHub's {base} doesn't, {ids}, which GitHub \
-             would show in the PR. Push {base} first: git push {remote} {base}",
-            branch = self.head,
-            ids = commits.join(", "),
-        )))
+        Ok(Some(Shortfall::BaseNotOnGitHub {
+            commits: self.commits_between(on_github, here)?,
+        }))
     }
 
     /// The base as this repository has it, not as the link to GitHub gives it.
@@ -2363,15 +2338,7 @@ impl Backend for LocalBackend {
     }
 }
 
-/// What [`LocalBackend::compare_with_github`] needs of the branch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Purpose {
-    /// To review the PR: the branch may have commits GitHub doesn't, as while they are being
-    /// written, but must have GitHub's.
-    Review,
-    /// To post to the PR on GitHub, or create it: the branch must be where GitHub has it.
-    Post,
-}
+pub(crate) use super::standing::Purpose;
 
 /// The messages to agents that no `listen` has printed in any of `reviews`, which are recorded in
 /// one directory, marked printed, with the index of the review each is in, once there are any.

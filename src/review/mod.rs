@@ -13,6 +13,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod local;
 pub(crate) mod post;
 pub(crate) mod remote;
+pub(crate) mod standing;
 
 use crate::screen::review::CommentOptions;
 use crate::text_area::TextArea;
