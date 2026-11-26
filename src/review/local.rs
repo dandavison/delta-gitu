@@ -1431,7 +1431,8 @@ impl LocalBackend {
 
     /// `message` as `delta tui review listen` prints it: who sent it, about which PR, at which
     /// commit, and about which thread, then what it says, then the thread it is about, or every
-    /// thread for a message about the whole PR, as in the commit it was sent at.
+    /// thread for a message about the whole PR, as in the commit it was sent at, then the command
+    /// that answers it.
     pub fn message_markdown(&self, message: &Message) -> Res<String> {
         let at = match &message.version {
             Some(version) => format!(" at {}", &version.head.to_string()[..7]),
@@ -1449,12 +1450,17 @@ impl LocalBackend {
             "# Message from {} on {on}{at}{about}\n\n{}\n",
             message.from, message.body
         );
+        let mut deleted = false;
         if let Some(version) = &message.version {
             let threads = self.markdown_in(version, message.thread.as_deref())?;
             if threads.is_empty() && message.thread.is_some() {
                 out += "\nThe thread has been deleted since.\n";
+                deleted = true;
             }
             out += &threads;
+        }
+        if !deleted {
+            out += &answer_markdown(&message.head, &message.base, message.thread.as_deref());
         }
         Ok(out)
     }
@@ -2426,6 +2432,27 @@ pub(crate) fn wait_for_messages(reviews: &[LocalBackend]) -> Res<Vec<(usize, Mes
             }
         }
     }
+}
+
+/// How to answer a message to an agent on the review `head` into `base`: by replying,
+/// local-only, in `thread`, or in any thread for a message about the whole PR. The agent's name
+/// is left for the agent to fill in.
+fn answer_markdown(head: &str, base: &str, thread: Option<&str>) -> String {
+    let (what, thread) = match thread {
+        Some(thread) => ("reply in the thread", thread),
+        None => (
+            "reply in the thread of each comment you answer",
+            "<thread-id>",
+        ),
+    };
+    format!(
+        "\nTo answer, {what}, local-only, with the reply on stdin:\n\n\
+         ```sh\n\
+         delta tui review reply {thread} --head {head} --base {base} --local --agent <your-name> <<'EOF'\n\
+         🤖 <your reply>\n\
+         EOF\n\
+         ```\n"
+    )
 }
 
 /// The commits a local PR's diff is of: its head branch's last commit, whose lines the new side's

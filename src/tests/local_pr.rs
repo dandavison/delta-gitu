@@ -2842,7 +2842,8 @@ fn at_sends_a_message_about_the_pr_that_review_listen_prints() {
         printed.contains("please respond to the comments"),
         "{printed}"
     );
-    assert!(!printed.contains("thread"), "{printed}");
+    let heading = printed.lines().next().unwrap();
+    assert!(!heading.contains("thread"), "{printed}");
 }
 
 /// From a thread, the message is about the thread, and `review listen` prints its id.

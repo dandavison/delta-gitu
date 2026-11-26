@@ -193,12 +193,12 @@ delta tui review listen
 It waits for messages to the current branch's PR, prints them, and exits. Each message starts
 with `# Message from <person> on <branch> into <base> at <commit>`, followed by
 `, about thread <thread-id>` if it is about a thread. `<commit>` is the commit the person was
-looking at. Then come what the message says, and the thread it is about, or every thread for a
-message about the whole PR, as `delta tui review show` prints them but in `<commit>`. You don't
-need to run `review show`.
+looking at. Then come what the message says, the thread it is about, or every thread for a
+message about the whole PR, as `delta tui review show` prints them but in `<commit>`, and the
+command to answer it with. You don't need to run `review show`.
 
-Do what each message asks, and answer one about a thread in that thread, local-only, as in "Read
-and answer a review" above. Then run `delta tui review listen` again. A message sent while you work
+Do what each message asks, and answer it with the command it gives. Then run
+`delta tui review listen` again. A message sent while you work
 is kept, and the next listen prints it at once. Each message is printed only once, so run one
 listen at a time for each branch.
 
@@ -209,8 +209,8 @@ each worktree's branch. To listen to several branches, run a listen in each one'
 A message from the file view, where the person comments on any line of a file as committed, is
 on the files of a branch rather than a PR: it starts with
 `# Message from <person> on the files of <branch> (--base <branch>)`. Its threads are in the
-branch's files review, which commands act on when given that `--base`, as in
-`review reply <thread-id> --base <branch>`. Its comments are always local-only.
+branch's files review, which other commands act on when given that `--base`. Its comments are
+always local-only.
 
 If HEAD is not `<commit>`, or the worktree has uncommitted changes, the files you see are not the
 ones the person saw: read theirs with `git show <commit>:<path>`. Make your changes on the branch
