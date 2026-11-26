@@ -674,6 +674,34 @@ mod tests {
         state
     }
 
+    /// The pattern is edited with readline's keys, as a prompt's line is.
+    #[test]
+    fn the_pattern_is_edited_with_readlines_keys() {
+        let mut state = typed(
+            PickerState::new("Open file", vec![], false),
+            "chasm lib act",
+        );
+        let mut key = |code: KeyCode, modifiers: KeyModifiers| {
+            state
+                .input_state
+                .handle_key_event(KeyEvent::new(code, modifiers));
+            state.pattern().to_owned()
+        };
+        assert_eq!(key(KeyCode::Backspace, KeyModifiers::ALT), "chasm lib ");
+        key(KeyCode::Left, KeyModifiers::ALT);
+        key(KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(key(KeyCode::Char('d'), KeyModifiers::ALT), " lib ");
+        key(KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(key(KeyCode::Char('w'), KeyModifiers::CONTROL), "  ");
+        assert_eq!(key(KeyCode::Char('y'), KeyModifiers::CONTROL), " lib ");
+        key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(key(KeyCode::Char('k'), KeyModifiers::CONTROL), "");
+        key(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert_eq!(key(KeyCode::Char('!'), KeyModifiers::NONE), " lib !");
+    }
+
     /// A pattern of several words matches an item every one of them matches, in any order, as
     /// fzf's does, and each word's letters are highlighted.
     #[test]
