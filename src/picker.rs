@@ -356,8 +356,7 @@ impl PickerState {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, item)| {
-                    self.matcher
-                        .fuzzy_match(&item.display, &pattern)
+                    self.score(&item.display, &pattern)
                         .map(|score| MatchResult { index: i, score })
                 })
                 .collect();
@@ -525,10 +524,23 @@ impl PickerState {
             return None;
         }
 
-        self.items
-            .get(item_index)
-            .and_then(|item| self.matcher.fuzzy_indices(&item.display, pattern))
-            .map(|(_, indices)| indices)
+        let item = self.items.get(item_index)?;
+        let mut indices = vec![];
+        for word in pattern.split_whitespace() {
+            indices.extend(self.matcher.fuzzy_indices(&item.display, word)?.1);
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        Some(indices)
+    }
+
+    /// How well `display` matches `pattern`, if it does: as fzf matches, each of the pattern's
+    /// words fuzzily, in any order, adding up their scores.
+    fn score(&self, display: &str, pattern: &str) -> Option<i64> {
+        pattern
+            .split_whitespace()
+            .map(|word| self.matcher.fuzzy_match(display, word))
+            .sum()
     }
 
     /// Get current status
