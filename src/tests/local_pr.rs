@@ -2864,6 +2864,77 @@ fn at_on_a_thread_sends_a_message_about_the_thread() {
     assert!(printed.contains(&thread), "{printed}");
 }
 
+/// Run, in `dir`, the reply command in `printed`, a message as `listen` printed it, as an agent
+/// named `bot` would: with `thread` for a `<thread-id>` placeholder, and `reply` as its input.
+pub(super) fn answer_as_printed(
+    dir: &std::path::Path,
+    printed: &str,
+    thread: &str,
+    reply: &str,
+) -> Result<String, crate::error::Error> {
+    let command = printed
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("delta tui review reply "))
+        .unwrap_or_else(|| panic!("no reply command in:\n{printed}"));
+    let args = command
+        .strip_prefix("delta tui review ")
+        .unwrap()
+        .split_whitespace()
+        .take_while(|arg| !arg.starts_with("<<"))
+        .map(|arg| match arg {
+            "<your-name>" => "bot",
+            "<thread-id>" => thread,
+            arg => arg,
+        })
+        .collect::<Vec<_>>();
+    review_cli_with_input(dir, &args, reply)
+}
+
+/// A message about a thread says how to answer it: the command `listen` prints replies in the
+/// thread, local-only, as the agent.
+#[test]
+fn a_message_about_a_thread_says_how_to_answer_it() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>/hello<enter>"));
+    ctx.update(&mut app, keys("@fix this<enter>"));
+    let printed = review_cli(&ctx.dir, &["listen"]);
+    assert!(!printed.contains("<thread-id>"), "{printed}");
+
+    answer_as_printed(&ctx.dir, &printed, "", "🤖 fixed").unwrap();
+
+    let file = review_file(&ctx);
+    let reply = &file["threads"][0]["comments"][1];
+    assert_eq!(reply["body"], "🤖 fixed", "{file}");
+    assert_eq!(reply["agent"], "bot", "{file}");
+    assert!(reply["review"].is_null(), "{file}");
+}
+
+/// A message about the whole PR says how to answer a comment in any of its threads.
+#[test]
+fn a_message_about_the_pr_says_how_to_answer_its_threads() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>gg"));
+    ctx.update(&mut app, keys("@please respond<enter>"));
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let printed = review_cli(&ctx.dir, &["listen"]);
+
+    answer_as_printed(&ctx.dir, &printed, &thread, "🤖 done").unwrap();
+
+    let file = review_file(&ctx);
+    let reply = &file["threads"][0]["comments"][1];
+    assert_eq!(reply["body"], "🤖 done", "{file}");
+    assert_eq!(reply["agent"], "bot", "{file}");
+    assert!(reply["review"].is_null(), "{file}");
+}
+
 /// With no message waiting, `review listen` waits for one.
 #[test]
 fn review_listen_waits_for_a_message() {

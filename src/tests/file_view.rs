@@ -1,7 +1,7 @@
 //! The file view: a file whole, as committed, opened with `.`, whose lines take comments. They are
 //! kept in the branch's files review, apart from its PR, for an agent to answer.
 
-use super::local_pr::{init_app, review_cli, setup};
+use super::local_pr::{answer_as_printed, init_app, review_cli, setup};
 use super::*;
 
 /// `setup`, with `notes.md` committed on `feature`.
@@ -159,6 +159,26 @@ fn at_in_the_file_view_sends_a_message_listen_prints_with_how_to_answer() {
     assert!(printed.contains("--base feature"), "{printed}");
     assert!(printed.contains(&thread), "{printed}");
     assert!(printed.contains("## notes.md:2"), "{printed}");
+}
+
+/// The command a message from the file view says to answer with replies in the files review.
+#[test]
+fn a_message_from_the_file_view_says_how_to_answer_it() {
+    let mut ctx = setup_clone!();
+    setup_notes(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(
+        &mut app,
+        keys(".notes<enter>/hello<enter>imake it louder<ctrl+s>/louder<enter>@<enter>"),
+    );
+    let printed = review_cli(&ctx.dir, &["listen"]);
+
+    answer_as_printed(&ctx.dir, &printed, "", "🤖 louder now").unwrap();
+
+    let file = files_review(&ctx);
+    let reply = &file["threads"][0]["comments"][1];
+    assert_eq!(reply["body"], "🤖 louder now", "{file}");
+    assert_eq!(reply["agent"], "bot", "{file}");
 }
 
 /// The files review is not a PR: the branch's PR opens as before.
