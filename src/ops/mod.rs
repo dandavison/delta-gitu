@@ -258,7 +258,7 @@ impl Op {
                  or else pick one"
             }
             Op::MessageAgent => {
-                "Message an agent running delta tui review listen, about the thread or the PR"
+                "Send an agent a message about the thread or the PR"
             }
             Op::RebaseAbort => "Abort the rebase",
             Op::RebaseContinue => "Continue the rebase",

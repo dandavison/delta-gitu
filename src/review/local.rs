@@ -1476,9 +1476,17 @@ impl LocalBackend {
         })
     }
 
-    /// Leave `body` for an agent, about the thread `thread`, or else the whole PR, as its diff is
-    /// in `version`, for `delta tui review listen` to print.
-    pub fn send_message(&self, body: &str, thread: Option<&str>, version: &Version) -> Res<()> {
+    /// Send `body` to an agent, about the thread `thread`, or else the whole PR, as its diff is
+    /// in `version`: by running `command` with the message on its stdin, as `listen` would print
+    /// it, or, with no command, by leaving it for `delta tui review listen` to print. A message
+    /// that `command` fails to send is not recorded.
+    pub fn send_message(
+        &self,
+        body: &str,
+        thread: Option<&str>,
+        version: &Version,
+        command: Option<&str>,
+    ) -> Res<()> {
         if let Some(thread) = thread
             && !self.store.read()?.threads.iter().any(|t| t.id == thread)
         {
@@ -1486,19 +1494,78 @@ impl LocalBackend {
                 "Couldn't send the message: the PR has no thread {thread}"
             )));
         }
+        let id = new_id();
         let now = chrono::Local::now().fixed_offset();
+        let delivered_at = match command {
+            Some(command) => {
+                let message = Message {
+                    id: id.clone(),
+                    from: self.reviewer.clone(),
+                    head: self.head.clone(),
+                    base: self.base.clone(),
+                    body: body.to_owned(),
+                    thread: thread.map(str::to_owned),
+                    version: Some(*version),
+                };
+                self.run_send_message_command(command, &self.message_markdown(&message)?)?;
+                Some(now)
+            }
+            None => None,
+        };
         self.store.update(|file| {
             file.messages.push(StoredMessage {
-                id: new_id(),
+                id,
                 body: body.to_owned(),
                 thread: thread.map(str::to_owned),
                 commit: Some(version.head.to_string()),
                 merge_base: Some(version.merge_base.to_string()),
                 created_at: now,
-                delivered_at: None,
+                delivered_at,
                 done_at: None,
             });
         })
+    }
+
+    /// Run `command`, `send-message-command`, in the repository's root, with `{branch}` filled
+    /// in and `message` on its stdin.
+    fn run_send_message_command(&self, command: &str, message: &str) -> Res<()> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let failed = |why: String| {
+            Error::LocalPr(format!(
+                "Couldn't send the message: send-message-command {why}"
+            ))
+        };
+        let command = command.replace("{branch}", &shell_words::quote(&self.head));
+        let dir = self.repo.workdir().ok_or(Error::NoRepoWorkdir)?;
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| failed(format!("couldn't be run: {e}")))?;
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        // A command that doesn't read its stdin closes it.
+        match stdin.write_all(message.as_bytes()) {
+            Err(e) if e.kind() != io::ErrorKind::BrokenPipe => {
+                return Err(failed(format!("couldn't be given the message: {e}")));
+            }
+            _ => drop(stdin),
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|e| failed(format!("couldn't be run: {e}")))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(failed(match stderr.trim() {
+            "" => format!("failed ({})", output.status),
+            stderr => format!("failed: {stderr}"),
+        }))
     }
 
     /// The messages to agents that no `listen` has printed, marked printed. Those printed before

@@ -474,8 +474,8 @@ impl OpTrait for ToggleLocalOnly {
     }
 }
 
-/// Leave a message for an agent running `delta tui review listen`, about the thread under the
-/// cursor, or else the whole PR.
+/// Send an agent a message about the thread under the cursor, or else the whole PR: with
+/// `send-message-command`, or else by leaving it for `delta tui review listen`.
 pub(crate) struct MessageAgent;
 impl OpTrait for MessageAgent {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
@@ -516,7 +516,12 @@ impl OpTrait for MessageAgent {
                 Err(Error::PromptAborted) => return Ok(()),
                 Err(e) => return Err(e),
             };
-            local.send_message(&body, thread.as_deref(), &version)?;
+            local.send_message(
+                &body,
+                thread.as_deref(),
+                &version,
+                app.state.config.general.send_message_command.as_deref(),
+            )?;
             app.display_info("Message sent");
             Ok(())
         }))

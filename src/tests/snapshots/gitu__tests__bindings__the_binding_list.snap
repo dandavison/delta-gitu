@@ -7,7 +7,7 @@ expression: ctx.redact_buffer()
 ▌ p                 toggle-local-only      Move the comment between your draft review, which sync posts, and local-only                               |
 ▌ o                 show-on-github         Open the PR file, hunk, line or comment on GitHub, to comment there                                        |
 ▌ i                 write-comment          Write a comment or a reply, or edit your own comment                                                       |
-▌ @                 message-agent          Message an agent running delta tui review listen, about the thread or the PR                               |
+▌ @                 message-agent          Send an agent a message about the thread or the PR                                                         |
 ▌ .                 open-file              Open the file under the cursor whole, as committed, to comment on for an agent, or else pick one           |
 ▌ Y                 show-refs              List branches and tags                                                                                     |
 ▌ g+s               status                 Status view, from any view                                                                                 |
