@@ -651,6 +651,46 @@ mod tests {
         );
     }
 
+    /// `state` with `text` typed into it.
+    fn typed(mut state: PickerState, text: &str) -> PickerState {
+        for c in text.chars() {
+            state
+                .input_state
+                .handle_key_event(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+        }
+        state.update_filter();
+        state
+    }
+
+    /// A pattern of several words matches an item every one of them matches, in any order, as
+    /// fzf's does, and each word's letters are highlighted.
+    #[test]
+    fn a_pattern_of_several_words_matches_items_each_word_matches() {
+        let items: Vec<PickerItem> = [
+            "chasm/lib/activity.go",
+            "chasm/lib/workflow.go",
+            "service/history/activity.go",
+        ]
+        .into_iter()
+        .map(|path| PickerItem::new(path, PickerData::Item(path.to_owned())))
+        .collect();
+
+        let matched = |pattern: &str| -> Vec<String> {
+            typed(PickerState::new("Open file", items.clone(), false), pattern)
+                .filtered_items()
+                .map(|(_, item)| item.display.to_string())
+                .collect()
+        };
+        assert_eq!(matched("cha lib act"), ["chasm/lib/activity.go"]);
+        // Its letters are in "service/history/activity.go" too, but scattered.
+        assert_eq!(matched("act cha")[0], "chasm/lib/activity.go");
+
+        let state = typed(PickerState::new("Open file", items, false), "cha act");
+        let highlighted = state.match_indices(0).unwrap();
+        assert!(highlighted.contains(&0), "{highlighted:?}");
+        assert!(highlighted.contains(&10), "{highlighted:?}");
+    }
+
     #[test]
     fn test_fuzzy_filtering_sorts_by_score() {
         // Create items with varying match quality for pattern "feat"
