@@ -125,6 +125,11 @@ pub struct GeneralConfig {
     pub views: BTreeMap<String, String>,
     #[serde(default)]
     pub alt_editor: Option<String>,
+    /// A shell command that `@` sends a message to an agent with, in place of leaving it for
+    /// `delta tui review listen`: the message is on its stdin, as `listen` would print it, and
+    /// `{branch}` is filled in with the PR's branch.
+    #[serde(default)]
+    pub send_message_command: Option<String>,
 }
 
 /// Whether gitu runs commands that change the repository (stage, commit,

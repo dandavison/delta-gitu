@@ -51,8 +51,11 @@ pub(crate) const FEATURE_KEY: &str = "feature-key";
 pub(crate) const THEME: &str = "diff-renderer-theme";
 
 /// The settings that have no value by default, so are not in gitu's defaults.
-pub(crate) const UNSET_BY_DEFAULT: [&str; 2] =
-    ["general.alt_editor", "general.diff_renderer.theme"];
+pub(crate) const UNSET_BY_DEFAULT: [&str; 3] = [
+    "general.alt_editor",
+    "general.diff_renderer.theme",
+    "general.send_message_command",
+];
 
 /// The names gitu's styles would have that are delta's options.
 const DELTAS: [&str; 1] = ["hunk-header-style"];

@@ -173,6 +173,12 @@ views = {}
 # from `commands` does, with gitu staying on screen. e.g.:
 #   alt_editor = "code --goto"
 
+# A shell command that `@` sends a message to an agent with, in place of leaving
+# it for `delta tui review listen`. It runs in the repository's root, with the
+# message on stdin as `listen` would print it, and `{branch}` filled in with the
+# PR's branch. If it fails, the message is not sent. e.g.:
+#   send_message_command = "jq -Rs . | temporal activity start --task-queue delta/{branch} --type DeltaMessage --activity-id delta-$(uuidgen) --start-to-close-timeout 1h --input-file /dev/stdin"
+
 # When to prompt for discard confirmation. Options:
 # "line"  - always prompt even for individual lines (default),
 # "hunk"  - prompt for files and hunks,

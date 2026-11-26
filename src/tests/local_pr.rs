@@ -3463,3 +3463,77 @@ fn an_agent_edits_and_replies_though_the_branch_is_behind_its_pr() {
     assert!(shown.contains("hello again"), "{shown}");
     assert!(shown.contains("Done."), "{shown}");
 }
+
+/// `ctx` with `send-message-command` set to `command`.
+fn with_send_message_command(ctx: &mut TestContext, command: &str) {
+    ctx.config().general.send_message_command = Some(command.to_owned());
+}
+
+/// With `send-message-command` set, `@` runs it with `{branch}` filled in and the message on
+/// stdin, as `listen` would print it, and the message counts as delivered.
+#[test]
+fn send_message_command_is_given_the_message() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    with_send_message_command(&mut ctx, "cat > .git/sent-to-{branch}");
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>/hello<enter>"));
+    let thread = review_file(&ctx)["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    ctx.update(&mut app, keys("@fix this<enter>"));
+
+    let sent = fs::read_to_string(ctx.dir.join(".git/sent-to-feature"))
+        .unwrap_or_else(|e| panic!("{e}: {}", ctx.redact_buffer()));
+    assert!(sent.starts_with("# Message from"), "{sent}");
+    assert!(sent.contains("fix this"), "{sent}");
+    assert!(
+        sent.contains(&format!("delta tui review reply {thread} ")),
+        "{sent}"
+    );
+    delivered_at(&ctx, 0);
+}
+
+/// A message sent with `send-message-command` pulses from when it is sent.
+#[test]
+fn a_thread_pulses_from_when_send_message_command_sends_a_message_about_it() {
+    use crate::style::Color;
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    super::pr::with_options(&mut ctx, PULSE_OPTIONS);
+    with_send_message_command(&mut ctx, "cat > /dev/null");
+    let mut app = init_app(&mut ctx);
+    ctx.update(
+        &mut app,
+        keys("OO/new<enter>ihello<ctrl+s>/hello<enter>@fix this<enter>"),
+    );
+    ctx.update(&mut app, keys("gr"));
+
+    let since = delivered_at(&ctx, 0);
+    draw_at(&mut ctx, &mut app, since);
+
+    assert_eq!(bar_color(&ctx, "hello"), Color::Red);
+}
+
+/// When `send-message-command` fails, `@` says why, and records no message.
+#[test]
+fn a_failing_send_message_command_says_why_and_records_no_message() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    with_send_message_command(&mut ctx, "cat > /dev/null; echo no server >&2; exit 1");
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>/hello<enter>"));
+
+    ctx.update(&mut app, keys("@fix this<enter>"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("no server"), "{screen}");
+    assert!(!screen.contains("Message sent"), "{screen}");
+    let file = review_file(&ctx);
+    assert!(
+        file["messages"].as_array().is_none_or(Vec::is_empty),
+        "{file}"
+    );
+}
