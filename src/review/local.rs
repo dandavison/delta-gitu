@@ -227,34 +227,39 @@ impl LocalBackend {
     }
 
     /// Compare the branch, and its base, with GitHub: with GitHub's PR `pr`, or with the branch
-    /// on GitHub when it has no PR, as [`super::standing`] says delta requires. A PR whose diff on
-    /// GitHub has commits of its base, as GitHub saved where the base was before it had them, is
-    /// shown as GitHub has it: what to tell the user about that is returned.
+    /// on GitHub when it has no PR, as [`super::standing`] says delta requires. What stops it is
+    /// an error; what the user can go on despite, having been told, is a warning. A PR whose diff
+    /// on GitHub has commits of its base, as GitHub saved where the base was before it had them,
+    /// is shown as GitHub has it: what to tell the user about that is a note.
     pub(crate) fn compare_with_github(
         &self,
         pr: Option<&GitHubPr>,
         purpose: Purpose,
-    ) -> Res<Option<String>> {
+    ) -> Res<Checked> {
         let remote = self.remote_name()?;
         let head = self.head_commit()?;
         let out_of_step = |shortfall, theirs| {
-            Error::Gh(
-                OutOfStep {
-                    shortfall,
-                    purpose,
-                    theirs,
-                    branch: self.head.clone(),
-                    base: self.base.clone(),
-                    remote: remote.clone(),
-                }
-                .to_string(),
-            )
+            let out_of_step = OutOfStep {
+                shortfall,
+                purpose,
+                theirs,
+                branch: self.head.clone(),
+                base: self.base.clone(),
+                remote: remote.clone(),
+            };
+            match out_of_step.can_go_on() {
+                true => Ok(Checked {
+                    warning: Some(out_of_step.to_string()),
+                    note: None,
+                }),
+                false => Err(Error::Gh(out_of_step.to_string())),
+            }
         };
         let Some(pr) = pr else {
             if purpose == Purpose::Post
                 && let Some(shortfall) = self.base_shortfall(head)?
             {
-                return Err(out_of_step(shortfall, Theirs::Branch));
+                return out_of_step(shortfall, Theirs::Branch);
             }
             let shortfall = match self.github.branch_commit(&self.head)? {
                 None if purpose == Purpose::Post => Some(Shortfall::NotOnGitHub),
@@ -262,8 +267,8 @@ impl LocalBackend {
                 Some(githubs) => self.shortfall(&githubs, head, "GitHub's branch", purpose)?,
             };
             return match shortfall {
-                Some(shortfall) => Err(out_of_step(shortfall, Theirs::Branch)),
-                None => Ok(None),
+                Some(shortfall) => out_of_step(shortfall, Theirs::Branch),
+                None => Ok(Checked::default()),
             };
         };
         let theirs = Theirs::Pr(pr.number);
@@ -276,14 +281,14 @@ impl LocalBackend {
         }
         let what = format!("GitHub's PR #{}", pr.number);
         if let Some(shortfall) = self.shortfall(&pr.head_oid, head, &what, purpose)? {
-            return Err(out_of_step(shortfall, theirs));
+            return out_of_step(shortfall, theirs);
         }
         let Some(saved_base) = self.commit_here(&pr.base_oid) else {
             let shortfall = Shortfall::NotHere {
                 what: format!("GitHub's PR #{}'s base", pr.number),
                 commit: pr.base_oid.clone(),
             };
-            return Err(out_of_step(shortfall, theirs));
+            return out_of_step(shortfall, theirs);
         };
         if head.to_string() == pr.head_oid {
             let commits = self.commit_count()?;
@@ -308,15 +313,19 @@ impl LocalBackend {
                 .graph_descendant_of(here, on_github)
                 .map_err(error)?
         {
-            return Ok(None);
+            return Ok(Checked::default());
         }
-        Ok(Some(format!(
+        let note = Some(format!(
             "GitHub's PR #{} includes {} from {base}: GitHub saved where {base} was when the PR \
              was created",
             pr.number,
             self.commits_between(on_github, here)?.join(", "),
             base = self.base,
-        )))
+        ));
+        Ok(Checked {
+            note,
+            warning: None,
+        })
     }
 
     /// How the branch's commit, `head`, falls short of GitHub's, `githubs`, which `what` names,
@@ -341,8 +350,53 @@ impl LocalBackend {
             (_, 0) if purpose == Purpose::Review => None,
             (commits, 0) => Some(Shortfall::Ahead { commits }),
             (0, commits) => Some(Shortfall::Behind { commits }),
-            (ahead, behind) => Some(Shortfall::Diverged { ahead, behind }),
+            (ahead, behind) => {
+                let error =
+                    |e: git2::Error| Error::LocalPr(format!("Couldn't compare with GitHub: {e}"));
+                let since = self.repo.merge_base(head, githubs_commit).map_err(error)?;
+                let base = self.base_here()?;
+                let on_base =
+                    since == base || self.repo.graph_descendant_of(base, since).map_err(error)?;
+                Some(Shortfall::Diverged {
+                    since: since.to_string(),
+                    on_base,
+                    ahead,
+                    behind,
+                    same: self.same_changes(since, head, githubs_commit)?,
+                })
+            }
         })
+    }
+
+    /// How many of the commits `theirs` has since `since` make the same changes as one of those
+    /// `ours` has, by their patch ids, as `git cherry` compares them. A merge has none.
+    fn same_changes(&self, since: Oid, ours: Oid, theirs: Oid) -> Res<usize> {
+        let error = |e: git2::Error| Error::LocalPr(format!("Couldn't compare commits: {e}"));
+        let patch_ids = |tip: Oid| -> Res<Vec<Oid>> {
+            let mut walk = self.repo.revwalk().map_err(error)?;
+            walk.push(tip).map_err(error)?;
+            walk.hide(since).map_err(error)?;
+            let mut ids = vec![];
+            for oid in walk {
+                let commit = self.repo.find_commit(oid.map_err(error)?).map_err(error)?;
+                if commit.parent_count() != 1 {
+                    continue;
+                }
+                let parent = commit.parent(0).and_then(|p| p.tree()).map_err(error)?;
+                let tree = commit.tree().map_err(error)?;
+                let diff = self
+                    .repo
+                    .diff_tree_to_tree(Some(&parent), Some(&tree), None)
+                    .map_err(error)?;
+                ids.push(diff.patchid(None).map_err(error)?);
+            }
+            Ok(ids)
+        };
+        let ours: HashSet<Oid> = patch_ids(ours)?.into_iter().collect();
+        Ok(patch_ids(theirs)?
+            .iter()
+            .filter(|id| ours.contains(id))
+            .count())
     }
 
     /// For a PR to be created: how the branch's base falls short of GitHub's base branch, if it
@@ -1835,9 +1889,14 @@ fn find_pr(
         Ok(github_pr) => github_pr,
         Err(e) => {
             return match local {
-                Some((base, _)) => {
-                    Ok((base, None, Some(format!("Not checked against GitHub: {e}"))))
-                }
+                Some((base, _)) => Ok((
+                    base,
+                    None,
+                    Some(format!(
+                        "Couldn't check this branch against GitHub ({e}): it may need \
+                             updating before you sync"
+                    )),
+                )),
                 None => Err(Error::LocalPr(format!(
                     "Couldn't find {head}'s PR: there is none in this repository, and gh couldn't \
                      say what GitHub has: {e}. The review command line can be given the base \
@@ -2339,6 +2398,15 @@ impl Backend for LocalBackend {
 }
 
 pub(crate) use super::standing::Purpose;
+
+/// What [`LocalBackend::compare_with_github`] found that doesn't stop it.
+#[derive(Debug, Default)]
+pub(crate) struct Checked {
+    /// What the user may go on despite, having been told, as reviewing a branch behind GitHub's.
+    pub warning: Option<String>,
+    /// What to tell the user, which needs nothing of them.
+    pub note: Option<String>,
+}
 
 /// The messages to agents that no `listen` has printed in any of `reviews`, which are recorded in
 /// one directory, marked printed, with the index of the review each is in, once there are any.

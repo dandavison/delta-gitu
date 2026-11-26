@@ -86,12 +86,16 @@ pub(crate) fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>
     let local =
         LocalBackend::for_current_branch(Rc::clone(&app.state.repo), Rc::clone(&app.state.github))?;
     // A PR not checked against GitHub, as gh couldn't say what it is, says so instead.
-    let note = match local.unchecked() {
-        Some(_) => None,
+    let checked = match local.unchecked() {
+        Some(_) => Default::default(),
         None => local
             .compare_with_github(local.linked_pr(), Purpose::Review)
             .map_err(local::opening)?,
     };
+    if let Some(warning) = checked.warning {
+        app.confirm(term, format!("{warning} Open anyway? [y/n]"))?;
+    }
+    let note = checked.note;
     if let Some(expected) = expected
         && local.linked_number() != Some(expected)
     {

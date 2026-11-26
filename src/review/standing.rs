@@ -40,9 +40,16 @@ pub(crate) enum Shortfall {
     Ahead { commits: usize },
     /// GitHub's has `commits` that the branch doesn't.
     Behind { commits: usize },
-    /// Each has commits the other doesn't, as when the branch was rewritten, or both have new
-    /// work.
-    Diverged { ahead: usize, behind: usize },
+    /// Each has commits the other doesn't, after `since`, where they part, which is on the base
+    /// if `on_base`: the branch has `ahead`, and GitHub's `behind`, `same` of which make the same
+    /// changes as some of the branch's, as when the branch was rebased.
+    Diverged {
+        since: String,
+        on_base: bool,
+        ahead: usize,
+        behind: usize,
+        same: usize,
+    },
     /// To post: GitHub has no branch of this name.
     NotOnGitHub,
     /// To create a PR: the branch has commits of its base, `commits`, that GitHub's base branch
@@ -80,15 +87,31 @@ impl OutOfStep {
                 count(*commits)
             ),
             Shortfall::Behind { commits } => format!(
-                "Your local branch {branch} is missing {} that {theirs} has",
+                "Your local branch {branch} is {} behind {theirs}",
                 count(*commits)
             ),
-            Shortfall::Diverged { ahead, behind } => format!(
-                "Your local branch {branch} and {theirs} have diverged: {} only in yours, {} \
-                 only in GitHub's",
-                count(*ahead),
-                count(*behind)
-            ),
+            Shortfall::Diverged {
+                since,
+                on_base,
+                ahead,
+                behind,
+                same,
+            } => {
+                let on = if *on_base { "on" } else { "not on" };
+                let mut problem = format!(
+                    "Your local branch {branch} and {theirs} are the same until commit {}, which \
+                     is {on} {base}: after that point, yours has {} and GitHub's has {behind}",
+                    short(since),
+                    count(*ahead)
+                );
+                if *same > 0 {
+                    problem += &format!(
+                        ", {same} of which make the same changes as some of yours. This is \
+                         consistent with your branch having been rebased"
+                    );
+                }
+                problem
+            }
             Shortfall::NotOnGitHub => format!("Your local branch {branch} is not on GitHub"),
             Shortfall::BaseNotOnGitHub { commits } => format!(
                 "Your local branch {branch} has {} from {base} that GitHub's {base} doesn't: {}",
@@ -152,11 +175,37 @@ impl OutOfStep {
 
 impl fmt::Display for OutOfStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}. {}.", self.problem(), self.requirement())?;
-        if let Some(command) = self.command() {
-            write!(f, " To get there: {command}")?;
+        match (self.purpose, &self.shortfall) {
+            // Reviewing a branch behind GitHub's is the user's call: delta only says so, and how
+            // to bring GitHub's commits in.
+            (Purpose::Review, Shortfall::Behind { commits }) => {
+                write!(f, "{}.", self.problem())?;
+                if let Some(command) = self.command() {
+                    let them = if *commits == 1 { "it" } else { "them" };
+                    write!(f, " To bring {them} in: {command}.")?;
+                }
+            }
+            (Purpose::Review, Shortfall::Diverged { .. }) => write!(f, "{}.", self.problem())?,
+            _ => {
+                write!(f, "{}. {}.", self.problem(), self.requirement())?;
+                if let Some(command) = self.command() {
+                    write!(f, " To get there: {command}")?;
+                }
+            }
         }
         Ok(())
+    }
+}
+
+impl OutOfStep {
+    /// Whether the user can go on despite it, having been told: reviewing a branch behind
+    /// GitHub's, or diverged from it.
+    pub fn can_go_on(&self) -> bool {
+        self.purpose == Purpose::Review
+            && matches!(
+                self.shortfall,
+                Shortfall::Behind { .. } | Shortfall::Diverged { .. }
+            )
     }
 }
 
@@ -217,8 +266,11 @@ mod tests {
             ),
             (
                 Shortfall::Diverged {
+                    since: "abc1234".to_owned(),
+                    on_base: false,
                     ahead: 1,
                     behind: 1,
+                    same: 0,
                 },
                 pr,
                 None,
