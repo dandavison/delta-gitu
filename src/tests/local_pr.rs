@@ -870,7 +870,11 @@ fn review_sync_on_a_branch_not_on_github_says_to_push_it() {
         .to_string();
 
     assert!(
-        error.contains("feature is not on GitHub. Push it: git push -u origin feature"),
+        error.contains(
+            "Your local branch feature is not on GitHub. To sync a PR to GitHub, your local \
+             branch must be on exactly the same commit as the remote branch. To get there: git \
+             push -u origin feature"
+        ),
         "{error}"
     );
     assert!(github.created.borrow().is_empty());
@@ -912,7 +916,7 @@ fn os_on_a_branch_not_on_github_says_to_push_it_without_asking() {
 
     ctx.update(&mut app, keys("Os"));
 
-    let screen = ctx.redact_buffer();
+    let screen = super::pr::screen_text(&ctx);
     assert!(screen.contains("feature is not on GitHub"), "{screen}");
     assert!(!screen.contains("create one?"), "{screen}");
 }
@@ -939,7 +943,9 @@ fn review_sync_on_a_branch_behind_its_pr_says_to_check_the_pr_out() {
 
     assert!(
         error.contains(
-            "GitHub's PR #7 has 1 commit that feature doesn't. Bring it in: gh pr checkout 7"
+            "Your local branch feature is missing 1 commit that GitHub's PR #7 has. To sync a PR \
+             to GitHub, your local branch must be on exactly the same commit as the remote \
+             branch. To get there: gh pr checkout 7"
         ),
         "{error}"
     );
@@ -969,10 +975,10 @@ fn oo_on_a_branch_behind_its_pr_says_to_check_the_pr_out() {
     assert!(!screen.contains("added: added.txt"), "{screen}");
 }
 
-/// A branch and its GitHub PR that have each moved on are refused, saying how to rebase onto
-/// GitHub's.
+/// A branch and its GitHub PR that have each moved on are refused, saying how they stand, with no
+/// command: the branch may have been rewritten, as by a rebase, or both may have new work.
 #[test]
-fn review_sync_on_a_branch_diverged_from_its_pr_says_to_rebase() {
+fn review_sync_on_a_branch_diverged_from_its_pr_suggests_no_command() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     comment_with_base(&ctx, None);
@@ -989,11 +995,16 @@ fn review_sync_on_a_branch_diverged_from_its_pr_says_to_rebase() {
         .unwrap_err()
         .to_string();
 
-    assert!(error.contains("have diverged"), "{error}");
+    // Whether to rebase or merge, or to force a rewrite onto GitHub, is the user's to judge: no
+    // command is safe to suggest.
     assert!(
-        error.contains("git pull --rebase origin feature"),
+        error.contains(
+            "Your local branch feature and GitHub's PR #7 have diverged: 1 commit only in \
+             yours, 1 commit only in GitHub's."
+        ),
         "{error}"
     );
+    assert!(!error.contains("To get there"), "{error}");
 }
 
 /// A PR whose head on GitHub is a commit this repository doesn't have is refused, saying to
@@ -1010,8 +1021,11 @@ fn oo_on_a_pr_at_a_commit_not_here_says_to_fetch() {
 
     ctx.update(&mut app, keys("OO"));
 
-    let screen = ctx.redact_buffer();
-    assert!(screen.contains("Fetch it: git fetch origin"), "{screen}");
+    let screen = super::pr::screen_text(&ctx);
+    assert!(
+        screen.contains("To get there: git fetch origin"),
+        "{screen}"
+    );
 }
 
 /// A PR whose base on GitHub is a commit this repository doesn't have is refused, saying to
@@ -1028,8 +1042,11 @@ fn oo_on_a_pr_whose_base_is_not_here_says_to_fetch() {
 
     ctx.update(&mut app, keys("OO"));
 
-    let screen = ctx.redact_buffer();
-    assert!(screen.contains("Fetch it: git fetch origin"), "{screen}");
+    let screen = super::pr::screen_text(&ctx);
+    assert!(
+        screen.contains("To get there: git fetch origin"),
+        "{screen}"
+    );
 }
 
 /// A thread GitHub doesn't add is not posted: `O s` says so, and the comment stays a draft.
@@ -1601,7 +1618,9 @@ fn review_sync_with_commits_github_doesnt_have_refuses_and_pushes_nothing() {
     let error = result.unwrap_err().to_string();
     assert!(
         error.contains(
-            "feature has 1 commit that GitHub's PR #7 doesn't. Push it: git push origin feature"
+            "Your local branch feature has 1 commit that GitHub's PR #7 doesn't. To sync a PR \
+             to GitHub, your local branch must be on exactly the same commit as the remote \
+             branch. To get there: git push origin feature"
         ),
         "{error}"
     );
@@ -1674,7 +1693,7 @@ fn review_sync_refuses_when_githubs_head_is_not_the_branchs() {
 
     let error = result.unwrap_err().to_string();
     assert!(
-        error.contains("GitHub's PR #7 is at 0000000, which this repository doesn't have"),
+        error.contains("Your local repository doesn't have commit 0000000, which GitHub's PR #7"),
         "{error}"
     );
     assert!(github.posted.borrow().is_empty());
@@ -2120,10 +2139,14 @@ fn oo_on_a_branch_behind_its_branch_on_github_says_to_pull() {
     let screen = super::pr::screen_text(&ctx);
     assert!(
         screen.contains(
-            "GitHub's feature has 1 commit that feature doesn't. Bring it in: git pull origin feature"
+            "Your local branch feature is missing 1 commit that GitHub's feature has. To review \
+             a PR, your local branch must contain every commit of the remote branch. To get \
+             there: git pull --ff"
         ),
         "{screen}"
     );
+    // The row wraps at the hyphen.
+    assert!(screen.contains("-only origin feature"), "{screen}");
     assert!(!screen.contains("added: added.txt"), "{screen}");
 }
 
@@ -3236,10 +3259,6 @@ fn github_behind_main(ctx: &TestContext) -> Rc<FakeGitHub> {
     Rc::new(github)
 }
 
-/// What a user is told to do about a branch with a commit of its base that GitHub's base doesn't
-/// have, which GitHub would show in the PR though the diff here doesn't.
-const PUSH_BASE: &str = "Push main first: git push origin main";
-
 /// Sync refuses to create a PR whose diff on GitHub would have commits of its base that the diff
 /// here doesn't, before pushing anything.
 #[test]
@@ -3255,7 +3274,12 @@ fn review_sync_refuses_to_create_a_pr_whose_diff_on_github_would_not_be_the_one_
         .unwrap_err()
         .to_string();
 
-    assert!(error.contains(PUSH_BASE), "{error}");
+    // Whether main's commit belongs on GitHub is the user's to judge: no command is suggested.
+    assert!(
+        error.contains("Your local branch feature has 1 commit from main that GitHub's main"),
+        "{error}"
+    );
+    assert!(!error.contains("To get there"), "{error}");
     assert!(github.created.borrow().is_empty());
     let pushed = run(&ctx.remote_dir, &["git", "branch", "--list", "feature"]);
     assert!(pushed.trim().is_empty(), "{pushed}");

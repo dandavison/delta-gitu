@@ -611,7 +611,7 @@ fn a_base_commit_not_in_the_repository_is_an_error() {
 
     let screen = screen_text(&ctx);
     assert!(
-        screen.contains("which this repository doesn't have. Fetch it: git fetch origin"),
+        screen.contains("which GitHub's PR #7's base is on"),
         "{screen}"
     );
 }
