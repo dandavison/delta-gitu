@@ -91,6 +91,14 @@ pub(crate) fn layout_picker<'a>(
             } else {
                 layout_span(layout, (item.display.as_ref().into(), style));
             }
+            // The selected item's style runs to the end of its row, so that the row stands out.
+            if is_selected {
+                let used = 1 + unicode_width::UnicodeWidthStr::width(item.display.as_ref());
+                layout_span(
+                    layout,
+                    (" ".repeat(width.saturating_sub(used)).into(), style),
+                );
+            }
         });
         rendered_count += 1;
     }
@@ -236,8 +244,14 @@ fn render_highlighted_text<'a>(
                 layout_span(layout, (Cow::Owned(buffer.clone()), base_style));
                 buffer.clear();
             }
-            // Render highlighted character
-            layout_span(layout, (Cow::Owned(grapheme.to_string()), highlight_style));
+            // Render highlighted character, over the row's style
+            layout_span(
+                layout,
+                (
+                    Cow::Owned(grapheme.to_string()),
+                    base_style.patch(highlight_style),
+                ),
+            );
         } else {
             buffer.push_str(grapheme);
         }

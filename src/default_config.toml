@@ -232,8 +232,8 @@ pr_summary = { fg = "yellow" }
 picker.prompt = { fg = "cyan" }
 # How many items a picker has, and how many match what is typed.
 picker.info = { mods = "DIM" }
-# The item a picker has selected.
-picker.selection_line = { mods = "BOLD" }
+# The item a picker has selected, across its row.
+picker.selection_line = { mods = "BOLD|REVERSED" }
 # The letters of an item that match what is typed.
 picker.matched = { fg = "yellow", mods = "BOLD" }
 
