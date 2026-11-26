@@ -101,7 +101,7 @@ pub(crate) fn create(
                 }]
                 .into_iter()
             } else {
-                branch_status_items(&status.branch_status, &config)?.into_iter()
+                branch_status_items(&repo, &status.branch_status, &config)?.into_iter()
             }
             .chain(pr_items(&repo, status.branch_status.local.as_deref()))
             .chain(if untracked.is_empty() {
@@ -227,7 +227,11 @@ fn pr_items(repo: &Repository, branch: Option<&str>) -> Vec<Item> {
     vec![items::blank_line(), item]
 }
 
-fn branch_status_items(status: &BranchStatus, config: &Config) -> Res<Vec<Item>> {
+fn branch_status_items(
+    repo: &Repository,
+    status: &BranchStatus,
+    config: &Config,
+) -> Res<Vec<Item>> {
     let Some(ref head) = status.local else {
         return Ok(vec![Item {
             id: hash(SectionID::BranchStatus),
@@ -251,12 +255,67 @@ fn branch_status_items(status: &BranchStatus, config: &Config) -> Res<Vec<Item>>
             id: hash(SectionID::BranchStatus),
             depth: 1,
             unselectable: true,
-            data: ItemData::BranchStatus(upstream_name.clone(), status.ahead, status.behind),
+            data: ItemData::BranchStatus(
+                upstream_name.clone(),
+                status.ahead,
+                status.behind,
+                parted_from(repo, upstream_name, status)?,
+            ),
             ..Default::default()
         });
     }
 
     Ok(items)
+}
+
+/// For a branch diverged from its upstream, `upstream`, where they part, and whether that is on
+/// the remote's default branch, as `origin/HEAD` names it; `None` for branches with no commit in
+/// common.
+fn parted_from(repo: &Repository, upstream: &str, status: &BranchStatus) -> Res<Option<String>> {
+    if status.ahead == 0 || status.behind == 0 {
+        return Ok(None);
+    }
+    let error = |e: git2::Error| Error::LocalPr(format!("Couldn't compare with {upstream}: {e}"));
+    let commit = |rev: &str| {
+        repo.revparse_single(rev)
+            .and_then(|object| object.peel_to_commit())
+            .map(|commit| commit.id())
+    };
+    let ours = commit("HEAD").map_err(error)?;
+    let theirs = commit(&format!("refs/remotes/{upstream}")).map_err(error)?;
+    // Branches with no commit in common, as after the first commit is amended, part nowhere.
+    let since = match repo.merge_base(ours, theirs) {
+        Ok(since) => since,
+        Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
+        Err(e) => return Err(error(e)),
+    };
+    let remote = upstream.split('/').next().unwrap_or(upstream);
+    let base = match repo.find_reference(&format!("refs/remotes/{remote}/HEAD")) {
+        Ok(head) => {
+            let name = head
+                .symbolic_target()
+                .and_then(|target| target.strip_prefix(&format!("refs/remotes/{remote}/")))
+                .map(str::to_owned);
+            let tip = head.resolve().ok().and_then(|tip| tip.target());
+            match (name, tip) {
+                (Some(name), Some(tip)) => {
+                    let on = since == tip || repo.graph_descendant_of(tip, since).map_err(error)?;
+                    Some((on, name))
+                }
+                _ => None,
+            }
+        }
+        Err(e) if e.code() == git2::ErrorCode::NotFound => None,
+        Err(e) => return Err(error(e)),
+    };
+    let same = crate::review::standing::same_changes(repo, since, ours, theirs).map_err(error)?;
+    Ok(Some(crate::review::standing::parted(
+        &format!("Your branch and {upstream}"),
+        upstream,
+        &since.to_string(),
+        base.as_ref().map(|(on, name)| (*on, name.as_str())),
+        (status.ahead as usize, status.behind as usize, same),
+    )))
 }
 
 /// `diff` drawn by the renderer as it is drawn.

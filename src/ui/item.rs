@@ -216,13 +216,15 @@ pub(crate) fn layout_item<'a>(
                 (content, base.patch(Style::from(&style.section_header))),
             );
         }
-        ItemData::BranchStatus(upstream, ahead, behind) => {
+        ItemData::BranchStatus(upstream, ahead, behind, parted) => {
             let content = if *ahead == 0 && *behind == 0 {
                 format!("Your branch is up to date with '{upstream}'.")
             } else if *ahead > 0 && *behind == 0 {
                 format!("Your branch is ahead of '{upstream}' by {ahead} commit(s).")
             } else if *ahead == 0 && *behind > 0 {
                 format!("Your branch is behind '{upstream}' by {behind} commit(s).")
+            } else if let Some(parted) = parted {
+                format!("{parted}.")
             } else {
                 format!(
                     "Your branch and '{upstream}' have diverged, and have {ahead} and {behind} different commits each, respectively."

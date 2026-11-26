@@ -60,7 +60,9 @@ pub(crate) enum ItemData {
     PrSummary,
     /// The upstream of the current branch, and how far ahead of and behind it
     /// the branch is.
-    BranchStatus(String, u32, u32),
+    /// For a branch diverged from it, where they part, as [`crate::review::standing::parted`]
+    /// says.
+    BranchStatus(String, u32, u32, Option<String>),
     Error(String),
     BlameHeader {
         commit_hash: String,
@@ -139,7 +141,7 @@ impl ItemData {
                 | ItemData::Delta { .. }
                 | ItemData::Hunk { .. }
                 | ItemData::Header(_)
-                | ItemData::BranchStatus(_, _, _)
+                | ItemData::BranchStatus(..)
                 // A commit (or rebase todo entry) is a section so that sibling
                 // navigation steps commit-to-commit and folding hides the extra
                 // rows a rendered log gives it.

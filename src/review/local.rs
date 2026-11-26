@@ -368,35 +368,11 @@ impl LocalBackend {
         })
     }
 
-    /// How many of the commits `theirs` has since `since` make the same changes as one of those
-    /// `ours` has, by their patch ids, as `git cherry` compares them. A merge has none.
+    /// How many of the commits `theirs` has since `since` make the same changes as some of
+    /// `ours` (see [`super::standing::same_changes`]).
     fn same_changes(&self, since: Oid, ours: Oid, theirs: Oid) -> Res<usize> {
-        let error = |e: git2::Error| Error::LocalPr(format!("Couldn't compare commits: {e}"));
-        let patch_ids = |tip: Oid| -> Res<Vec<Oid>> {
-            let mut walk = self.repo.revwalk().map_err(error)?;
-            walk.push(tip).map_err(error)?;
-            walk.hide(since).map_err(error)?;
-            let mut ids = vec![];
-            for oid in walk {
-                let commit = self.repo.find_commit(oid.map_err(error)?).map_err(error)?;
-                if commit.parent_count() != 1 {
-                    continue;
-                }
-                let parent = commit.parent(0).and_then(|p| p.tree()).map_err(error)?;
-                let tree = commit.tree().map_err(error)?;
-                let diff = self
-                    .repo
-                    .diff_tree_to_tree(Some(&parent), Some(&tree), None)
-                    .map_err(error)?;
-                ids.push(diff.patchid(None).map_err(error)?);
-            }
-            Ok(ids)
-        };
-        let ours: HashSet<Oid> = patch_ids(ours)?.into_iter().collect();
-        Ok(patch_ids(theirs)?
-            .iter()
-            .filter(|id| ours.contains(id))
-            .count())
+        super::standing::same_changes(&self.repo, since, ours, theirs)
+            .map_err(|e| Error::LocalPr(format!("Couldn't compare commits: {e}")))
     }
 
     /// For a PR to be created: how the branch's base falls short of GitHub's base branch, if it

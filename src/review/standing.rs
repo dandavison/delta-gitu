@@ -96,22 +96,13 @@ impl OutOfStep {
                 ahead,
                 behind,
                 same,
-            } => {
-                let on = if *on_base { "on" } else { "not on" };
-                let mut problem = format!(
-                    "Your local branch {branch} and {theirs} are the same until commit {}, which \
-                     is {on} {base}: after that point, yours has {} and GitHub's has {behind}",
-                    short(since),
-                    count(*ahead)
-                );
-                if *same > 0 {
-                    problem += &format!(
-                        ", {same} of which make the same changes as some of yours. This is \
-                         consistent with your branch having been rebased"
-                    );
-                }
-                problem
-            }
+            } => parted(
+                &format!("Your local branch {branch} and {theirs}"),
+                "GitHub's",
+                since,
+                Some((*on_base, base)),
+                (*ahead, *behind, *same),
+            ),
             Shortfall::NotOnGitHub => format!("Your local branch {branch} is not on GitHub"),
             Shortfall::BaseNotOnGitHub { commits } => format!(
                 "Your local branch {branch} has {} from {base} that GitHub's {base} doesn't: {}",
@@ -207,6 +198,68 @@ impl OutOfStep {
                 Shortfall::Behind { .. } | Shortfall::Diverged { .. }
             )
     }
+}
+
+/// Where two branches, which `who` names, part, after `since`, which is on the branch `base` if
+/// given and its flag says so, and how they compare after it: `ours` and `theirs` commits each,
+/// `same` of `theirs` making the same changes as some of `ours`. `theirs_name` names the other
+/// branch alone.
+pub(crate) fn parted(
+    who: &str,
+    theirs_name: &str,
+    since: &str,
+    base: Option<(bool, &str)>,
+    (ours, theirs, same): (usize, usize, usize),
+) -> String {
+    let on_base = match base {
+        Some((true, base)) => format!(", which is on {base}"),
+        Some((false, base)) => format!(", which is not on {base}"),
+        None => String::new(),
+    };
+    let mut parted = format!(
+        "{who} are the same until commit {}{on_base}: after that point, yours has {} and \
+         {theirs_name} has {theirs}",
+        short(since),
+        count(ours)
+    );
+    if same > 0 {
+        parted += &format!(
+            ", {same} of which make the same changes as some of yours. This is consistent with \
+             your branch having been rebased"
+        );
+    }
+    parted
+}
+
+/// How many of the commits `theirs` has since `since` make the same changes as one of those
+/// `ours` has, by their patch ids, as `git cherry` compares them. A merge has none.
+pub(crate) fn same_changes(
+    repo: &git2::Repository,
+    since: git2::Oid,
+    ours: git2::Oid,
+    theirs: git2::Oid,
+) -> Result<usize, git2::Error> {
+    let patch_ids = |tip: git2::Oid| -> Result<Vec<git2::Oid>, git2::Error> {
+        let mut walk = repo.revwalk()?;
+        walk.push(tip)?;
+        walk.hide(since)?;
+        let mut ids = vec![];
+        for oid in walk {
+            let commit = repo.find_commit(oid?)?;
+            if commit.parent_count() != 1 {
+                continue;
+            }
+            let parent = commit.parent(0)?.tree()?;
+            let diff = repo.diff_tree_to_tree(Some(&parent), Some(&commit.tree()?), None)?;
+            ids.push(diff.patchid(None)?);
+        }
+        Ok(ids)
+    };
+    let ours: std::collections::HashSet<git2::Oid> = patch_ids(ours)?.into_iter().collect();
+    Ok(patch_ids(theirs)?
+        .iter()
+        .filter(|id| ours.contains(id))
+        .count())
 }
 
 /// `n` commits, in words.
