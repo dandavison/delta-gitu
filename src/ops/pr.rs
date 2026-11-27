@@ -202,10 +202,10 @@ fn is_thread(data: &ItemData) -> bool {
     matches!(data, ItemData::ReviewThread { .. })
 }
 
-/// The thread view (see [`PrThreads`]). While words are typed, ctrl+p and ctrl+n move between
-/// threads, up and down step through what was typed before, as in the other prompts, enter or right
-/// goes to the thread under the cursor, and esc clears what was typed, or, with nothing typed,
-/// closes the view.
+/// The thread view (see [`PrThreads`]). While words are typed, up and down (or ctrl+p and ctrl+n)
+/// move between threads, alt+up and alt+down step through what was typed before, as up and down do
+/// in the other prompts, enter or right goes to the thread under the cursor, and esc clears what was
+/// typed, or, with nothing typed, closes the view.
 fn show_threads(app: &mut App, term: &mut Term) -> Res<()> {
     // With no PR on screen, the current branch's is opened, as `O O` opens it.
     if app.screen().pr.is_none() {
@@ -257,11 +257,18 @@ fn show_threads(app: &mut App, term: &mut Term) -> Res<()> {
             on_key: Some(Box::new(move |app, key| {
                 use crossterm::event::{KeyCode, KeyModifiers};
                 match (key.code, key.modifiers) {
-                    (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                    (KeyCode::Up | KeyCode::Down, KeyModifiers::ALT) => {
+                        let plain = crossterm::event::KeyEvent::new(key.code, KeyModifiers::NONE);
+                        app.state.prompt.handle_key(plain);
+                        KeyUse::Taken
+                    }
+                    (KeyCode::Down, KeyModifiers::NONE)
+                    | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
                         app.screen_mut().select_adjacent_matching(is_thread, false);
                         KeyUse::Taken
                     }
-                    (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                    (KeyCode::Up, KeyModifiers::NONE)
+                    | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
                         app.screen_mut().select_adjacent_matching(is_thread, true);
                         KeyUse::Taken
                     }
