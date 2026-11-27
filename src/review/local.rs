@@ -305,20 +305,21 @@ impl LocalBackend {
     }
 
     /// Ask GitHub again for the PR the local PR is linked to, after a push: again every half
-    /// second, for at most 10 seconds, while GitHub has the branch at a commit the branch here
-    /// has since moved on from, as GitHub takes a push in a little after the push returns.
+    /// second, for at most 10 seconds, while the push has put the branch's commit on the remote's
+    /// branch and GitHub doesn't have it yet, as GitHub takes a push in a little after the push
+    /// returns. A push of another branch, or one the remote refused, isn't waited for.
     pub fn relink_after_push(&self) -> Res<()> {
         let deadline = Instant::now() + Duration::from_secs(10);
+        let head = self.head_commit()?;
+        let remote_branch = format!("refs/remotes/{}/{}", self.remote_name()?, self.head);
+        let pushed = ref_commit(&self.repo, &remote_branch)? == Some(head);
         loop {
             self.relink()?;
             let Some(linked) = self.linked() else {
                 return Ok(());
             };
-            let head = self.head_commit()?;
-            let behind = self.commit_here(&linked.pr.head_oid).is_some_and(|theirs| {
-                theirs != head && self.repo.graph_descendant_of(head, theirs).unwrap_or(false)
-            });
-            if !behind || Instant::now() >= deadline {
+            let has_it = linked.pr.head_oid == head.to_string();
+            if has_it || !pushed || Instant::now() >= deadline {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(500));
