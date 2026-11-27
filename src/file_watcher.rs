@@ -131,6 +131,11 @@ fn watch(
         }
 
         for path in event.paths {
+            // A directory is modified, as Windows says, when what is in it changes, as when a lock
+            // file comes and goes; what changed is reported with its own path.
+            if matches!(event.kind, EventKind::Modify(_)) && path.is_dir() {
+                continue;
+            }
             let relevant = match git_dirs.is_relevant(&path) {
                 Some(relevant) => relevant,
                 None => match repo.status_should_ignore(&path) {
