@@ -131,7 +131,7 @@ fn refuse_blocked_replies(local: &LocalBackend) -> Res<()> {
 pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool) -> Res<Synced> {
     let Some(pr) = github.pr_for_branch(local.head())? else {
         refuse_blocked_replies(local)?;
-        let kept_local = local.keep_unpushable_local(&local.to_post()?)?;
+        let kept_local = keep_unpushable_local(local, github.as_ref(), None, &local.to_post()?)?;
         let to_post = local.to_post()?;
         if to_post.is_empty() {
             return Err(Error::Gh(format!(
@@ -184,7 +184,7 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
             false => local.move_drafts(&stale)?,
         },
     };
-    let kept_local = local.keep_unpushable_local(&local.to_post()?)?;
+    let kept_local = keep_unpushable_local(local, github.as_ref(), Some(&pr), &local.to_post()?)?;
     let to_post = local.to_post()?;
     if to_post.is_empty() {
         return Ok(Synced::Fetched {
@@ -358,10 +358,64 @@ fn take_added(
     body: &str,
     since: chrono::DateTime<chrono::FixedOffset>,
 ) -> Option<String> {
-    let i = added.iter().position(|a| {
-        a.at == *at && a.body.trim_end() == body.trim_end() && a.created_at >= since - CLOCK_SKEW
-    })?;
+    let i = find_added(added, at, body, since)?;
     Some(added.remove(i).id)
+}
+
+/// Where in `added` the comment `body`, which an attempt began posting at `since` at `at`, is.
+fn find_added(
+    added: &[Added],
+    at: &At,
+    body: &str,
+    since: chrono::DateTime<chrono::FixedOffset>,
+) -> Option<usize> {
+    added.iter().position(|a| {
+        a.at == *at && a.body.trim_end() == body.trim_end() && a.created_at >= since - CLOCK_SKEW
+    })
+}
+
+/// Make the draft comments of `to_post` whose threads GitHub can't take, as their lines aren't in
+/// its diff of the PR, local-only, and say how many threads they are in. A thread a sync stopped
+/// while starting on GitHub that `pr` has is left to be found there as the rest are posted (see
+/// [`post`]); one `pr` doesn't have, or with no PR, is not on GitHub, and is no longer taken to be
+/// being posted.
+fn keep_unpushable_local(
+    local: &LocalBackend,
+    github: &dyn GitHub,
+    pr: Option<&GitHubPr>,
+    to_post: &[super::local::PostComment],
+) -> Res<usize> {
+    let mut threads = HashSet::new();
+    let mut added: Option<Vec<Added>> = None;
+    for comment in to_post {
+        let Some(Place::Line(side, line)) = comment.starts else {
+            continue;
+        };
+        if local.in_diff(&comment.path, (side, line))? {
+            continue;
+        }
+        if let (Some(since), Some(pr)) = (comment.posting_since, pr) {
+            let added = match &mut added {
+                Some(added) => added,
+                None => added.insert(my_comments(github, pr)?),
+            };
+            let at = At::Thread {
+                path: comment.path.clone(),
+                place: Place::Line(side, line),
+            };
+            if find_added(added, &at, &comment.body, since).is_some() {
+                continue;
+            }
+        }
+        threads.insert(comment.thread.clone());
+    }
+    for comment in to_post.iter().filter(|c| threads.contains(&c.thread)) {
+        if comment.posting_since.is_some() {
+            local.unmark_posting(&comment.id)?;
+        }
+        local.move_comment(&comment.id, true)?;
+    }
+    Ok(threads.len())
 }
 
 fn couldnt_sync(e: Error) -> Error {

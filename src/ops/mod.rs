@@ -219,6 +219,15 @@ impl Op {
     }
 
     /// What the op does, for the list of bindings.
+    /// What the spinner says while the op takes long enough to show it: what it is doing, where
+    /// that is not what its description says it does.
+    pub(crate) fn doing(&self) -> std::borrow::Cow<'static, str> {
+        match self {
+            Op::PrSync => "Syncing with GitHub".into(),
+            _ => self.description(),
+        }
+    }
+
     pub(crate) fn description(&self) -> std::borrow::Cow<'static, str> {
         match self {
             Op::AddRemote => "Add a remote",

@@ -724,23 +724,6 @@ impl LocalBackend {
         Ok(ids)
     }
 
-    /// Make the draft comments of `to_post` whose threads GitHub can't take, as their lines aren't
-    /// in its diff of the PR, local-only, and say how many threads they are in.
-    pub fn keep_unpushable_local(&self, to_post: &[PostComment]) -> Res<usize> {
-        let mut threads = HashSet::new();
-        for comment in to_post {
-            if let Some(Place::Line(side, line)) = comment.starts
-                && !self.in_diff(&comment.path, (side, line))?
-            {
-                threads.insert(comment.thread.clone());
-            }
-        }
-        for comment in to_post.iter().filter(|c| threads.contains(&c.thread)) {
-            self.move_comment(&comment.id, true)?;
-        }
-        Ok(threads.len())
-    }
-
     /// Whether `line` of the file at `path` is in the PR's diff as GitHub has it, with 3 lines of
     /// context whatever git's `diff.context`: GitHub takes a comment only on a line in its diff.
     pub fn in_diff(&self, path: &str, (side, line): (Side, u32)) -> Res<bool> {
@@ -966,6 +949,18 @@ impl LocalBackend {
 
     /// Record that posting the draft comment `comment_id` is beginning, unless an earlier attempt
     /// already began it, so that a later attempt can look for it on GitHub.
+    /// Record that the draft comment `comment_id`, which a sync stopped while posting, is not on
+    /// GitHub, as it was found not to be.
+    pub fn unmark_posting(&self, comment_id: &str) -> Res<()> {
+        self.store.update(|file| {
+            for comment in file.threads.iter_mut().flat_map(|t| &mut t.comments) {
+                if comment.id == comment_id {
+                    comment.posting_since = None;
+                }
+            }
+        })
+    }
+
     pub fn mark_posting(&self, comment_id: &str) -> Res<()> {
         let now = chrono::Local::now().fixed_offset();
         self.store.update(|file| {

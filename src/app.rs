@@ -719,7 +719,7 @@ impl App {
         let implementation = op.clone().implementation();
 
         if let Some(mut action) = implementation.get_action(&item_data) {
-            let what = op.description().into_owned();
+            let what = op.doing().into_owned();
             let style = crate::style::Style::from(&self.state.config.style.info_msg);
             self.state.busy = Some(Busying {
                 spinner: term.busy(&what, style),
