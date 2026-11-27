@@ -107,8 +107,15 @@ pub fn run(config: Arc<Config>, args: &cli::Args, term: &mut Term) -> Res<i32> {
     let reviewing = args.agent_instructions
         || args.pr_state_machine_diagram.is_some()
         || matches!(args.command, Some(cli::Commands::Review { .. }));
-    if reviewing && !config.general.experimental {
-        return Err(Error::LocalPr(config::NOT_EXPERIMENTAL.to_owned()));
+    // `experimental` is set in git config, which `config` has not read yet.
+    if reviewing {
+        let dir = match open_repo_from_env() {
+            Ok(repo) => repo.workdir().unwrap_or(repo.path()).to_owned(),
+            Err(_) => std::env::current_dir().map_err(Error::Term)?,
+        };
+        if !config.resolved(&dir, None)?.general.experimental {
+            return Err(Error::LocalPr(config::NOT_EXPERIMENTAL.to_owned()));
+        }
     }
     if args.agent_instructions {
         print!("{}", review::AGENT_INSTRUCTIONS);
