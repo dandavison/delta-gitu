@@ -525,7 +525,7 @@ fn the_file_picker_lists_the_files_the_view_hides() {
     assert!(
         buffer
             .lines()
-            .any(|line| line.split_whitespace().any(|word| word == "a.rs")),
+            .any(|line| line.trim_start_matches('▌').trim_end_matches([' ', '|']) == "a.rs"),
         "{buffer}"
     );
 }
@@ -541,7 +541,8 @@ fn a_second_ampersand_asks_for_patterns() {
     ctx.update(&mut app, keys("&src&"));
     assert_eq!(ctx.prompt_line(), "File filters: src|");
 
-    ctx.update(&mut app, keys("<esc>kd&&"));
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("kd&&"));
     assert_eq!(ctx.prompt_line(), "File filters: !a.rs|");
 }
 

@@ -311,9 +311,11 @@ root.wider_diff_context = ["+"]
 root.narrower_diff_context = ["-"]
 # Edit the git command the view is the output of, and ask it again.
 root.edit_git_command = [":"]
-# Drop the file whose header is under the cursor from the view, or say which
-# files to show at all: `src !*_test.go` limits the view to src and hides its
-# tests.
+# Drop the file whose header is under the cursor from the view, or pick the
+# files to show: `&` lists the files the view's command covers, typing narrows
+# the list by fuzzy matching, and enter shows the files listed, or all of them
+# with nothing typed. `&` again asks for patterns instead: `src !*_test.go`
+# limits the view to src and hides its tests.
 root.hide_file = ["d"]
 root.file_patterns = ["&"]
 # As in less, j, k and the arrow keys move a line at a time, through a diff's

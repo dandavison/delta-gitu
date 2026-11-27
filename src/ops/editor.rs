@@ -7,7 +7,7 @@ use crate::{
     error::Error,
     item_data::ItemData,
     menu::PendingMenu,
-    picker::{Picked, PickerData, PickerItem, PickerState},
+    picker::{Picked, PickerData, PickerItem, PickerState, PickerStatus},
     screen::NavMode,
     term::Term,
 };
@@ -350,9 +350,10 @@ impl OpTrait for EditGitCommand {
     }
 }
 
-/// Limit the view to some of the files it covers, or drop some of them. Both
-/// are edits of the same command, and so of the same kind as [`EditGitCommand`]
-/// — this only saves writing the pathspec magic out.
+/// Limit the view to some of the files it covers, picked by fuzzy matching their names: the
+/// view shows the files the picker lists, or, with nothing typed, all of them. `&` again, in the
+/// picker, asks for patterns instead (see [`ask_for_patterns`]). Both are edits of the command,
+/// and so of the same kind as [`EditGitCommand`].
 pub(crate) struct FilePatterns;
 impl OpTrait for FilePatterns {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
@@ -362,33 +363,94 @@ impl OpTrait for FilePatterns {
                 return Ok(());
             };
 
-            let patterns = git.borrow().file_patterns().join(" ");
-            let answer = app.prompt(
-                term,
-                &PromptParams {
-                    prompt: "File filters".into(),
-                    create_default_value: Box::new(move |_| Some(patterns.clone())),
-                    prefill: true,
-                    history: Some(crate::prompt::HistoryKind::FilePatterns),
-                    ..Default::default()
-                },
-            )?;
-
-            let patterns = match shell_words::split(&answer) {
-                Ok(patterns) => patterns,
-                Err(_) => {
-                    app.display_error(Error::EditedCommandQuotes.to_string());
-                    return Ok(());
+            let files = files_covered(app, &git.borrow())?;
+            let items = files
+                .into_iter()
+                .map(|file| PickerItem::new(file.clone(), PickerData::Item(file)))
+                .collect();
+            let picker = PickerState::new("Files", items, false).switched_by(Op::FilePatterns);
+            let picker = app.pick_listed(term, picker)?;
+            let typed = picker.pattern().to_owned();
+            match picker.status() {
+                PickerStatus::Done if typed.is_empty() => ask_for(app, &git, &[]),
+                PickerStatus::Done => {
+                    let patterns: Vec<String> = picker
+                        .filtered_items()
+                        .map(|(_, item)| crate::calling_process::including(item.data.display()))
+                        .collect();
+                    if patterns.is_empty() {
+                        app.display_error(format!("No file matches {typed}"));
+                        return Ok(());
+                    }
+                    ask_for(app, &git, &patterns)
                 }
-            };
-
-            ask_for(app, &git, &patterns)
+                PickerStatus::Switched => ask_for_patterns(app, term, &git, typed),
+                _ => Ok(()),
+            }
         }))
     }
 
     fn display(&self, _state: &State) -> String {
         "Files".into()
     }
+}
+
+/// Ask for the patterns of the files to show, in git's own language less the magic, starting from
+/// `typed`, or else from the view's patterns.
+fn ask_for_patterns(
+    app: &mut App,
+    term: &mut Term,
+    git: &Rc<RefCell<crate::calling_process::GitCommand>>,
+    typed: String,
+) -> Res<()> {
+    let patterns = match typed.is_empty() {
+        true => git.borrow().file_patterns().join(" "),
+        false => typed,
+    };
+    let answer = app.prompt(
+        term,
+        &PromptParams {
+            prompt: "File filters".into(),
+            create_default_value: Box::new(move |_| Some(patterns.clone())),
+            prefill: true,
+            history: Some(crate::prompt::HistoryKind::FilePatterns),
+            ..Default::default()
+        },
+    )?;
+
+    let patterns = match shell_words::split(&answer) {
+        Ok(patterns) => patterns,
+        Err(_) => {
+            app.display_error(Error::EditedCommandQuotes.to_string());
+            return Ok(());
+        }
+    };
+
+    ask_for(app, git, &patterns)
+}
+
+/// The files `git` covers, whatever paths it limits itself to, each once, in the order git names
+/// them.
+fn files_covered(app: &App, git: &crate::calling_process::GitCommand) -> Res<Vec<String>> {
+    let workdir = app.state.repo.workdir().ok_or(Error::NoRepoWorkdir)?;
+    let output = git
+        .listing_files()
+        .current_dir(workdir.join(git.prefix()))
+        .output()
+        .map_err(Error::GitDiff)?;
+    if !output.status.success() {
+        return Err(Error::GitDiff(std::io::Error::other(format!(
+            "couldn't list the files of the view: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))));
+    }
+    let names = String::from_utf8(output.stdout).map_err(Error::GitDiffUtf8)?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(names
+        .split('\0')
+        .filter(|name| !name.is_empty() && seen.insert(*name))
+        .map(str::to_owned)
+        .collect())
 }
 
 /// Drop the file whose header is under the cursor from the view, as if it were

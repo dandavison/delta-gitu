@@ -1210,6 +1210,25 @@ impl App {
         }))
     }
 
+    /// Run `picker_state`, a picker whose caller wants all of the items it lists, or what was
+    /// typed, rather than one item: the picker as it ended.
+    pub(crate) fn pick_listed(
+        &mut self,
+        term: &mut Term,
+        picker_state: PickerState,
+    ) -> Res<PickerState> {
+        self.asking(term, |app, term| {
+            app.state.picker = Some(picker_state);
+            let result = app.handle_picker(term, &mut |_, _| Ok(()));
+            let picker = app
+                .state
+                .picker
+                .take()
+                .expect("the picker is open until it ends");
+            result.map(|_| picker)
+        })
+    }
+
     /// Choose a commit by moving around a log view: the screen is pushed with
     /// its own keymap, and the loop runs until `select_commit` names one or the
     /// screen is closed.
@@ -1290,7 +1309,7 @@ impl App {
                         return Ok(selected().map(|data| Picked::KeySet(key, data)));
                     }
                     // User cancelled - this is not an error
-                    PickerStatus::Cancelled => return Ok(None),
+                    PickerStatus::Cancelled | PickerStatus::Switched => return Ok(None),
                     PickerStatus::Active => (),
                 }
             }
@@ -1352,18 +1371,18 @@ impl App {
         }
 
         let key_combo = vec![(key.modifiers, key.code)];
-        let closes = self
-            .state
-            .picker
-            .as_ref()
-            .and_then(PickerState::closing_op)
-            .is_some_and(|op| {
+        let bound_to = |op: Option<&Op>| {
+            op.is_some_and(|op| {
                 self.state
                     .config
                     .bindings
                     .list(&Menu::Root)
                     .any(|binding| &binding.op == op && binding.keys == key_combo)
-            });
+            })
+        };
+        let picker = self.state.picker.as_ref();
+        let closes = bound_to(picker.and_then(PickerState::closing_op));
+        let switches = bound_to(picker.and_then(PickerState::switching_op));
 
         if let Some(ref mut picker) = self.state.picker {
             let bindings = &self.state.config.picker_bindings;
@@ -1406,6 +1425,8 @@ impl App {
                 } else if let Some(c) = typed {
                     picker.set_key(c);
                 }
+            } else if switches {
+                picker.switch();
             } else {
                 // Text input - delegate to text state
                 picker.input_state.handle_key_event(key);

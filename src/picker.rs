@@ -78,6 +78,9 @@ pub enum PickerStatus {
     Cancelled,
     /// User gave the selected item this key
     KeySet(char),
+    /// User pressed the key of the op that switches away from the picker (see
+    /// [`PickerState::switched_by`]).
+    Switched,
 }
 
 /// State of the picker component
@@ -111,6 +114,9 @@ pub struct PickerState {
     /// The op whose top-level keys close the picker where nothing is typed, as
     /// `picker.quit` does: the op that opened it.
     closed_by: Option<Op>,
+    /// The op whose top-level keys end the picker as [`PickerStatus::Switched`], where text is
+    /// typed: the op that opened it, for a picker that has another way of asking.
+    switched_by: Option<Op>,
 }
 
 /// A picker's items laid out in columns side by side, each under a heading.
@@ -155,6 +161,7 @@ impl PickerState {
             one_row: None,
             grid: None,
             closed_by: None,
+            switched_by: None,
         };
         state.update_filter();
         state
@@ -183,6 +190,17 @@ impl PickerState {
 
     pub(crate) fn closing_op(&self) -> Option<&Op> {
         self.closed_by.as_ref()
+    }
+
+    /// End the picker as [`PickerStatus::Switched`] with the top-level keys of `op`, the op that
+    /// opened it, rather than type them.
+    pub(crate) fn switched_by(mut self, op: Op) -> Self {
+        self.switched_by = Some(op);
+        self
+    }
+
+    pub(crate) fn switching_op(&self) -> Option<&Op> {
+        self.switched_by.as_ref()
     }
 
     /// Show the items in columns side by side, each under its heading in
@@ -554,6 +572,10 @@ impl PickerState {
     }
 
     /// Mark picker as cancelled (user cancelled)
+    pub(crate) fn switch(&mut self) {
+        self.status = PickerStatus::Switched;
+    }
+
     pub fn cancel(&mut self) {
         self.status = PickerStatus::Cancelled;
     }
