@@ -234,6 +234,28 @@ impl LocalBackend {
         walk.try_fold(0, |n, oid| oid.map(|_| n + 1)).map_err(error)
     }
 
+    /// How the branch falls short of being where GitHub's PR has it, if it is linked to one and
+    /// does, as delta says it wherever the branch falls short (see [`super::standing`]).
+    pub fn out_of_step(&self) -> Res<Option<OutOfStep>> {
+        let Some(linked) = &self.linked else {
+            return Ok(None);
+        };
+        let pr = &linked.pr;
+        let what = format!("GitHub's PR #{}", pr.number);
+        let head = self.head_commit()?;
+        let Some(shortfall) = self.shortfall(&pr.head_oid, head, &what, Purpose::Post)? else {
+            return Ok(None);
+        };
+        Ok(Some(OutOfStep {
+            shortfall,
+            purpose: Purpose::Post,
+            theirs: Theirs::Pr(pr.number),
+            branch: self.head.clone(),
+            base: self.base.clone(),
+            remote: self.remote_name()?,
+        }))
+    }
+
     /// The GitHub PR the local PR is linked to, if it is.
     pub fn linked_pr(&self) -> Option<&GitHubPr> {
         self.linked.as_ref().map(|linked| &linked.pr)

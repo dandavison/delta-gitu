@@ -906,10 +906,10 @@ fn a_head_that_is_not_the_prs_on_github_is_warned_of() {
 
     ctx.update(&mut app, keys("OO"));
 
+    let screen = screen_text(&ctx);
     assert!(
-        ctx.redact_buffer().contains("not the PR's head on GitHub"),
-        "{}",
-        ctx.redact_buffer()
+        screen.contains("Your local branch feature has 1 commit that GitHub's PR #7 doesn't"),
+        "{screen}"
     );
 }
 

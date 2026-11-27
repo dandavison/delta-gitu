@@ -360,7 +360,6 @@ fn show_pr(app: &mut App, term: &mut Term, backend: Rc<dyn Backend>) -> Res<()> 
             screen::review::with_threads(
                 items,
                 &threads_pr,
-                &repo,
                 layout,
                 &options,
                 summary_style,
@@ -470,7 +469,6 @@ fn open_file(app: &mut App, term: &mut Term, path: String, line: Option<u32>) ->
             screen::review::with_threads(
                 rows,
                 &threads_pr,
-                &repo,
                 layout,
                 &options,
                 summary_style,

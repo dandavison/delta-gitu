@@ -26,7 +26,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 pub(crate) fn with_threads(
     items: Vec<Item>,
     pr: &OpenPr,
-    repo: &Repository,
     layout: Layout,
     options: &CommentOptions,
     summary_style: Style,
@@ -187,8 +186,8 @@ pub(crate) fn with_threads(
             ..Default::default()
         });
     }
-    if pr.backend.head_mismatch(repo) {
-        out.push(warning_row());
+    if let Some(out_of_step) = &*pr.out_of_step.borrow() {
+        out.push(warning_row(out_of_step));
     }
     // In the file view, which shows one file, a thread on another is as expected.
     let files_review = pr.backend.as_local().is_some_and(|local| local.is_files());
@@ -356,12 +355,11 @@ fn numbered_lines(diff: &crate::git::diff::Diff, file_i: usize, hunk_i: usize) -
         .collect()
 }
 
-fn warning_row() -> Item {
+fn warning_row(text: &str) -> Item {
     Item {
         unselectable: true,
         rendered: Some(Rc::new(vec![(
-            "HEAD is not the PR's head on GitHub: comments and links to GitHub may be on the wrong lines"
-                .to_owned(),
+            text.to_owned(),
             Style {
                 add_modifier: Modifier::DIM,
                 ..Style::new()

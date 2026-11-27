@@ -236,6 +236,9 @@ pub(crate) struct OpenPr {
     /// The messages agents are working on.
     pub working: RefCell<Vec<Working>>,
     pub pending_review: RefCell<Option<PendingReview>>,
+    /// How the branch stands against GitHub's PR, when it isn't where GitHub has it, and what to
+    /// do about it, as the row above the diff says it.
+    pub out_of_step: RefCell<Option<String>>,
     /// The PR in one line (see [`Backend::summary`]).
     pub summary: RefCell<Option<String>>,
     /// The options comments were last drawn with, and the features in force they were asked
@@ -288,6 +291,28 @@ pub(crate) enum EditorTarget {
 /// that much narrower, so that a row taking the whole width still fits beside it.
 pub(crate) const FILE_PREFIX_WIDTH: u16 = 4;
 
+/// How the branch of `backend`'s PR stands against GitHub's PR, when it isn't where GitHub has it:
+/// what is wrong, that links to GitHub may be on the wrong lines, and a command to fix it where
+/// one can do no harm.
+fn out_of_step(backend: &dyn Backend) -> Res<Option<String>> {
+    let Some(out_of_step) = backend
+        .as_local()
+        .map(local::LocalBackend::out_of_step)
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    let mut row = format!(
+        "{}, so links to GitHub may be on the wrong lines",
+        out_of_step.problem()
+    );
+    if let Some(command) = out_of_step.command() {
+        row += &format!(". To fix this: {command}");
+    }
+    Ok(Some(row))
+}
+
 impl OpenPr {
     /// Open the PR `backend` is for, reading its checkboxes and threads.
     pub fn new(backend: Rc<dyn Backend>) -> Res<Self> {
@@ -302,6 +327,7 @@ impl OpenPr {
             git: RefCell::new(None),
             working: RefCell::new(backend.working()?),
             pending_review: RefCell::new(backend.pending_review()?),
+            out_of_step: RefCell::new(out_of_step(backend.as_ref())?),
             summary: RefCell::new(backend.summary()?),
             options: RefCell::new(None),
             editor: RefCell::new(None),
@@ -317,6 +343,7 @@ impl OpenPr {
         *self.threads.borrow_mut() = threads_in(self.backend.as_ref(), self.version.get())?;
         *self.working.borrow_mut() = self.backend.working()?;
         *self.pending_review.borrow_mut() = self.backend.pending_review()?;
+        *self.out_of_step.borrow_mut() = out_of_step(self.backend.as_ref())?;
         *self.summary.borrow_mut() = self.backend.summary()?;
         Ok(())
     }
