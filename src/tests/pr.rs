@@ -2650,3 +2650,19 @@ fn a_branch_ahead_of_its_pr_says_so_and_how_to_push() {
     );
     assert!(screen.contains("git push origin feature"), "{screen}");
 }
+
+/// Up in the thread view's filter steps back through what was typed there before, as in the other
+/// prompts, and narrows the view to it.
+#[test]
+fn up_in_the_thread_view_gives_the_filter_typed_before() {
+    let mut ctx = setup_clone!();
+    let mut app = with_two_threads(&mut ctx);
+    ctx.update(&mut app, keys("Otold<enter>"));
+
+    ctx.update(&mut app, keys("Ot<up>"));
+
+    assert_eq!(ctx.prompt_line(), "Threads: old|");
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("on old"), "{screen}");
+    assert!(!screen.contains("on new"), "{screen}");
+}
