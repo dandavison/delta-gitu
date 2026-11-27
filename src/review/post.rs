@@ -3,7 +3,7 @@
 //! shared, and GitHub's reviews are copied into the local PR.
 
 use super::{
-    Backend, Place, Side, Subject,
+    Place, Subject,
     github::{GitHub, GitHubBackend, GitHubPr},
     local::{LocalBackend, Purpose},
     remote::{self, Change, Consent},
@@ -21,9 +21,18 @@ pub(crate) enum Synced {
         url: String,
         threads: usize,
         replies: usize,
+        moved: Moved,
     },
     /// There were no draft comments, so it only fetched from the PR at `url`.
     Fetched { url: String },
+}
+
+/// The draft threads sync moved with their lines, as they were written before the PR changed.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Moved {
+    pub threads: usize,
+    /// How many of them were moved onto their files, as their lines had gone.
+    pub to_file: usize,
 }
 
 impl Synced {
@@ -36,15 +45,39 @@ impl Synced {
                 url,
                 threads,
                 replies,
+                moved,
             } => {
                 let mut summary = format!("Posted {}", plural(*threads, "thread", "threads"));
                 if *replies > 0 {
                     summary += &format!(" and {}", plural(*replies, "reply", "replies"));
                 }
-                summary
-                    + &format!(
-                        " to your pending review on {url}. Submit it there to make it visible"
-                    )
+                summary += &format!(" to your pending review on {url}.");
+                if moved.threads > 0 {
+                    let (written, line) = match moved.threads {
+                        1 => ("1 was", "its line"),
+                        n => (&*format!("{n} were"), "their lines"),
+                    };
+                    summary +=
+                        &format!(" {written} written before the PR changed, and moved with {line}");
+                    if moved.to_file > 0 {
+                        summary += &format!(
+                            ", {} onto {} as {} gone",
+                            moved.to_file,
+                            if moved.to_file == 1 {
+                                "its file"
+                            } else {
+                                "their files"
+                            },
+                            if moved.to_file == 1 {
+                                "its line had"
+                            } else {
+                                "their lines had"
+                            },
+                        );
+                    }
+                    summary += ".";
+                }
+                summary + " Submit it there to make it visible"
             }
             Synced::Fetched { url } => {
                 format!("No draft comments to post: fetched the PR's reviews from {url}")
@@ -130,7 +163,7 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
             base: local.base(),
         };
         let pr = remote::write(github.as_ref(), change, Consent::Publish)?.pr()?;
-        return post(local, github, pr, to_post);
+        return post(local, github, pr, to_post, Moved::default());
     };
     local
         .compare_with_github(Some(&pr), Purpose::Post)
@@ -149,49 +182,22 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
         )));
     }
     refuse_blocked_replies(local)?;
-    // The lease: drafts written before the PR changed are moved with their lines, for the user
-    // to see where they are, and nothing is posted.
+    // Drafts written before the PR changed are moved with their lines, as the PR's screen shows
+    // them, and posted there: one whose line has gone is posted on its file, quoting the line.
     let stale = local.stale_drafts()?;
-    if !stale.is_empty() {
-        local.move_drafts(&stale)?;
-        // Where each now is, as the PR's screen shows it.
-        let places: Vec<String> = local
-            .threads()?
-            .into_iter()
-            .filter(|thread| stale.contains(&thread.id))
-            .map(|thread| match thread.line {
-                Some((Side::New, line)) => format!("{}:{line}", thread.path),
-                Some((Side::Old, line)) => format!("{}:{line} (old side)", thread.path),
-                None => format!("{} (on the file, as its line has gone)", thread.path),
-            })
-            .collect();
-        let (drafts, moved, each, them) = match stale.len() {
-            1 => (
-                "1 of your draft threads was".to_owned(),
-                "It has moved with its line",
-                "it is",
-                "it",
-            ),
-            n => (
-                format!("{n} of your draft threads were"),
-                "They have moved with their lines",
-                "each is",
-                "them",
-            ),
-        };
-        return Err(Error::Gh(format!(
-            "Posted nothing: GitHub's PR #{} has changed since {drafts} written. {moved}, to {}. \
-             If {each} on the line you meant, sync again to post {them} there",
-            pr.number,
-            places.join(", ")
-        )));
-    }
+    let moved = Moved {
+        threads: stale.len(),
+        to_file: match stale.is_empty() {
+            true => 0,
+            false => local.move_drafts(&stale)?,
+        },
+    };
     let to_post = local.to_post()?;
     if to_post.is_empty() {
         return Ok(Synced::Fetched { url: pr.url });
     }
     refuse_unplaceable(local, &to_post)?;
-    post(local, github, pr, to_post)
+    post(local, github, pr, to_post, moved)
 }
 
 /// Post `to_post` into the user's pending review on `pr`, which is started if they have none and
@@ -201,6 +207,7 @@ fn post(
     github: Rc<dyn GitHub>,
     pr: GitHubPr,
     to_post: Vec<super::local::PostComment>,
+    moved: Moved,
 ) -> Res<Synced> {
     local.record_link(&pr)?;
     // Started only when a comment is to be added to it, as every one may be on GitHub already.
@@ -268,6 +275,7 @@ fn post(
         url,
         threads,
         replies,
+        moved,
     })
 }
 

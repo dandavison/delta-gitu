@@ -130,9 +130,9 @@ pub(crate) struct StoreState {
 pub(crate) struct Rules {
     /// A thread's first comment can't be deleted while the thread has replies.
     pub keep_first_comment: bool,
-    /// Sync posts nothing while a draft thread was written against another head of the PR than
-    /// its head: it moves them to its head instead.
-    pub lease: bool,
+    /// Sync moves draft threads written against another head of the PR than its head to its
+    /// head before posting them.
+    pub move_stale_drafts: bool,
     /// Sync posts nothing while a draft reply's thread starts with a local-only comment.
     pub block_replies_to_local_threads: bool,
     /// Whether an edit or delete of my comment on GitHub publishes is decided from GitHub as it
@@ -148,7 +148,7 @@ impl Default for Rules {
     fn default() -> Self {
         Rules {
             keep_first_comment: true,
-            lease: true,
+            move_stale_drafts: true,
             block_replies_to_local_threads: true,
             classify_on_github: true,
             refuse_stale_copies: true,
@@ -593,16 +593,15 @@ impl Model {
                 if rules.block_replies_to_local_threads && !self.blocked_replies(store).is_empty() {
                     return Some(m);
                 }
-                // The lease: draft threads written against another head of the PR than its head
-                // now are moved to its head, for the user to see where they are, and nothing is
-                // posted.
+                // Draft threads written against another head of the PR than its head now are
+                // moved to its head, and then posted there.
                 let stale: Vec<Id> = draft
                     .comments
                     .iter()
                     .copied()
                     .filter(|c| r.comments[c].written_at.is_some_and(|at| at != self.head))
                     .collect();
-                if rules.lease && !stale.is_empty() {
+                if rules.move_stale_drafts {
                     let r = m.stores.get_mut(&store).unwrap();
                     for c in stale {
                         let comment = r.comments.get_mut(&c).unwrap();
@@ -610,7 +609,6 @@ impl Model {
                         comment.written_at =
                             self.threads[&comment.thread].placeable.then_some(self.head);
                     }
-                    return Some(m);
                 }
                 // A thread whose line has gone is posted as a comment on its file.
                 let pending = match self.pending_of(user) {
@@ -1158,9 +1156,9 @@ mod tests {
     }
 
     #[test]
-    fn without_the_lease_a_comment_is_posted_on_a_line_found_in_another_head() {
+    fn without_moving_stale_drafts_a_comment_is_posted_on_a_line_found_in_another_head() {
         let rules = Rules {
-            lease: false,
+            move_stale_drafts: false,
             ..Rules::default()
         };
         let (_, error) = violation(rules, 5, 3).expect("a violation");
