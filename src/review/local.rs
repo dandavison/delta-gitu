@@ -5,7 +5,7 @@
 use super::{
     ADDED_TO_DRAFT as ADDED, Backend, Comment, PendingReview, Place, Reaction, Side, Subject,
     Thread, ViewedState, Working,
-    github::{GitHub, GitHubBackend, GitHubPr, GitHubReviewState},
+    github::{GitHub, GitHubBackend, GitHubPr, GitHubReviewState, PrState},
     missing_commit,
     remote::{self, Change, Consent},
     standing::{OutOfStep, Shortfall, Theirs},
@@ -163,6 +163,7 @@ impl LocalBackend {
         let link = GitHubLink {
             number: github_pr.number,
             url: github_pr.url.clone(),
+            state: Some(github_pr.state),
         };
         let mut result = Ok(());
         self.store.update(|file| match &file.github_pr {
@@ -294,6 +295,8 @@ impl LocalBackend {
                     self.head
                 ))
             })?;
+        // As its state may have changed too.
+        self.record_link(&pr)?;
         *self.linked.borrow_mut() = Some(GitHubBackend {
             github: linked.github,
             pr,
@@ -2223,7 +2226,14 @@ impl PrSummary {
             format!("PR into {}", self.base),
         ];
         parts.push(match &self.link {
-            Some(link) => crate::ui::osc8_hyperlink(&format!("#{}", link.number), &link.url),
+            Some(link) => {
+                let number = crate::ui::osc8_hyperlink(&format!("#{}", link.number), &link.url);
+                match link.state {
+                    Some(PrState::Closed) => format!("{number} (closed)"),
+                    Some(PrState::Merged) => format!("{number} (merged)"),
+                    Some(PrState::Open) | None => number,
+                }
+            }
             None => "not on GitHub".to_owned(),
         });
         parts.push(count(self.commits, "commit"));
@@ -2757,6 +2767,9 @@ struct StoredMessage {
 pub(crate) struct GitHubLink {
     pub number: u64,
     pub url: String,
+    /// Whether the PR is open, closed or merged, as GitHub last said, once it has said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<PrState>,
 }
 
 /// One reviewer's comments on the PR, which are the comments that give its id. There is at most
