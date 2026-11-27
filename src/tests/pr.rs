@@ -2854,3 +2854,26 @@ fn os_keeps_local_an_unpushable_draft_a_sync_stopped_posting() {
     assert!(comment["review"].is_null(), "{file}");
     assert!(comment["posting_since"].is_null(), "{file}");
 }
+
+/// A sync that posts only a reply says so, without counting threads it didn't post.
+#[test]
+fn os_posting_only_a_reply_says_so() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/alice<enter>isure<ctrl+s>"));
+
+    ctx.update(&mut app, keys("Os"));
+
+    let screen = screen_text(&ctx);
+    assert!(
+        screen.contains("Posted 1 reply to your pending review on"),
+        "{screen}"
+    );
+}
