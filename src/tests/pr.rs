@@ -2666,3 +2666,29 @@ fn up_in_the_thread_view_gives_the_filter_typed_before() {
     assert!(screen.contains("on old"), "{screen}");
     assert!(!screen.contains("on new"), "{screen}");
 }
+
+/// `-` and `+` leave the cursor on the comment it was on, though the hunk the comment is under is
+/// cut differently with less context.
+#[test]
+fn changing_the_context_keeps_the_cursor_on_its_comment() {
+    let mut ctx = setup_clone!();
+    let github = setup_wide_context(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(
+        &mut app,
+        keys("OO/changed<enter>ihello<ctrl+s>/hello<enter>"),
+    );
+    assert!(
+        cursor_rows(&ctx).contains("hello"),
+        "{}",
+        ctx.redact_buffer()
+    );
+
+    ctx.update(&mut app, keys("-"));
+
+    assert!(
+        cursor_rows(&ctx).contains("hello"),
+        "{}",
+        ctx.redact_buffer()
+    );
+}
