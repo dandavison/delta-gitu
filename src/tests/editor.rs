@@ -206,13 +206,13 @@ fn saved_feature_keys(path: &Path) -> Vec<(String, char)> {
 #[test]
 fn a_feature_key_toggles_its_feature() {
     let mut ctx = setup_clone!();
-    with_feature_key(&mut ctx, "side-by-side", 'e');
+    with_feature_key(&mut ctx, "side-by-side", 't');
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("t"));
     assert_eq!(&*app.state.features, ["side-by-side".to_string()]);
 
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("t"));
     assert!(app.state.features.is_empty());
 }
 
@@ -221,14 +221,14 @@ fn a_feature_key_toggles_its_feature() {
 #[test]
 fn a_feature_key_turns_off_a_feature_the_users_config_turns_on() {
     let mut ctx = setup_clone!();
-    with_feature_key(&mut ctx, "side-by-side", 'e');
+    with_feature_key(&mut ctx, "side-by-side", 't');
     enable_by_config(&mut ctx, vec!["side-by-side".into()]);
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("t"));
     assert_eq!(&*app.state.features, ["-side-by-side".to_string()]);
 
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("t"));
     assert!(app.state.features.is_empty());
 }
 
@@ -264,13 +264,13 @@ fn every_feature_key_toggles_its_feature_the_same_way() {
             if enabled_by_config {
                 enable_by_config(&mut ctx, vec![name.into()]);
             }
-            with_feature_key(&mut ctx, name, 'e');
+            with_feature_key(&mut ctx, name, 't');
             commit(&ctx.dir, "firstfile", "testing\ntesttest\n");
             fs::write(ctx.dir.join("firstfile"), "changed\ntesttest\n").unwrap();
 
             let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
-            ctx.update(&mut app, keys("e"));
-            ctx.update(&mut app, keys("e"));
+            ctx.update(&mut app, keys("t"));
+            ctx.update(&mut app, keys("t"));
 
             let toggled = if enabled_by_config {
                 format!("+-{name}")
@@ -294,7 +294,7 @@ fn every_feature_key_toggles_its_feature_the_same_way() {
 #[test]
 fn a_feature_key_follows_a_change_to_the_users_config_during_the_session() {
     let mut ctx = setup_clone!();
-    with_feature_key(&mut ctx, "side-by-side", 'e');
+    with_feature_key(&mut ctx, "side-by-side", 't');
     let enabled = ctx.dir.join(".git").join("enabled-features");
     let asked = enabled.clone();
     ctx.config().general.diff_renderer.enabled_features =
@@ -307,16 +307,16 @@ fn a_feature_key_follows_a_change_to_the_users_config_during_the_session() {
         });
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("t"));
     assert_eq!(&*app.state.features, ["side-by-side".to_string()]);
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("t"));
     assert!(app.state.features.is_empty());
 
     // The user turns side-by-side on in their git config.
     fs::write(&enabled, "side-by-side").unwrap();
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("t"));
     assert_eq!(&*app.state.features, ["-side-by-side".to_string()]);
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("t"));
     assert!(app.state.features.is_empty());
 }
 
@@ -324,11 +324,11 @@ fn a_feature_key_follows_a_change_to_the_users_config_during_the_session() {
 #[test]
 fn a_key_turns_off_the_plus_minus_markers_the_users_config_turns_on() {
     let mut ctx = setup_clone!();
-    with_feature_key(&mut ctx, "plus-minus-markers", 'e');
+    with_feature_key(&mut ctx, "plus-minus-markers", 't');
     enable_by_config(&mut ctx, vec!["keep-plus-minus-markers".into()]);
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("t"));
     assert_eq!(&*app.state.features, ["-plus-minus-markers".to_string()]);
 }
 
@@ -351,14 +351,14 @@ fn the_feature_list_marks_the_features_the_users_config_turns_on() {
 #[test]
 fn the_help_menu_lists_feature_keys() {
     let mut ctx = setup_clone!();
-    with_feature_key(&mut ctx, "side-by-side", 'e');
+    with_feature_key(&mut ctx, "side-by-side", 't');
     let mut app = ctx.init_app();
 
     ctx.resize(&mut app, &[super::HELP_FITS]);
     ctx.update(&mut app, keys("?"));
     let buffer = ctx.redact_buffer();
     assert!(
-        regex::Regex::new(r"\be +side-by-side")
+        regex::Regex::new(r"\bt +side-by-side")
             .unwrap()
             .is_match(&buffer),
         "{buffer}"
@@ -368,7 +368,7 @@ fn the_help_menu_lists_feature_keys() {
 #[test]
 fn the_help_menu_sets_feature_keys_apart_from_submenus() {
     let mut ctx = setup_clone!();
-    with_feature_key(&mut ctx, "side-by-side", 'e');
+    with_feature_key(&mut ctx, "side-by-side", 't');
     let mut app = ctx.init_app();
     ctx.resize(&mut app, &[super::HELP_FITS]);
     ctx.update(&mut app, keys("?"));
@@ -399,7 +399,7 @@ fn the_feature_list_is_moved_through_with_the_arrows() {
 #[test]
 fn the_feature_list_shows_feature_keys() {
     let mut ctx = setup_clone!();
-    with_feature_key(&mut ctx, "line-numbers", 'e');
+    with_feature_key(&mut ctx, "line-numbers", 't');
     snapshot!(ctx, "H");
 }
 
@@ -412,13 +412,13 @@ fn a_letter_in_the_feature_list_sets_the_selected_features_key() {
     let mine = fs::read_to_string(&path).unwrap();
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("He<esc>"));
+    ctx.update(&mut app, keys("Ht<esc>"));
     assert!(
         app.state.features.is_empty(),
         "setting a key toggles nothing"
     );
 
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("t"));
     assert_eq!(&*app.state.features, ["side-by-side".to_string()]);
 
     assert!(fs::read_to_string(&path).unwrap().starts_with(&mine));
@@ -427,7 +427,7 @@ fn a_letter_in_the_feature_list_sets_the_selected_features_key() {
         [
             ("difftastic".into(), '*'),
             ("line-numbers".into(), 'L'),
-            ("side-by-side".into(), 'e')
+            ("side-by-side".into(), 't')
         ]
     );
 }
@@ -438,7 +438,7 @@ fn the_same_letter_again_unsets_the_key() {
     let path = repo_git_config(&ctx);
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("Hee<esc>e"));
+    ctx.update(&mut app, keys("Htt<esc>t"));
     assert!(app.state.features.is_empty());
     assert_eq!(
         saved_feature_keys(&path),
@@ -473,11 +473,11 @@ fn a_key_set_for_one_feature_is_taken_from_another() {
     let path = repo_git_config(&ctx);
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("He<down>e<esc>e"));
+    ctx.update(&mut app, keys("Ht<down>t<esc>t"));
     assert_eq!(&*app.state.features, ["line-numbers".to_string()]);
     assert_eq!(
         saved_feature_keys(&path),
-        [("difftastic".into(), '*'), ("line-numbers".into(), 'e')]
+        [("difftastic".into(), '*'), ("line-numbers".into(), 't')]
     );
 }
 

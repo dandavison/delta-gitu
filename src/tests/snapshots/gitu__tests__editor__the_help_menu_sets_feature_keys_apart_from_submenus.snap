@@ -21,7 +21,7 @@ expression: ctx.redact_buffer()
  ctrl+k/ctrl+up   Up                                                          z Stash                                                                 |
  ctrl+u           Scroll half page up                                                                                                                 |
  ctrl+y           Scroll view up                                              Hotkeys                                                                 |
- ctrl+z           Suspend                                                     e side-by-side                                                          |
+ ctrl+z           Suspend                                                     t side-by-side                                                          |
  G                Bottom                                                                                                                              |
  g+g              Top                                                                                                                                 |
  g+r              Refresh                                                                                                                             |

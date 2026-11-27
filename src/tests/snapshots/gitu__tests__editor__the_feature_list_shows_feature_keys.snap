@@ -13,7 +13,7 @@ expression: ctx.redact_buffer()
 ────────────────────────────────────────────────────────────────────────────────|
  Features                                                                       |
 ▌    side-by-side                                                               |
-   e line-numbers                                                               |
+   t line-numbers                                                               |
      plus-minus-markers                                                         |
      difftastic                                                                 |
                                                                                 |
