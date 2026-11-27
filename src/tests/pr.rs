@@ -65,6 +65,8 @@ pub(super) struct FakeGitHub {
     /// A repository whose `feature` branch is the PR's head, as GitHub has the PR's branch, in
     /// place of `head_oid`.
     pub(super) head_from: RefCell<Option<std::path::PathBuf>>,
+    /// Whether the PR is open, closed or merged.
+    pub(super) state: RefCell<crate::review::github::PrState>,
     /// Where branches are on GitHub, by name, other than the PR's base, which is at `base_oid`
     /// unless given here.
     pub(super) branches: RefCell<HashMap<String, String>>,
@@ -97,6 +99,7 @@ impl GitHub for FakeGitHub {
                 None => self.head_oid.clone(),
             },
             commits: *self.commits.borrow(),
+            state: *self.state.borrow(),
         })
     }
 
@@ -381,6 +384,7 @@ impl FakeGitHub {
             delay: RefCell::new(std::time::Duration::ZERO),
             threads_delay: RefCell::new(std::time::Duration::ZERO),
             head_from: RefCell::new(None),
+            state: RefCell::new(crate::review::github::PrState::Open),
             branches: RefCell::new(HashMap::new()),
         }
     }
@@ -2958,4 +2962,21 @@ fn the_prs_number_links_to_it() {
 
     ctx.update(&mut app, keys("q"));
     assert_eq!(cell(&ctx, "#7", '#').link.as_deref(), Some(PR_URL));
+}
+
+/// A merged PR says so, atop its screen and on the status screen.
+#[test]
+fn a_merged_pr_says_so() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.state.borrow_mut() = crate::review::github::PrState::Merged;
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+    let screen = screen_text(&ctx);
+    assert!(screen.contains("#7 (merged)"), "{screen}");
+
+    ctx.update(&mut app, keys("q"));
+    let screen = screen_text(&ctx);
+    assert!(screen.contains("#7 (merged)"), "{screen}");
 }

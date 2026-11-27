@@ -7,7 +7,7 @@ use super::{
     remote::{self, Change, Consent, WriteToken},
 };
 use crate::{Res, error::Error};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, path::PathBuf, process::Command, rc::Rc};
 
@@ -39,6 +39,16 @@ pub(crate) struct GitHubPr {
     pub head_oid: String,
     /// How many commits GitHub says the PR has.
     pub commits: usize,
+    pub state: PrState,
+}
+
+/// Whether a PR is open, or closed, merged or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub(crate) enum PrState {
+    Open,
+    Closed,
+    Merged,
 }
 
 /// The URL of the file at `path` in the PR's diff on GitHub, at `line` when
@@ -476,11 +486,12 @@ impl GitHub for Gh {
             number: u64,
             url: String,
             base_ref_name: String,
+            state: PrState,
         }
 
         let mut args = vec!["pr", "view"];
         args.extend(selector);
-        args.extend(["--json", "id,number,url,baseRefName"]);
+        args.extend(["--json", "id,number,url,baseRefName,state"]);
         let view: View = serde_json::from_str(&self.run(&args)?)
             .map_err(|e| Error::Gh(format!("Couldn't read gh's description of the PR: {e}")))?;
         let output = self.graphql(PR_COMMITS, &[("id", &view.id)], &[], None)?;
@@ -509,6 +520,7 @@ impl GitHub for Gh {
             base_ref: view.base_ref_name,
             base_oid,
             head_oid,
+            state: view.state,
         })
     }
 
