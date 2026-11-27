@@ -51,9 +51,6 @@ use super::Res;
 
 /// The spinner saying what the action running is busy with (see [`Term::busy`]), and what it says,
 /// so that it can be started again.
-/// Work to do once the screen has been drawn, as checking a PR against GitHub once it shows.
-pub(crate) type AfterDraw = Box<dyn FnOnce(&mut App, &mut Term) -> Res<()>>;
-
 struct Busying {
     spinner: Busy,
     what: String,
@@ -75,8 +72,6 @@ pub(crate) struct State {
     /// The spinner saying what the action running is busy with, which a question it asks stops
     /// until it is answered.
     busy: Option<Busying>,
-    /// Work to do once the screen has been drawn, before the next key is handled.
-    pub(crate) after_draw: Vec<AfterDraw>,
     enable_async_cmds: bool,
     pub debug: bool,
     pub current_cmd_log: CmdLog,
@@ -219,7 +214,6 @@ impl App {
                 screens,
                 pending_cmd: None,
                 busy: None,
-                after_draw: vec![],
                 pending_menu: None,
                 current_cmd_log: CmdLog::new(),
                 prompt,
@@ -340,17 +334,6 @@ impl App {
             self.redraw_now(term)?;
         }
 
-        let after_draw = std::mem::take(&mut self.state.after_draw);
-        if !after_draw.is_empty() {
-            for work in after_draw {
-                let result = work(self, term);
-                self.handle_result(result)?;
-            }
-            // What it changed, as the screens shown, may not have been drawn: a question it asked
-            // draws the screen when answered.
-            self.redraw_now(term)?;
-        }
-
         Ok(())
     }
 
@@ -370,9 +353,6 @@ impl App {
     /// How long the event loop waits for an event before it updates anyway: its tick, or less if
     /// a render at the terminal's new width is due sooner.
     pub(crate) fn poll_timeout(&self, max_tick_delay: Duration, now: Instant) -> Duration {
-        if !self.state.after_draw.is_empty() {
-            return Duration::ZERO;
-        }
         match self.resize_render_due() {
             Some(due) => max_tick_delay.min(due.saturating_duration_since(now)),
             None => max_tick_delay,
@@ -715,28 +695,6 @@ impl App {
         Ok(true)
     }
 
-    /// Do `work`, saying it is busy with `what` while it takes long enough (see [`Term::busy`]).
-    pub(crate) fn busy_doing<T>(
-        &mut self,
-        term: &mut Term,
-        what: String,
-        work: impl FnOnce(&mut App, &mut Term) -> Res<T>,
-    ) -> Res<T> {
-        let style = crate::style::Style::from(&self.state.config.style.info_msg);
-        self.state.busy = Some(Busying {
-            spinner: term.busy(&what, style),
-            what,
-            style,
-        });
-        let result = work(self, term);
-        if let Some(busying) = self.state.busy.take()
-            && busying.spinner.finish()
-        {
-            self.stage_redraw();
-        }
-        result
-    }
-
     pub(crate) fn handle_op(&mut self, op: Op, term: &mut Term) -> Res<()> {
         if self.state.read_only && op.writes() {
             return Ok(());
@@ -745,9 +703,19 @@ impl App {
         let implementation = op.clone().implementation();
 
         if let Some(mut action) = implementation.get_action(&item_data) {
-            let result = self.busy_doing(term, op.description().into_owned(), |app, term| {
-                Rc::get_mut(&mut action).unwrap()(app, term)
+            let what = op.description().into_owned();
+            let style = crate::style::Style::from(&self.state.config.style.info_msg);
+            self.state.busy = Some(Busying {
+                spinner: term.busy(&what, style),
+                what,
+                style,
             });
+            let result = Rc::get_mut(&mut action).unwrap()(self, term);
+            if let Some(busying) = self.state.busy.take()
+                && busying.spinner.finish()
+            {
+                self.stage_redraw();
+            }
             self.handle_result(result)?;
             if !self.state.inhibit_close_menu {
                 self.close_menu();

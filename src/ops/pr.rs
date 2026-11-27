@@ -82,42 +82,7 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
 
 /// Open the current branch's PR, which must be linked to the GitHub PR `expected` if given: its
 /// reviews are fetched from GitHub if it is linked, and a PR not checked against GitHub says so.
-///
-/// A PR opened before, with no `expected`, is drawn at once from what was recorded of it, and
-/// checked against GitHub once it shows, before the next key is handled: the PR GitHub's answer
-/// gives then takes its place, or, if the check fails, it is closed, saying why, as if it had not
-/// opened.
 pub(crate) fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>) -> Res<()> {
-    if expected.is_none()
-        && let Some(recorded) =
-            LocalBackend::recorded(Rc::clone(&app.state.repo), Rc::clone(&app.state.github))?
-    {
-        show_pr(app, term, Rc::new(recorded))?;
-        let drawn = app.screen().pr.clone().expect("the PR just shown");
-        app.state.after_draw.push(Box::new(move |app, term| {
-            app.busy_doing(term, CHECKING.to_owned(), |app, term| {
-                // No key has been handled since it was drawn, so it is still on top.
-                let on_top = app.screen().pr.as_ref();
-                if !on_top.is_some_and(|pr| Rc::ptr_eq(pr, &drawn)) {
-                    return Err(Error::LocalPr(
-                        "Couldn't check the PR against GitHub: its screen is no longer on top"
-                            .to_owned(),
-                    ));
-                }
-                app.state.screens.pop();
-                open_checked(app, term, None)
-            })
-        }));
-        return Ok(());
-    }
-    open_checked(app, term, expected)
-}
-
-/// What the TUI is busy with while a PR drawn from what was recorded of it is checked.
-const CHECKING: &str = "Checking the PR against GitHub";
-
-/// Open the current branch's PR, asking GitHub first, as [`open_current`] says.
-fn open_checked(app: &mut App, term: &mut Term, expected: Option<u64>) -> Res<()> {
     let local =
         LocalBackend::for_current_branch(Rc::clone(&app.state.repo), Rc::clone(&app.state.github))?;
     // A PR not checked against GitHub, as gh couldn't say what it is, says so instead.
