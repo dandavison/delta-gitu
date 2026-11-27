@@ -1131,3 +1131,47 @@ fn editing_my_comment_in_a_submitted_review_needs_publish() {
         "{github:?}"
     );
 }
+
+/// GitHub takes a thread on exactly the lines gitu counts as in its diff of the PR, which has 3
+/// lines of context, on each side, though git's `diff.context` shows more.
+#[test]
+#[ignore = "against GitHub itself: run with cargo test-github"]
+fn github_takes_a_thread_on_exactly_the_lines_gitu_counts_as_in_its_diff() {
+    let pr = RealPr::new(stdext::function_name!());
+    run(&pr.dir, &["git", "config", "diff.context", "7"]);
+    let github = pr.github();
+    let local = crate::review::local::LocalBackend::new(
+        Rc::new(git2::Repository::open(&pr.dir).unwrap()),
+        Rc::clone(&github) as Rc<dyn GitHub>,
+        Some(pr.head.clone()),
+        Some(pr.base.clone()),
+    )
+    .unwrap();
+    let github_pr = github.pr(Some(&pr.head)).unwrap();
+    let review = github
+        .start_review(WriteToken::for_test(), &github_pr)
+        .unwrap();
+
+    let mut disagree = vec![];
+    for side in [Side::Old, Side::New] {
+        for line in 1..=12 {
+            let gitu = local.in_diff("lines.txt", (side, line)).unwrap();
+            let taken = match github.add_thread(
+                WriteToken::for_test(),
+                &review,
+                "lines.txt",
+                Place::Line(side, line),
+                &format!("{side:?} {line}"),
+            ) {
+                Ok(_) => true,
+                Err(e) if e.to_string().contains("GitHub did nothing") => false,
+                Err(e) => panic!("{side:?} {line}: {e}"),
+            };
+            if gitu != taken {
+                disagree.push(format!("{side:?} {line}: gitu {gitu}, GitHub {taken}"));
+            }
+        }
+    }
+
+    assert!(disagree.is_empty(), "{disagree:#?}");
+}
