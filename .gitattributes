@@ -1,3 +1,7 @@
 # Test fixtures are compared byte for byte, so Windows checkouts must not
 # convert their line endings.
 src/tests/fixtures/** -text
+
+# The agents' skill is printed as delta has it, and is markdown with YAML front
+# matter, which must keep LF line endings on Windows too.
+src/review/agent_instructions.md text eol=lf
