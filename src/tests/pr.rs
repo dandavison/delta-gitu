@@ -62,6 +62,9 @@ pub(super) struct FakeGitHub {
     pub(super) delay: RefCell<std::time::Duration>,
     /// How long GitHub takes to give a PR's threads.
     pub(super) threads_delay: RefCell<std::time::Duration>,
+    /// A repository whose `feature` branch is the PR's head, as GitHub has the PR's branch, in
+    /// place of `head_oid`.
+    pub(super) head_from: RefCell<Option<std::path::PathBuf>>,
     /// Where branches are on GitHub, by name, other than the PR's base, which is at `base_oid`
     /// unless given here.
     pub(super) branches: RefCell<HashMap<String, String>>,
@@ -89,7 +92,10 @@ impl GitHub for FakeGitHub {
             url: PR_URL.into(),
             base_ref: self.base_ref.borrow().clone(),
             base_oid: self.base_oid.clone(),
-            head_oid: self.head_oid.clone(),
+            head_oid: match &*self.head_from.borrow() {
+                Some(dir) => run(dir, &["git", "rev-parse", "feature"]).trim().to_owned(),
+                None => self.head_oid.clone(),
+            },
             commits: *self.commits.borrow(),
         })
     }
@@ -374,6 +380,7 @@ impl FakeGitHub {
             loses_replies: RefCell::new(0),
             delay: RefCell::new(std::time::Duration::ZERO),
             threads_delay: RefCell::new(std::time::Duration::ZERO),
+            head_from: RefCell::new(None),
             branches: RefCell::new(HashMap::new()),
         }
     }
@@ -2760,4 +2767,49 @@ fn os_after_the_pr_changed_moves_drafts_with_their_lines_and_posts_them() {
     let screen = screen_text(&ctx);
     assert!(screen.contains("Posted 1 thread"), "{screen}");
     assert!(screen.contains("moved with its line"), "{screen}");
+}
+
+/// `setup`, with `feature` pushed and GitHub's PR at it on the remote, and a commit since, which
+/// GitHub doesn't have, so that the PR's screen says so.
+fn setup_ahead_of_github(ctx: &mut TestContext) -> (Rc<FakeGitHub>, App) {
+    let github = setup(ctx);
+    run(&ctx.dir, &["git", "push", "-q", "-u", "origin", "feature"]);
+    *github.head_from.borrow_mut() = Some(ctx.remote_dir.clone());
+    commit(&ctx.dir, "more.txt", "more\n");
+    let mut app = init_app(ctx, &github);
+    ctx.update(&mut app, keys("OO"));
+    let screen = screen_text(ctx);
+    assert!(
+        screen.contains("has 1 commit that GitHub's PR #7 doesn't"),
+        "{screen}"
+    );
+    // Once pushed, GitHub's PR has the commit too.
+    *github.commits.borrow_mut() = 3;
+    (github, app)
+}
+
+/// `g r` asks GitHub for the PR again, so that once the branch is where GitHub has it, the PR's
+/// screen stops saying it isn't.
+#[test]
+fn g_r_asks_github_for_the_prs_head_again() {
+    let mut ctx = setup_clone!();
+    let (_github, mut app) = setup_ahead_of_github(&mut ctx);
+    run(&ctx.dir, &["git", "push", "-q", "origin", "feature"]);
+
+    ctx.update(&mut app, keys("gr"));
+
+    let screen = screen_text(&ctx);
+    assert!(!screen.contains("GitHub's PR #7 doesn't"), "{screen}");
+}
+
+/// A push from delta asks GitHub for the PR again once it is done, as `g r` does.
+#[test]
+fn a_push_asks_github_for_the_prs_head_again() {
+    let mut ctx = setup_clone!();
+    let (_github, mut app) = setup_ahead_of_github(&mut ctx);
+
+    ctx.update(&mut app, keys("Pu"));
+
+    let screen = screen_text(&ctx);
+    assert!(!screen.contains("GitHub's PR #7 doesn't"), "{screen}");
 }
