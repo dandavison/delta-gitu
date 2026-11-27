@@ -67,6 +67,9 @@ pub(super) struct FakeGitHub {
     pub(super) head_from: RefCell<Option<std::path::PathBuf>>,
     /// Whether the PR is open, closed or merged.
     pub(super) state: RefCell<crate::review::github::PrState>,
+    /// The heads GitHub gives for the PR, one each time it is asked, before the one it has, as
+    /// GitHub takes in a push a little after the push returns.
+    pub(super) stale_heads: RefCell<Vec<String>>,
     /// Where branches are on GitHub, by name, other than the PR's base, which is at `base_oid`
     /// unless given here.
     pub(super) branches: RefCell<HashMap<String, String>>,
@@ -94,9 +97,13 @@ impl GitHub for FakeGitHub {
             url: PR_URL.into(),
             base_ref: self.base_ref.borrow().clone(),
             base_oid: self.base_oid.clone(),
-            head_oid: match &*self.head_from.borrow() {
-                Some(dir) => run(dir, &["git", "rev-parse", "feature"]).trim().to_owned(),
-                None => self.head_oid.clone(),
+            head_oid: match (
+                self.stale_heads.borrow_mut().pop(),
+                &*self.head_from.borrow(),
+            ) {
+                (Some(stale), _) => stale,
+                (None, Some(dir)) => run(dir, &["git", "rev-parse", "feature"]).trim().to_owned(),
+                (None, None) => self.head_oid.clone(),
             },
             commits: *self.commits.borrow(),
             state: *self.state.borrow(),
@@ -385,6 +392,7 @@ impl FakeGitHub {
             threads_delay: RefCell::new(std::time::Duration::ZERO),
             head_from: RefCell::new(None),
             state: RefCell::new(crate::review::github::PrState::Open),
+            stale_heads: RefCell::new(vec![]),
             branches: RefCell::new(HashMap::new()),
         }
     }
@@ -2979,4 +2987,30 @@ fn a_merged_pr_says_so() {
     ctx.update(&mut app, keys("q"));
     let screen = screen_text(&ctx);
     assert!(screen.contains("#7 (merged)"), "{screen}");
+}
+
+/// After the branch is rewritten and force-pushed, delta asks GitHub for the PR again until GitHub
+/// has the commit pushed, though GitHub's head before isn't one the branch has since moved on from.
+#[test]
+fn a_force_push_waits_for_github_to_have_the_commit_pushed() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    run(&ctx.dir, &["git", "push", "-q", "-u", "origin", "feature"]);
+    *github.head_from.borrow_mut() = Some(ctx.remote_dir.clone());
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO"));
+    let before = run(&ctx.dir, &["git", "rev-parse", "feature"])
+        .trim()
+        .to_owned();
+    run(
+        &ctx.dir,
+        &["git", "commit", "-q", "--amend", "-m", "rewritten"],
+    );
+    // GitHub gives the head it had once more after the push.
+    *github.stale_heads.borrow_mut() = vec![before];
+
+    ctx.update(&mut app, keys("P-Fu"));
+
+    let screen = screen_text(&ctx);
+    assert!(!screen.contains("GitHub's PR #7"), "{screen}");
 }
