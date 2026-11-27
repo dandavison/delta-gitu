@@ -2730,10 +2730,10 @@ fn down_in_the_thread_view_moves_to_the_next_thread() {
     );
 }
 
-/// Sync posts nothing when the PR has changed since a draft thread was written, and says where the
-/// thread has moved to and that syncing again posts it there.
+/// When the PR has changed since a draft thread was written, sync moves it with its line, posts it
+/// there, and says so.
 #[test]
-fn os_after_the_pr_changed_says_where_drafts_moved_and_to_sync_again() {
+fn os_after_the_pr_changed_moves_drafts_with_their_lines_and_posts_them() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     let mut app = init_app(&mut ctx, &github);
@@ -2753,8 +2753,11 @@ fn os_after_the_pr_changed_says_where_drafts_moved_and_to_sync_again() {
 
     ctx.update(&mut app, keys("Os"));
 
-    assert_eq!(*github.posted.borrow(), vec![]);
+    assert_eq!(
+        *github.posted.borrow(),
+        vec![("R1 lines.txt:(New, 2)".to_owned(), "on new".to_owned())]
+    );
     let screen = screen_text(&ctx);
-    assert!(screen.contains("lines.txt:2"), "{screen}");
-    assert!(screen.contains("sync again to post it there"), "{screen}");
+    assert!(screen.contains("Posted 1 thread"), "{screen}");
+    assert!(screen.contains("moved with its line"), "{screen}");
 }
