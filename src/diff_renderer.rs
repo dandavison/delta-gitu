@@ -17,6 +17,7 @@ use crate::Res;
 use crate::config::ColorMode;
 use crate::error::Error;
 use crate::git::diff::Diff;
+use crate::gitu_diff::ContentLine;
 use crate::style::{Color, Modifier, Style};
 use anstyle_parse::{DefaultCharAccumulator, Params, Parser, Perform};
 use regex::Regex;
@@ -189,31 +190,34 @@ impl DiffIndex {
                     .entry((file_index, hunk.header.new_line_start))
                     .or_insert(hunk_index);
 
+                // A line is placed by its new-file line, or if it is not in the new
+                // file, by its line in the first parent that had it. In a combined
+                // diff, two parents can lose different lines with the same number;
+                // the first takes the place.
                 let content = &diff.text[hunk.content.range.clone()];
                 let mut new_num = hunk.header.new_line_start;
-                let mut old_num = hunk.header.old_line_start;
+                let mut old_nums = hunk.header.old_line_starts.clone();
                 for (line_index, line) in content.split_inclusive('\n').enumerate() {
-                    let key = match line.chars().next() {
-                        Some('+') => Some((LineKind::Added, new_num)),
-                        Some('-') => Some((LineKind::Deleted, old_num)),
-                        Some(' ') => Some((LineKind::Context, new_num)),
-                        _ => None,
+                    let Some(content_line) = hunk.header.content_line(line) else {
+                        continue;
                     };
-                    if let Some((kind, num)) = key {
-                        index
-                            .lines
-                            .entry((file_index, kind, num))
-                            .or_insert((hunk_index, line_index));
-                    }
+                    let key = match content_line {
+                        ContentLine::Added => (LineKind::Added, new_num),
+                        ContentLine::Removed { parent } => (LineKind::Deleted, old_nums[parent]),
+                        ContentLine::Unchanged => (LineKind::Context, new_num),
+                    };
+                    index
+                        .lines
+                        .entry((file_index, key.0, key.1))
+                        .or_insert((hunk_index, line_index));
 
-                    match line.chars().next() {
-                        Some('+') => new_num += 1,
-                        Some('-') => old_num += 1,
-                        Some('\\') => {} // "\ No newline at end of file": not a real line.
-                        _ => {
-                            new_num += 1;
-                            old_num += 1;
+                    for (parent, num) in old_nums.iter_mut().enumerate() {
+                        if content_line.in_parent(parent, line) {
+                            *num += 1;
                         }
+                    }
+                    if content_line.in_new() {
+                        new_num += 1;
                     }
                 }
             }

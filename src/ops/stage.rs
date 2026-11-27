@@ -25,6 +25,10 @@ impl OpTrait for Stage {
             {
                 return None;
             }
+            // Staging the file marks the conflict resolved.
+            target if super::is_patch_of_merge_conflict(target, false) => {
+                super::refuse_patch_of_merge_conflict()
+            }
             ItemData::AllUnstaged(_) => stage_unstaged(),
             ItemData::AllUntracked(untracked) => stage_untracked(untracked.clone()),
             ItemData::Untracked(u) => stage_file(u.into()),

@@ -12,6 +12,9 @@ pub(crate) struct Reverse;
 impl OpTrait for Reverse {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
         let action = match target {
+            target if super::is_patch_of_merge_conflict(target, true) => {
+                super::refuse_patch_of_merge_conflict()
+            }
             ItemData::Delta { diff, file_i, .. } => reverse_patch(diff.format_file_patch(*file_i)),
             ItemData::Hunk {
                 diff,

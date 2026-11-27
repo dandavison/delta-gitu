@@ -5,8 +5,8 @@ expression: ctx.redact_buffer()
 ▌Merging other-branch                                                           |
                                                                                 |
  Unstaged changes (2)                                                           |
- new-file                                                                       |
- new-file-2                                                                     |
+ new-file…                                                                      |
+ new-file-2…                                                                    |
                                                                                 |
  Staged changes (2)                                                             |
  unmerged   new-file                                                            |

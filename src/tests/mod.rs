@@ -331,6 +331,52 @@ fn merge_conflict() {
     insta::assert_snapshot!(ctx.redact_buffer());
 }
 
+/// Each side's lines of a conflict, drawn as the renderer draws them, under
+/// the file's name, and a line removed outside the conflict.
+#[test]
+fn merge_conflict_expanded() {
+    let ctx = setup_clone!();
+    commit(&ctx.dir, "new-file", "a\nb\nc\nhello\nz\n");
+    run(&ctx.dir, &["git", "checkout", "-b", "other-branch"]);
+    commit(&ctx.dir, "new-file", "a\nc\nhey\nz\n");
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    commit(&ctx.dir, "new-file", "a\nb\nc\nhi\nz\n");
+    run_ignore_status(&ctx.dir, &["git", "merge", "other-branch"]);
+
+    snapshot!(ctx, "jj<tab>");
+}
+
+/// With the common ancestor's lines in the conflict, each side is drawn
+/// against them.
+#[test]
+fn merge_conflict_expanded_diff3() {
+    let ctx = setup_clone!();
+    run(&ctx.dir, &["git", "config", "merge.conflictStyle", "diff3"]);
+    commit(&ctx.dir, "new-file", "a\nhello\nz\n");
+    run(&ctx.dir, &["git", "checkout", "-b", "other-branch"]);
+    commit(&ctx.dir, "new-file", "a\nhey\nz\n");
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    commit(&ctx.dir, "new-file", "a\nhi\nz\n");
+    run_ignore_status(&ctx.dir, &["git", "merge", "other-branch"]);
+
+    snapshot!(ctx, "jj<tab>");
+}
+
+/// git cannot apply a part of a combined diff, so a conflict's lines are
+/// resolved by editing the file.
+#[test]
+fn stage_merge_conflict_line() {
+    let ctx = setup_clone!();
+    commit(&ctx.dir, "new-file", "hello\n");
+    run(&ctx.dir, &["git", "checkout", "-b", "other-branch"]);
+    commit(&ctx.dir, "new-file", "hey\n");
+    run(&ctx.dir, &["git", "checkout", "main"]);
+    commit(&ctx.dir, "new-file", "hi\n");
+    run_ignore_status(&ctx.dir, &["git", "merge", "other-branch"]);
+
+    snapshot!(ctx, "jj<tab>jjs");
+}
+
 #[test]
 fn revert_conflict() {
     let mut ctx = setup_clone!();

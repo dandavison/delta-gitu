@@ -13,6 +13,9 @@ impl OpTrait for Apply {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
         let action = match target {
             ItemData::Stash { stash_ref, .. } => apply_stash(stash_ref.clone()),
+            target if super::is_patch_of_merge_conflict(target, true) => {
+                super::refuse_patch_of_merge_conflict()
+            }
             ItemData::Delta { diff, file_i, .. } => apply_patch(diff.format_file_patch(*file_i)),
             ItemData::Hunk {
                 diff,

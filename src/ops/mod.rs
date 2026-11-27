@@ -42,6 +42,23 @@ pub(crate) mod unstage;
 
 pub(crate) type Action = Rc<dyn FnMut(&mut App, &mut Term) -> Res<()>>;
 
+/// Whether `target` is a part of a file's diff that is a combined diff, which
+/// `git apply` cannot apply. `whole_file` includes the file itself.
+pub(crate) fn is_patch_of_merge_conflict(target: &ItemData, whole_file: bool) -> bool {
+    match target {
+        ItemData::Delta { diff, file_i, .. } => whole_file && diff.is_combined(*file_i),
+        ItemData::Hunk { diff, file_i, .. } | ItemData::HunkLine { diff, file_i, .. } => {
+            diff.is_combined(*file_i)
+        }
+        _ => false,
+    }
+}
+
+/// The action for an op that would apply a patch of a merge conflict.
+pub(crate) fn refuse_patch_of_merge_conflict() -> Action {
+    Rc::new(|_, _| Err(crate::error::Error::PatchOfMergeConflict))
+}
+
 pub(crate) trait OpTrait {
     /// Get the implementation (which may or may not exist) of the Op given some TargetData.
     /// This indirection allows Gitu to show a contextual menu of applicable actions.

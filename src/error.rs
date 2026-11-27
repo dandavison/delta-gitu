@@ -24,6 +24,7 @@ pub enum Error {
     GitShowUtf8(string::FromUtf8Error),
     GitShowMeta(git2::Error),
     NotOnBranch,
+    PatchOfMergeConflict,
     GetHead(git2::Error),
     CurrentBranchName(git2::Error),
     GetCurrentBranchUpstream(git2::Error),
@@ -139,6 +140,9 @@ impl Display for Error {
             }
             Error::GitShowMeta(e) => f.write_fmt(format_args!("Git show metadata error: {e}")),
             Error::NotOnBranch => f.write_str("Head is not a branch"),
+            Error::PatchOfMergeConflict => f.write_str(
+                "Git cannot apply a merge conflict's diff: edit the file, then stage it",
+            ),
             Error::GetHead(e) => f.write_fmt(format_args!("Couldn't get HEAD: {e}")),
             Error::CurrentBranchName(e) => {
                 f.write_fmt(format_args!("Couldn't get current branch name: {e}"))

@@ -464,6 +464,10 @@ fn rendered_diff_items(
     // Per file and per hunk: the renderer's own header rows (`f`, `h`) to display
     // in place of gitu's, and per hunk the content-line items. The renderer's
     // blank spacer rows are dropped.
+    //
+    // Rows with no record between two rows of a hunk are the renderer's
+    // decoration of the hunk's lines, such as delta's naming each side of a merge
+    // conflict, and are kept as rows of the hunk; elsewhere they are dropped.
     let mut headers_by_file: HashMap<usize, Vec<RenderedRow>> = HashMap::new();
     let mut headers_by_hunk: HashMap<(usize, usize), Vec<RenderedRow>> = HashMap::new();
     // The file a run of `f` rows belongs to. A path can recur in a log of
@@ -478,13 +482,27 @@ fn rendered_diff_items(
     // wrapped continuation of it. Cleared by every other kind of row, so only a
     // consecutive run counts as one line.
     let mut last_content: Option<(usize, usize, usize)> = None;
+    // The hunk of the last row placed in a hunk, and the rows with no record
+    // since, which are kept if the next row is of the same hunk.
+    let mut last_hunk: Option<(usize, usize)> = None;
+    let mut decoration: Vec<RenderedRow> = Vec::new();
 
     for line in lines {
         let previous_file_header = file_header.take();
         let Some(first) = line.records.first() else {
             last_content = None;
-            continue; // Un-annotated decoration (dividers): dropped.
+            if last_hunk.is_some() && !line.text.trim().is_empty() {
+                decoration.push(rendered_spans(line));
+            }
+            continue;
         };
+        if !matches!(
+            first.kind,
+            LineKind::Context | LineKind::Added | LineKind::Deleted
+        ) {
+            last_hunk = None;
+            decoration.clear();
+        }
         match first.kind {
             LineKind::Commit => last_content = None,
             LineKind::FileHeader => {
@@ -510,7 +528,8 @@ fn rendered_diff_items(
                 if line.text.trim().is_empty() {
                     continue;
                 }
-                if let Some(key) = index.hunk(first) {
+                last_hunk = index.hunk(first);
+                if let Some(key) = last_hunk {
                     headers_by_hunk
                         .entry(key)
                         .or_default()
@@ -543,6 +562,18 @@ fn rendered_diff_items(
                 let hunk_hash = *hunk_hash;
                 let line_range = line_ranges.get(line_i).cloned().unwrap_or_default();
                 let rows = content_by_hunk.entry((file_i, hunk_i)).or_default();
+
+                if last_hunk.replace((file_i, hunk_i)) == Some((file_i, hunk_i)) {
+                    rows.extend(decoration.drain(..).map(|row| Item {
+                        id: hunk_hash,
+                        depth: depth + 2,
+                        unselectable: true,
+                        rendered: Some(Rc::new(row)),
+                        ..Default::default()
+                    }));
+                } else {
+                    decoration.clear();
+                }
 
                 // A renderer that wraps a long line emits a row per screen line,
                 // re-emitting the same record on each. They are one diff line, so

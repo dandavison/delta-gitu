@@ -103,11 +103,60 @@ pub struct HunkContent {
 #[derive(Debug, Clone)]
 pub struct HunkHeader {
     pub range: Range<usize>,
+    /// The first parent's first line, as `old_line_starts[0]`.
     pub old_line_start: u32,
     pub old_line_count: u32,
+    /// Each parent's first line: one for a diff, and one per parent for a
+    /// combined diff, whose lines have a column per parent.
+    pub old_line_starts: Vec<u32>,
     pub new_line_start: u32,
     pub new_line_count: u32,
     pub fn_ctx: Range<usize>,
+}
+
+impl HunkHeader {
+    /// What a line of the hunk's content is, or `None` for a line that is no
+    /// line of a file (`\ No newline at end of file`).
+    pub fn content_line(&self, line: &str) -> Option<ContentLine> {
+        let prefix = line.get(..self.old_line_starts.len())?;
+        if prefix.starts_with('\\') {
+            None
+        } else if let Some(parent) = prefix.find('-') {
+            Some(ContentLine::Removed { parent })
+        } else if prefix.contains('+') {
+            Some(ContentLine::Added)
+        } else {
+            Some(ContentLine::Unchanged)
+        }
+    }
+}
+
+/// A line of a hunk's content. In a combined diff, a line in the new file is
+/// added if a parent lacks it, and a line not in the new file is removed from
+/// the parents that have it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentLine {
+    Unchanged,
+    Added,
+    /// Removed from the parent at index `parent` (the first that had it).
+    Removed {
+        parent: usize,
+    },
+}
+
+impl ContentLine {
+    /// Whether the line is in the parent at index `parent`.
+    pub fn in_parent(&self, parent: usize, line: &str) -> bool {
+        match self {
+            ContentLine::Removed { .. } => line.as_bytes()[parent] == b'-',
+            _ => line.as_bytes()[parent] == b' ',
+        }
+    }
+
+    /// Whether the line is in the new file.
+    pub fn in_new(&self) -> bool {
+        !matches!(self, ContentLine::Removed { .. })
+    }
 }
 
 #[allow(dead_code)]
@@ -280,15 +329,11 @@ impl<'a> Parser<'a> {
 
         let mut hunks = vec![];
 
-        if header.status == Status::Unmerged {
-            self.skip_until_diff_header()?;
-        } else {
-            while self.peek("@@") {
-                hunks.push(self.hunk().map_err(|mut err| {
-                    err.try_push(ThinParseError { expected: "<hunk>" });
-                    err
-                })?);
-            }
+        while self.peek("@@") {
+            hunks.push(self.hunk().map_err(|mut err| {
+                err.try_push(ThinParseError { expected: "<hunk>" });
+                err
+            })?);
         }
 
         Ok(FileDiff {
@@ -595,13 +640,27 @@ impl<'a> Parser<'a> {
         log::trace!("Parser::hunk_header\n{:?}", self);
         let hunk_header_start = self.cursor;
 
-        self.consume("@@ -")?;
-        let old_line_start = self.number()?;
-        let old_line_count = if self.consume(",").is_ok() {
-            self.number()?
-        } else {
-            1
-        };
+        // A combined diff's header starts with one `@` per parent and one more,
+        // and has a `-` range per parent.
+        self.consume("@@")?;
+        let mut ats = 2;
+        while self.consume("@").is_ok() {
+            ats += 1;
+        }
+        let mut old_line_starts = vec![];
+        let mut old_line_count = 0;
+        for parent in 0..ats - 1 {
+            self.consume(" -")?;
+            old_line_starts.push(self.number()?);
+            let count = if self.consume(",").is_ok() {
+                self.number()?
+            } else {
+                1
+            };
+            if parent == 0 {
+                old_line_count = count;
+            }
+        }
         self.consume(" +")?;
         let new_line_start = self.number()?;
         let new_line_count = if self.consume(",").is_ok() {
@@ -609,15 +668,19 @@ impl<'a> Parser<'a> {
         } else {
             1
         };
-        self.consume(" @@")?;
+        self.consume(" ")?;
+        for _ in 0..ats {
+            self.consume("@")?;
+        }
         self.consume(" ").ok();
 
         let (fn_ctx, newline) = self.consume_until_after(Self::newline_or_eof)?;
 
         Ok(HunkHeader {
             range: hunk_header_start..self.cursor,
-            old_line_start,
+            old_line_start: old_line_starts[0],
             old_line_count,
+            old_line_starts,
             new_line_start,
             new_line_count,
             fn_ctx: fn_ctx.start..newline.end,
@@ -1170,6 +1233,22 @@ mod tests {
         assert_eq!(diffs[0].header.status, Status::Unmerged);
         assert_eq!(&input[diffs[0].header.old_file.range.clone()], "new-file");
         assert_eq!(&input[diffs[0].header.new_file.range.clone()], "new-file");
+    }
+
+    #[test]
+    fn conflicted_file_hunks() {
+        let input = "diff --cc f\nindex 7dcdb15,b097ba1..0000000\n--- a/f\n+++ b/f\n@@@ -1,5 -1,4 +1,8 @@@\n  a\n- b\n  c\n++<<<<<<< HEAD\n +hi\n++=======\n+ hey\n++>>>>>>> other\n  z\n";
+
+        let diffs = Parser::new(input).parse_diff().unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].hunks.len(), 1);
+        let hunk = &diffs[0].hunks[0];
+        assert_eq!(hunk.header.new_line_start, 1);
+        assert_eq!(hunk.header.new_line_count, 8);
+        assert_eq!(
+            &input[hunk.content.range.clone()],
+            "  a\n- b\n  c\n++<<<<<<< HEAD\n +hi\n++=======\n+ hey\n++>>>>>>> other\n  z\n"
+        );
     }
 
     #[test]
