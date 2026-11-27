@@ -960,14 +960,10 @@ fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
     pr.author_pushes("lines.txt", &lines.replace("line five\n", "line FIVE\n"));
     pr.pull();
 
-    // The PR changed since the draft was written: nothing is posted, and the draft, whose line
-    // has gone, is now on its file, for the user to see.
-    let error = pr.review(&["sync"], "").unwrap_err().to_string();
-    assert!(error.contains("changed since"), "{error}");
-    assert!(pr.pending_comments().is_empty());
-    assert_eq!(pr.only_local_thread()["subject"], "file");
-
-    pr.review(&["sync"], "").unwrap();
+    // The PR changed since the draft was written: the draft, whose line has gone, is moved onto
+    // its file and posted there.
+    let synced = pr.review(&["sync"], "").unwrap();
+    assert!(synced.contains("onto its file"), "{synced}");
 
     let github = pr.github_threads();
     assert_eq!(github.len(), 1, "{github:?}");
@@ -979,12 +975,11 @@ fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
     assert_eq!(pr.only_local_thread()["subject"], "file");
 }
 
-/// The lease: a draft written before the PR changed on GitHub is not posted at the next sync,
-/// which moves it with its line, for the user to see where it now is; the sync after posts it
-/// there.
+/// A draft written before the PR changed on GitHub is moved with its line by the next sync, and
+/// posted there.
 #[test]
 #[ignore = "against GitHub itself: run with cargo test-github"]
-fn a_draft_written_before_the_pr_changed_is_moved_and_posted_only_at_the_next_sync() {
+fn a_draft_written_before_the_pr_changed_is_moved_with_its_line_and_posted() {
     let pr = RealPr::new(stdext::function_name!());
     pr.review(
         &["comment", "--path", "lines.txt", "--line", "3"],
@@ -996,13 +991,10 @@ fn a_draft_written_before_the_pr_changed_is_moved_and_posted_only_at_the_next_sy
     pr.author_pushes("lines.txt", &format!("line 0\n{lines}"));
     pr.pull();
 
-    let error = pr.review(&["sync"], "").unwrap_err().to_string();
+    let synced = pr.review(&["sync"], "").unwrap();
 
-    assert!(error.contains("changed since"), "{error}");
-    assert!(pr.pending_comments().is_empty());
+    assert!(synced.contains("moved with its line"), "{synced}");
     assert_eq!(pr.only_local_thread()["line"], 4);
-
-    pr.review(&["sync"], "").unwrap();
 
     let github = pr.github_threads();
     assert_eq!(github[0]["line"], 4, "{github:?}");
