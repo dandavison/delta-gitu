@@ -2925,6 +2925,13 @@ fn o_on_the_summary_after_sync_created_the_pr_opens_it() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     *github.has_pr.borrow_mut() = false;
+    // The user has pushed the branch, as sync requires before it creates the PR.
+    github.branches.borrow_mut().insert(
+        "feature".to_owned(),
+        run(&ctx.dir, &["git", "rev-parse", "feature"])
+            .trim()
+            .to_owned(),
+    );
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>Osy"));
     assert_eq!(github.created.borrow().len(), 1, "{}", ctx.redact_buffer());
