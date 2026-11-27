@@ -307,13 +307,13 @@ fn comments_are_shared_by_the_repositorys_worktrees() {
 }
 
 #[test]
-fn i_on_my_draft_comment_edits_it_in_the_box() {
+fn e_on_my_draft_comment_edits_it_in_the_box() {
     let mut ctx = setup_clone!();
     setup(&mut ctx);
     let mut app = init_app(&mut ctx);
     ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>/hello<enter>"));
 
-    ctx.update(&mut app, keys("i"));
+    ctx.update(&mut app, keys("e"));
     let screen = ctx.redact_buffer();
     assert!(screen.contains("Edit comment"), "{screen}");
     assert!(line_with(&ctx, "hello").contains("hello"), "{screen}");
@@ -3512,4 +3512,20 @@ fn the_file_picker_limits_a_prs_files() {
     let screen = ctx.redact_buffer();
     assert!(screen.contains("added.txt"), "{screen}");
     assert!(!screen.contains("lines.txt"), "{screen}");
+}
+
+/// `i` on a comment of mine replies to it, as on anyone's: `e` is what edits it.
+#[test]
+fn i_on_my_own_comment_replies_to_it() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>/hello<enter>"));
+
+    ctx.update(&mut app, keys("ia reply<ctrl+s>"));
+
+    let file = review_file(&ctx);
+    let comments = &file["threads"][0]["comments"];
+    assert_eq!(comments[0]["body"], "hello", "{file}");
+    assert_eq!(comments[1]["body"], "a reply", "{file}");
 }

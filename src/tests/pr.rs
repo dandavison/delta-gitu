@@ -2168,14 +2168,14 @@ fn pending_thread() -> Thread {
 }
 
 #[test]
-fn i_on_my_comment_on_github_edits_it_there() {
+fn e_on_my_comment_on_github_edits_it_there() {
     let mut ctx = setup_clone!();
     let github = setup(&ctx);
     *github.threads.borrow_mut() = vec![pending_thread()];
     let mut app = init_app(&mut ctx, &github);
     ctx.update(&mut app, keys("OO/Why new<enter>"));
 
-    ctx.update(&mut app, keys("i<space>really<ctrl+s>"));
+    ctx.update(&mut app, keys("e<space>really<ctrl+s>"));
 
     assert_eq!(
         *github.edited.borrow(),
@@ -2200,16 +2200,16 @@ fn editing_my_comment_in_a_submitted_review_asks_first() {
     )];
     let mut app = init_app(&mut ctx, &github);
 
-    ctx.update(&mut app, keys("OO/Why new<enter>i<space>really<ctrl+s>"));
+    ctx.update(&mut app, keys("OO/Why new<enter>e<space>really<ctrl+s>"));
     let screen = ctx.redact_buffer();
     assert!(screen.contains("public on GitHub"), "{screen}");
 
     let mut app = init_app(&mut ctx, &github);
-    ctx.update(&mut app, keys("OO/Why new<enter>i<space>really<ctrl+s>n"));
+    ctx.update(&mut app, keys("OO/Why new<enter>e<space>really<ctrl+s>n"));
     assert!(github.edited.borrow().is_empty());
 
     let mut app = init_app(&mut ctx, &github);
-    ctx.update(&mut app, keys("OO/Why new<enter>i<space>really<ctrl+s>y"));
+    ctx.update(&mut app, keys("OO/Why new<enter>e<space>really<ctrl+s>y"));
     assert_eq!(
         *github.edited.borrow(),
         vec![("t1_0".to_owned(), "Why new? really".to_owned())]
@@ -2895,4 +2895,26 @@ fn resizing_keeps_the_cursor_on_its_comment() {
             ctx.redact_buffer()
         );
     }
+}
+
+/// `e` on someone else's comment says it can't be edited.
+#[test]
+fn e_on_someone_elses_comment_says_it_cant_be_edited() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.threads.borrow_mut() = vec![thread(
+        "t1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Why new?")],
+    )];
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO/Why new<enter>e"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("Only your own comments can be edited"),
+        "{screen}"
+    );
 }
