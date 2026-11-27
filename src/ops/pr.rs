@@ -536,7 +536,7 @@ pub(crate) fn after_push(app: &mut App, term: &mut Term) -> Res<()> {
         return Ok(());
     };
     let style = Style::from(&app.state.config.style.info_msg);
-    let busy = term.busy("Asking GitHub for the PR", style);
+    let busy = term.busy("Fetching PR", style);
     let relinked = local.relink_after_push();
     if busy.finish() {
         app.stage_redraw();
