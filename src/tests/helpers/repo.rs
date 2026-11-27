@@ -133,9 +133,10 @@ const INITIAL_COMMIT: &str = "b66a0bf";
 /// Just to make sure we're not accidentally modifying gitu's repo: the clone is the test's, at
 /// the initial commit, and its remote is the test's.
 fn assert_local_test_repo(repo: &git2::Repository, local_dir: &Path, remote_dir: &Path) {
+    // Both canonical, as Windows writes a path in more than one way.
     assert_eq!(
-        repo.workdir().unwrap(),
-        fs::canonicalize(local_dir).unwrap().join("")
+        fs::canonicalize(repo.workdir().unwrap()).unwrap(),
+        fs::canonicalize(local_dir).unwrap()
     );
     let head = repo
         .head()
