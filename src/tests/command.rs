@@ -325,7 +325,7 @@ fn a_command_needing_a_commit_says_so_before_its_prompt_opens() {
 fn each_commands_prompt_has_its_own_history() {
     let ctx = setup_clone!();
     let ctx = with_command(ctx, "record", "echo {input} > recorded", 't');
-    let mut ctx = with_command(ctx, "other", "echo {input} > other", 'e');
+    let mut ctx = with_command(ctx, "other", "echo {input} > other", 'w');
     let mut app = ctx.init_app();
     ctx.update(&mut app, keys("tfirst<enter>"));
     drop(app);
@@ -335,6 +335,6 @@ fn each_commands_prompt_has_its_own_history() {
     assert_eq!(ctx.prompt_line(), "record: first|");
 
     let mut app = ctx.init_app();
-    ctx.update(&mut app, keys("e<up>"));
+    ctx.update(&mut app, keys("w<up>"));
     assert_eq!(ctx.prompt_line(), "other: |");
 }
