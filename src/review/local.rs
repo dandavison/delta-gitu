@@ -106,6 +106,19 @@ impl LocalBackend {
         Ok(pr)
     }
 
+    /// The current branch's local PR as recorded, if it has one, not linked to its GitHub PR,
+    /// without asking GitHub anything: what a PR opened before is drawn from at once, until
+    /// [`LocalBackend::for_current_branch`] has asked GitHub.
+    pub fn recorded(repo: Rc<Repository>, github: Rc<dyn GitHub>) -> Res<Option<Self>> {
+        let head = current_branch(&repo)?;
+        let bases = Store::bases(repo.commondir(), &head)?;
+        let [base] = bases.as_slice() else {
+            return Ok(None);
+        };
+        let base = base.clone();
+        Self::new(repo, github, Some(head), Some(base)).map(Some)
+    }
+
     /// The files review of the branch `head`, by default the current branch: comments on the
     /// lines of its files as committed, which the file view opens whole, apart from any PR of the
     /// branch. It is recorded as a review of the branch into itself, and its comments are

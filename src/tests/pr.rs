@@ -2504,3 +2504,63 @@ fn os_posts_nothing_while_a_draft_thread_is_outside_githubs_diff() {
     assert!(screen.contains("Posted nothing"), "{screen}");
     assert!(screen.contains("long.txt:15"), "{screen}");
 }
+
+/// The frames the test terminal has drawn.
+fn frames(ctx: &TestContext) -> Vec<String> {
+    let crate::term::TermBackend::Test { buffer, .. } = &ctx.term else {
+        unreachable!();
+    };
+    buffer.frames.clone()
+}
+
+/// A PR opened before is drawn at once, from what was recorded of it, and then checked against
+/// GitHub: what GitHub has since, such as a new thread, is shown once it answers.
+#[test]
+fn reopening_a_pr_draws_it_before_asking_github() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OOq"));
+    github.threads.borrow_mut().push(thread(
+        "T1",
+        Some((Side::New, 2)),
+        false,
+        &[("alice", "Since then")],
+    ));
+    let before = frames(&ctx).len();
+
+    ctx.update(&mut app, keys("OO"));
+
+    let drawn = &frames(&ctx)[before..];
+    assert!(
+        drawn
+            .iter()
+            .any(|frame| frame.contains("added: added.txt") && !frame.contains("Since then")),
+        "{drawn:#?}"
+    );
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Since then"), "{screen}");
+}
+
+/// When the check against GitHub, made once a PR opened before is drawn, finds the branch isn't
+/// as GitHub has it, the PR is closed, saying why, as if it hadn't opened.
+#[test]
+fn reopening_a_pr_github_disagrees_with_closes_it_saying_why() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OOq"));
+    *github.commits.borrow_mut() = 3;
+    let before = frames(&ctx).len();
+
+    ctx.update(&mut app, keys("OO"));
+
+    let drawn = &frames(&ctx)[before..];
+    assert!(
+        drawn.iter().any(|frame| frame.contains("added: added.txt")),
+        "{drawn:#?}"
+    );
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("GitHub's PR has 3 commits"), "{screen}");
+    assert!(!screen.contains("added: added.txt"), "{screen}");
+}
