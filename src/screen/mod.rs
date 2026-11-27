@@ -922,16 +922,29 @@ impl Screen {
     /// has, such as the last file once it is hidden, leaves the cursor on the
     /// row before it.
     pub(crate) fn refresh_keeping_position(&mut self) -> Res<()> {
-        let was_on = diff_position(&self.get_selected_item().data);
+        let selected = self.get_selected_item();
+        let was_on = diff_position(&selected.data);
+        // A row that is no line of the patch, as a comment under one, is found again by its id,
+        // which the hunk it is under being cut differently doesn't change, as it does the ids of
+        // the rows above it.
+        let was_item = selected.id;
         let was_at = self.cursor_row();
         self.refresh()?;
 
-        let Some(position) = was_on else {
-            return Ok(());
-        };
-        while !self.select_at_row(position, was_at) {
+        loop {
+            let found = match was_on {
+                Some(position) => self.select_at_row(position, was_at),
+                // As the rebuild found it by its lineage, where that was unchanged.
+                None if self.get_selected_item().id == was_item => true,
+                None => self.select_item_at_row(was_item, was_at),
+            };
+            if found {
+                break;
+            }
             if !self.is_drawing() {
-                self.select_before_row(position, was_at);
+                if let Some(position) = was_on {
+                    self.select_before_row(position, was_at);
+                }
                 break;
             }
             if !self.finish()? {
@@ -939,6 +952,13 @@ impl Screen {
             }
         }
         Ok(())
+    }
+
+    /// Selects the item whose id is `id`, drawn on row `row` of the screen as far as the content
+    /// allows, and says whether there is one.
+    fn select_item_at_row(&mut self, id: ItemId, row: Option<usize>) -> bool {
+        let item_i = self.find_item(|item| !item.unselectable && item.id == id);
+        self.select_on_row(item_i, row)
     }
 
     /// Selects the row at `position` in the patch, drawn on row `row` of the
