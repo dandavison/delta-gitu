@@ -40,12 +40,12 @@ pub struct Args {
 
     /// Print instructions for an AI agent on using delta to review code with a person, as a
     /// skill: markdown with YAML front matter, which can be saved as a SKILL.md.
-    #[clap(long, action)]
+    #[clap(long, action, hide = true)]
     pub agent_instructions: bool,
 
     /// Print a diagram of the states a PR's reviews go through, locally and on GitHub, in the
     /// format given: d2, to be laid out by d2's TALA engine.
-    #[clap(long, value_enum, value_name = "FORMAT")]
+    #[clap(long, value_enum, value_name = "FORMAT", hide = true)]
     pub pr_state_machine_diagram: Option<DiagramFormat>,
 
     /// Print every setting the TUI takes from git config's [delta] section, with what it does
@@ -94,6 +94,7 @@ pub enum Commands {
     /// unless --head says otherwise, into the base given by --base, or else into the base gh
     /// gives: the base of the branch's GitHub PR, or the default branch of the repository gh
     /// would open a PR against. Without --base, gh needs the network.
+    #[command(hide = true)]
     Review {
         #[command(subcommand)]
         command: ReviewCommand,

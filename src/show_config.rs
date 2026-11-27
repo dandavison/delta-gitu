@@ -86,6 +86,23 @@ pub(crate) fn settings(config: &Config, dir: &Path) -> Res<Vec<Shown>> {
         });
     }
 
+    // Experimental features' settings and keys aren't listed while they are off, nor the
+    // comment-* options, which are theirs.
+    if !config.general.experimental {
+        shown.retain(|setting| {
+            !crate::config::EXPERIMENTAL_SETTINGS.contains(&setting.name.as_str())
+        });
+        for setting in &mut shown {
+            let theirs = |binding: &String| {
+                let (path, _) = binding.split_once(' ').unwrap_or((binding, ""));
+                let (menu, op) = path.split_once('.').unwrap_or((path, ""));
+                crate::config::is_experimental(menu, op)
+            };
+            setting.values.retain(|binding| !theirs(binding));
+            setting.default.retain(|binding| !theirs(binding));
+        }
+        return Ok(shown);
+    }
     let options = renderer.options.get(dir, None, &OPTION_NAMES);
     for (option, value) in OPTIONS.iter().zip(options) {
         let default = match option.name {

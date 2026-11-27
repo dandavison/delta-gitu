@@ -135,6 +135,9 @@ read_only = "auto"
 # diff`, `git show`, `git log -p`, and a commit opened from the log.
 start_folded = false
 
+# Turn on features still being built: code review, and messages to agents.
+experimental = false
+
 # Shell commands, by name, that a key from `diff_renderer.feature_keys` runs,
 # as `renderer_features` lists them. `{commit}`, `{file}` and `{branch}` are
 # filled in, quoted for the shell, from what is under the cursor, and

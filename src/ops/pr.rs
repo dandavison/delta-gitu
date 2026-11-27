@@ -279,6 +279,9 @@ fn pick_file(app: &mut App, term: &mut Term) -> Res<Option<String>> {
 /// Open the file view: the file at `path` whole, as in the branch's last commit, at `line`, with
 /// the threads of the branch's files review under their lines.
 fn open_file(app: &mut App, term: &mut Term, path: String, line: Option<u32>) -> Res<()> {
+    if !app.state.config.general.experimental {
+        return open_file_alone(app, term, path, line);
+    }
     let repo = Rc::clone(&app.state.repo);
     let backend = LocalBackend::for_files(Rc::clone(&repo), Rc::clone(&app.state.github), None)?;
     let pr = Rc::new(OpenPr::new(Rc::new(backend))?);
@@ -322,6 +325,41 @@ fn open_file(app: &mut App, term: &mut Term, path: String, line: Option<u32>) ->
         }),
     )?;
     screen.pr = Some(pr);
+    screen.file = Some(path);
+    app.state.screens.push(screen);
+    if let Some(line) = line {
+        app.screen_mut()
+            .select_matching(|data| new_line_of(data) == Some(line));
+    }
+    Ok(())
+}
+
+/// The file view without comments, as experimental features are off: the file at `path` whole,
+/// as in HEAD's commit, at `line`.
+fn open_file_alone(app: &mut App, term: &mut Term, path: String, line: Option<u32>) -> Res<()> {
+    let repo = Rc::clone(&app.state.repo);
+    let head = Rc::clone(&repo);
+    let commit: Rc<dyn Fn() -> Res<git2::Oid>> = Rc::new(move || {
+        head.head()
+            .and_then(|head| head.peel_to_commit())
+            .map(|commit| commit.id())
+            .map_err(|e| Error::LocalPr(format!("Couldn't read HEAD's commit: {e}")))
+    });
+    let shown = path.clone();
+    let (width, height) = term.size().map_err(Error::Term)?;
+    let mut screen = screen::pager::whole(
+        Arc::clone(&app.state.config),
+        Rc::clone(&repo),
+        app.render_params((width, height)),
+        path.clone(),
+        commit,
+        Rc::new(move |params, items| {
+            let error_style = Style::from(&params.config.style.error_msg);
+            let mut rows = uncommitted_note(&repo, &shown, error_style);
+            rows.extend(items);
+            rows
+        }),
+    )?;
     screen.file = Some(path);
     app.state.screens.push(screen);
     if let Some(line) = line {

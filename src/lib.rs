@@ -104,6 +104,12 @@ pub fn run(config: Arc<Config>, args: &cli::Args, term: &mut Term) -> Res<i32> {
         config_migrate::print()?;
         return Ok(0);
     }
+    let reviewing = args.agent_instructions
+        || args.pr_state_machine_diagram.is_some()
+        || matches!(args.command, Some(cli::Commands::Review { .. }));
+    if reviewing && !config.general.experimental {
+        return Err(Error::LocalPr(config::NOT_EXPERIMENTAL.to_owned()));
+    }
     if args.agent_instructions {
         print!("{}", review::AGENT_INSTRUCTIONS);
         return Ok(0);

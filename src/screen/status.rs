@@ -103,7 +103,12 @@ pub(crate) fn create(
             } else {
                 branch_status_items(&repo, &status.branch_status, &config)?.into_iter()
             }
-            .chain(pr_items(&repo, status.branch_status.local.as_deref()))
+            // A local PR is an experimental feature's.
+            .chain(
+                pr_items(&repo, status.branch_status.local.as_deref())
+                    .into_iter()
+                    .filter(|_| config.general.experimental),
+            )
             .chain(if untracked.is_empty() {
                 vec![]
             } else {

@@ -697,10 +697,13 @@ fn build(file: Figment, git: Figment) -> Res<Config> {
     if let Some(feature_keys) = users_feature_keys(&git)?.or(users_feature_keys(&file)?) {
         general.diff_renderer.feature_keys = feature_keys;
     }
-    let bindings = Bindings::try_from(bindings_config.menus)?
-        .set_by_user(&default_bindings.menus, |path| {
-            users(&format!("bindings.{path}"))
-        });
+    let mut menus = bindings_config.menus;
+    if !general.experimental {
+        unbind_experimental(&mut menus);
+    }
+    let bindings = Bindings::try_from(menus)?.set_by_user(&default_bindings.menus, |path| {
+        users(&format!("bindings.{path}"))
+    });
     let picker_bindings = PickerBindings::try_from(bindings_config.picker)?;
     check_feature_keys(&general.diff_renderer.feature_keys, &bindings)?;
 
@@ -754,6 +757,42 @@ pub fn config_path() -> PathBuf {
 #[cfg(test)]
 pub(crate) const TEST_SEARCH_HIGHLIGHT_BG: Color = Color::LightYellow;
 
+/// What is said of a command of an experimental feature, while they are off.
+pub(crate) const NOT_EXPERIMENTAL: &str =
+    "This is experimental: set experimental = true in git config's [delta] section to use it";
+
+/// The operations of experimental features (see [`GeneralConfig::experimental`]): code review,
+/// and messages to agents. `.`, opening a file whole, is not one, though only with them are its
+/// lines commented on.
+const EXPERIMENTAL_OPS: [Op; 6] = [
+    Op::OpenMenu(Menu::Pr),
+    Op::ToggleViewed,
+    Op::ShowOnGithub,
+    Op::WriteComment,
+    Op::ToggleLocalOnly,
+    Op::MessageAgent,
+];
+
+/// The settings of experimental features, by their names in git config.
+pub(crate) const EXPERIMENTAL_SETTINGS: [&str; 3] =
+    ["experimental", "send-message-command", "pr-summary-style"];
+
+/// Whether `op`, in `menu`, is an experimental feature's (see [`EXPERIMENTAL_OPS`]): the PR menu's
+/// are too.
+pub(crate) fn is_experimental(menu: &str, op: &str) -> bool {
+    // As git config writes them too, with dashes.
+    let (menu, op) = (menu.replace('-', "_"), op.replace('-', "_"));
+    menu == Menu::Pr.as_ref() || EXPERIMENTAL_OPS.iter().any(|o| o.config_name() == op)
+}
+
+/// `menus` without the bindings of experimental features.
+fn unbind_experimental(menus: &mut BTreeMap<Menu, BTreeMap<Op, Vec<String>>>) {
+    menus.retain(|menu, _| *menu != Menu::Pr);
+    for ops in menus.values_mut() {
+        ops.retain(|op, _| !EXPERIMENTAL_OPS.contains(op));
+    }
+}
+
 /// The tests' config, with experimental features on.
 #[cfg(test)]
 pub(crate) fn init_test_config() -> Res<Config> {
@@ -785,10 +824,14 @@ pub(crate) fn init_test_config_with(experimental: bool) -> Res<Config> {
         mods: None,
     };
 
+    let mut menus = bindings_config.menus;
+    if !experimental {
+        unbind_experimental(&mut menus);
+    }
     Ok(Config {
         general,
         style,
-        bindings: Bindings::try_from(bindings_config.menus).unwrap(),
+        bindings: Bindings::try_from(menus).unwrap(),
         picker_bindings: PickerBindings::try_from(bindings_config.picker).unwrap(),
         file: Figment::new(),
     })
