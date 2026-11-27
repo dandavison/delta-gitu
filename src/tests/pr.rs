@@ -2918,3 +2918,37 @@ fn e_on_someone_elses_comment_says_it_cant_be_edited() {
         "{screen}"
     );
 }
+
+/// Once sync has created the PR on GitHub, the PR on screen is that PR: `o` opens it.
+#[test]
+fn o_on_the_summary_after_sync_created_the_pr_opens_it() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    *github.has_pr.borrow_mut() = false;
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>Osy"));
+    assert_eq!(github.created.borrow().len(), 1, "{}", ctx.redact_buffer());
+
+    ctx.update(&mut app, keys("ggo"));
+
+    assert_eq!(
+        *github.opened.borrow(),
+        vec![PR_URL.to_owned()],
+        "{}",
+        ctx.redact_buffer()
+    );
+}
+
+/// The PR's number, as `#7`, links to it on GitHub, atop its screen and on the status screen.
+#[test]
+fn the_prs_number_links_to_it() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+    assert_eq!(cell(&ctx, "#7", '#').link.as_deref(), Some(PR_URL));
+
+    ctx.update(&mut app, keys("q"));
+    assert_eq!(cell(&ctx, "#7", '#').link.as_deref(), Some(PR_URL));
+}
