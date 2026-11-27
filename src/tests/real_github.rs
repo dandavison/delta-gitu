@@ -350,6 +350,11 @@ impl RealPr {
     }
 
     /// The one thread of the local PR, as `review show --format json` gives it.
+    /// Bring in what the PR's author pushed, as sync requires before it posts.
+    fn pull(&self) {
+        run(&self.dir, &["git", "pull", "-q", "--ff-only"]);
+    }
+
     fn only_local_thread(&self) -> serde_json::Value {
         let json = self.json();
         let threads = json["threads"].as_array().unwrap();
@@ -953,6 +958,7 @@ fn a_draft_thread_whose_line_has_gone_is_posted_as_a_file_comment() {
     // The author changes line 5 on GitHub.
     let lines = std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap();
     pr.author_pushes("lines.txt", &lines.replace("line five\n", "line FIVE\n"));
+    pr.pull();
 
     // The PR changed since the draft was written: nothing is posted, and the draft, whose line
     // has gone, is now on its file, for the user to see.
@@ -988,6 +994,7 @@ fn a_draft_written_before_the_pr_changed_is_moved_and_posted_only_at_the_next_sy
     // The author adds a line above it on GitHub.
     let lines = std::fs::read_to_string(pr.dir.join("lines.txt")).unwrap();
     pr.author_pushes("lines.txt", &format!("line 0\n{lines}"));
+    pr.pull();
 
     let error = pr.review(&["sync"], "").unwrap_err().to_string();
 
@@ -1008,7 +1015,7 @@ fn a_draft_written_before_the_pr_changed_is_moved_and_posted_only_at_the_next_sy
 // Sync deals with comments, never with the PR's code: it doesn't push.
 
 /// A branch with commits GitHub's PR doesn't have is not pushed by sync, which posts nothing and
-/// says to push them first.
+/// says how to push them.
 #[test]
 #[ignore = "against GitHub itself: run with cargo test-github"]
 fn syncing_with_commits_github_doesnt_have_refuses_and_pushes_nothing() {
@@ -1023,7 +1030,8 @@ fn syncing_with_commits_github_doesnt_have_refuses_and_pushes_nothing() {
 
     let error = pr.review(&["sync"], "").unwrap_err().to_string();
 
-    assert!(error.contains("push them first"), "{error}");
+    assert!(error.contains("doesn't"), "{error}");
+    assert!(error.contains("git push origin"), "{error}");
     assert_eq!(pr.remote_head(), before);
     assert!(pr.pending_comments().is_empty());
 }
