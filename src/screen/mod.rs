@@ -867,8 +867,12 @@ impl Screen {
             .min_by_key(|&item_i| item_i.abs_diff(cursor))
     }
 
+    /// Fit the screen to `w` by `h`, scrolling to keep the cursor in view: a smaller terminal, as
+    /// when tmux zooms a pane and back, doesn't move the cursor.
     pub(crate) fn resize(&mut self, w: u16, h: u16) -> Res<()> {
         self.fit_to(w, h);
+        self.scroll_fit_end();
+        self.scroll_fit_start();
         self.update_cursor();
         Ok(())
     }
