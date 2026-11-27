@@ -259,3 +259,19 @@ pub enum ReviewCommand {
         base: Option<String>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Args;
+    use clap::Parser;
+
+    /// `--log` writes to `delta-tui.log`, and `--help` says so.
+    #[test]
+    fn the_log_is_delta_tui_log() {
+        assert_eq!(crate::LOG_FILE_NAME, "delta-tui.log");
+        let help = Args::try_parse_from(["gitu", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("'delta-tui.log'"), "{help}");
+    }
+}
