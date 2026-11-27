@@ -2877,3 +2877,22 @@ fn os_posting_only_a_reply_says_so() {
         "{screen}"
     );
 }
+
+/// Resizing the terminal, as tmux does when a pane is zoomed and unzoomed, leaves the cursor on the
+/// comment it was on.
+#[test]
+fn resizing_keeps_the_cursor_on_its_comment() {
+    let mut ctx = setup_clone!();
+    let mut app = with_two_threads(&mut ctx);
+    ctx.update(&mut app, keys("/a reply about drafts<enter>"));
+
+    for size in [(100, 30), (80, 20)] {
+        ctx.resize(&mut app, &[size]);
+        ctx.update(&mut app, vec![]);
+        assert!(
+            cursor_rows(&ctx).contains("a reply about drafts"),
+            "at {size:?}:\n{}",
+            ctx.redact_buffer()
+        );
+    }
+}
