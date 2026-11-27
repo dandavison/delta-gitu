@@ -2123,7 +2123,7 @@ fn drafts_kept(head: &str, bases: &[String]) -> String {
     }
 }
 
-/// An error for a case gitu doesn't handle yet.
+/// An error for a case delta tui doesn't handle yet.
 fn not_handled(case: &str) -> Error {
     Error::LocalPr(format!("Not handled yet: {case}"))
 }
@@ -2553,16 +2553,8 @@ pub(crate) struct Message {
     pub version: Option<Version>,
 }
 
-/// The version of [`PrFile`] this gitu writes. Version 1 had a draft review for each author,
-/// an agent's among them; version 2 has one, the reviewer's (see [`merge_drafts`]). Version 3
-/// records the GitHub PR the local PR is linked to, which a gitu writing version 2 would drop.
-/// Before version 4, a draft review recorded the pending review on GitHub that posting it
-/// started, which posting no longer needs. Version 5 records a thread's subject and the first of
-/// its lines, which a gitu writing version 4 would drop. Version 6 records when posting a draft
-/// comment began, which a gitu writing version 5 would drop. Version 7 has local-only comments,
-/// in no review, which a gitu writing version 6 can't read. Version 8 records messages to agents,
-/// which a gitu writing version 7 would drop.
-const VERSION: u32 = 8;
+/// The version of [`PrFile`] that delta tui writes.
+const VERSION: u32 = 1;
 
 /// What is recorded about a local PR, as JSON.
 #[derive(Serialize, Deserialize)]
@@ -2665,9 +2657,7 @@ enum ReviewState {
     /// The rest are copies of reviews on GitHub, as last fetched, which only fetching changes.
     /// Pending is the user's own draft review on GitHub, which only they see.
     Pending,
-    /// Commented, Approved or Changes requested on GitHub. The first gitu with local PRs called
-    /// a review posted to GitHub published; a fetch replaces it.
-    #[serde(alias = "published")]
+    /// Commented, Approved or Changes requested on GitHub.
     Submitted,
     Dismissed,
 }
@@ -2719,7 +2709,7 @@ struct StoredComment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
     /// For a draft comment, when an attempt to post it began that may not have finished: GitHub
-    /// may have added it though gitu never heard back.
+    /// may have added it though delta tui never heard back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     posting_since: Option<chrono::DateTime<chrono::FixedOffset>>,
     /// For a copy of a comment on GitHub, the reactions to it there.
@@ -2747,10 +2737,10 @@ struct Anchor {
     after: Vec<String>,
 }
 
-/// The file a local PR is recorded in: `gitu/review/<head>...<base>.json` in the repository's
+/// The file a local PR is recorded in: `delta/review/<head>...<base>.json` in the repository's
 /// shared git directory (`git rev-parse --git-common-dir`), which all its worktrees use. Each
 /// change is made while holding a lock file beside it, and is written to a temporary file that
-/// then replaces it, so that gitus in several worktrees can write to it at once.
+/// then replaces it, so that delta tuis in several worktrees can write to it at once.
 struct Store {
     path: PathBuf,
     head: String,
@@ -2759,7 +2749,7 @@ struct Store {
     reviewer: String,
 }
 
-/// How long to wait for another gitu to finish writing.
+/// How long to wait for another delta tui to finish writing.
 const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Store {
@@ -2779,7 +2769,7 @@ impl Store {
     }
 
     fn dir(common_dir: &Path) -> PathBuf {
-        common_dir.join("gitu").join("review")
+        common_dir.join("delta").join("review")
     }
 
     /// The bases of the local PRs of the branch `head` recorded in `common_dir`, sorted.
@@ -2838,23 +2828,13 @@ impl Store {
             }
             Err(e) => return Err(self.error("read", e)),
         };
-        let mut file: PrFile = serde_json::from_str(&text)
+        let file: PrFile = serde_json::from_str(&text)
             .map_err(|e| Error::LocalPr(format!("Couldn't read {}: {e}", self.path.display())))?;
         if file.version > VERSION {
             return Err(Error::LocalPr(format!(
-                "Couldn't read {}: it was written by a newer gitu",
+                "Couldn't read {}: it was written by a newer delta",
                 self.path.display()
             )));
-        }
-        if file.version < 2 {
-            merge_drafts(&mut file, &self.reviewer);
-        }
-        if file.version < 4 {
-            for review in &mut file.reviews {
-                if review.state == ReviewState::Draft {
-                    review.github = None;
-                }
-            }
         }
         let mut drafts = file
             .reviews
@@ -2892,41 +2872,6 @@ impl Store {
     }
 }
 
-/// Make version 1's draft reviews, one for each author, into one, the reviewer's: the other
-/// authors' comments move into it, labelled with their names as agents.
-fn merge_drafts(file: &mut PrFile, reviewer: &str) {
-    let drafts: Vec<&StoredReview> = file
-        .reviews
-        .iter()
-        .filter(|r| r.state == ReviewState::Draft)
-        .collect();
-    let Some(kept) = drafts
-        .iter()
-        .find(|r| r.author == reviewer)
-        .or(drafts.first())
-        .map(|r| r.id.clone())
-    else {
-        return;
-    };
-    let merged: Vec<String> = drafts.iter().map(|r| r.id.clone()).collect();
-    for comment in file.threads.iter_mut().flat_map(|t| &mut t.comments) {
-        if !comment.review.as_ref().is_some_and(|r| merged.contains(r)) {
-            continue;
-        }
-        comment.review = Some(kept.clone());
-        if comment.author != reviewer {
-            comment.agent = Some(std::mem::replace(&mut comment.author, reviewer.to_owned()));
-        }
-    }
-    file.reviews
-        .retain(|r| r.id == kept || !merged.contains(&r.id));
-    for review in &mut file.reviews {
-        if review.id == kept {
-            review.author = reviewer.to_owned();
-        }
-    }
-}
-
 /// A lock file, held until dropped.
 struct Lock(PathBuf);
 
@@ -2944,7 +2889,7 @@ impl Lock {
                     if start.elapsed() > LOCK_TIMEOUT {
                         return Err(Error::LocalPr(format!(
                             "Couldn't write the review: {} has been there for over {}s. \
-                             Remove it if no gitu is writing the review",
+                             Remove it if no delta tui is writing the review",
                             path.display(),
                             LOCK_TIMEOUT.as_secs()
                         )));

@@ -191,7 +191,7 @@ impl App {
             .inspect_err(|e| log::warn!("Couldn't initialize clipboard: {e}"))
             .ok();
         let read_only = config.general.read_only.is_on(&repo);
-        let prompt = prompt::Prompt::with_history(repo.path().join("gitu"), read_only);
+        let prompt = prompt::Prompt::with_history(repo.path().join("delta"), read_only);
 
         let github = Rc::new(crate::review::github::Gh {
             workdir: repo.workdir().unwrap_or(repo.path()).to_path_buf(),

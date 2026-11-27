@@ -2726,44 +2726,6 @@ fn syncing_posts_an_agents_draft_comments_too() {
     assert_eq!(bodies, ["hello", "mine"]);
 }
 
-/// A store written by a gitu that kept a draft review for each author has one draft review once
-/// read: the other authors' comments are in it, labelled with their names.
-#[test]
-fn a_draft_review_by_another_author_in_an_old_store_becomes_part_of_mine() {
-    let mut ctx = setup_clone!();
-    setup(&mut ctx);
-    let mut app = init_app(&mut ctx);
-    ctx.update(&mut app, keys("OO/new<enter>ihello<ctrl+s>"));
-    let thread = review_file(&ctx)["threads"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    review_cli_with_input(&ctx.dir, &["reply", &thread], "Agreed.\n").unwrap();
-    // As the gitu before labels wrote it: the reply in claude's own draft review.
-    let mut old = review_file(&ctx);
-    old["version"] = 1.into();
-    let mut claudes = old["reviews"][0].clone();
-    claudes["id"] = "claudes".into();
-    claudes["author"] = "claude".into();
-    old["reviews"].as_array_mut().unwrap().push(claudes);
-    let reply = &mut old["threads"][0]["comments"][1];
-    reply["review"] = "claudes".into();
-    reply["author"] = "claude".into();
-    let path = review_file_path(&ctx);
-    fs::write(&path, serde_json::to_string_pretty(&old).unwrap()).unwrap();
-
-    let json: serde_json::Value =
-        serde_json::from_str(&review_cli(&ctx.dir, &["show", "--format", "json"])).unwrap();
-
-    let reviews = json["reviews"].as_array().unwrap();
-    assert_eq!(reviews.len(), 1, "{json}");
-    assert_eq!(reviews[0]["author"], "CI", "{json}");
-    let comments = json["threads"][0]["comments"].as_array().unwrap();
-    assert_eq!(comments[1]["review"], reviews[0]["id"], "{json}");
-    assert_eq!(comments[1]["author"], "CI", "{json}");
-    assert_eq!(comments[1]["agent"], "claude", "{json}");
-}
-
 /// With `refresh_on_file_change`, an agent's reply written while the PR is open
 /// shows without `g r`.
 #[test]
