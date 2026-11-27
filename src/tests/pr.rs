@@ -2692,3 +2692,23 @@ fn changing_the_context_keeps_the_cursor_on_its_comment() {
         ctx.redact_buffer()
     );
 }
+
+/// From a screen with no PR, `O t` opens the current branch's PR, as `O O` does, and shows its
+/// threads; the one chosen is then shown in the PR's diff.
+#[test]
+fn o_t_with_no_pr_on_screen_opens_the_current_branchs() {
+    let mut ctx = setup_clone!();
+    let mut app = with_two_threads(&mut ctx);
+    ctx.update(&mut app, keys("q"));
+    assert!(!ctx.redact_buffer().contains("added: added.txt"));
+
+    ctx.update(&mut app, keys("Ot"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("on old"), "{screen}");
+    assert!(!screen.contains("added: added.txt"), "{screen}");
+
+    ctx.update(&mut app, keys("old<enter>"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("added: added.txt"), "{screen}");
+    assert!(cursor_rows(&ctx).contains("on old"), "{screen}");
+}
