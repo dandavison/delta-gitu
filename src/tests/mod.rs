@@ -30,6 +30,7 @@ mod discard;
 mod editor;
 #[cfg(unix)]
 mod editor_failure;
+mod experimental;
 mod fetch;
 mod file_names;
 mod file_view;

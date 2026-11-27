@@ -5,7 +5,12 @@ use super::*;
 /// `ctx`'s config resolved from git config holding `gitconfig`, as delta would resolve it.
 pub(super) fn with_delta_config(mut ctx: TestContext, gitconfig: &str) -> TestContext {
     let path = ctx.dir.join(".git").join("delta.gitconfig");
-    fs::write(&path, gitconfig).unwrap();
+    // Experimental features on, as in the tests' own config.
+    fs::write(
+        &path,
+        format!("[delta]\n\texperimental = true\n{gitconfig}"),
+    )
+    .unwrap();
     crate::config::told_about(ctx.config(), path);
     let dir = ctx.dir.clone();
     let resolved = ctx.config().resolved(&dir, None).unwrap();

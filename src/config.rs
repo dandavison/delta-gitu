@@ -110,6 +110,9 @@ pub struct GeneralConfig {
     /// `git log -p`, and a commit opened from the log.
     #[serde(default)]
     pub start_folded: bool,
+    /// Whether features still being built are on: code review, and messages to agents.
+    #[serde(default)]
+    pub experimental: bool,
     /// Whether gitu leaves the repository and git config as it finds them.
     #[serde(default)]
     pub read_only: ReadOnly,
@@ -751,8 +754,15 @@ pub fn config_path() -> PathBuf {
 #[cfg(test)]
 pub(crate) const TEST_SEARCH_HIGHLIGHT_BG: Color = Color::LightYellow;
 
+/// The tests' config, with experimental features on.
 #[cfg(test)]
 pub(crate) fn init_test_config() -> Res<Config> {
+    init_test_config_with(true)
+}
+
+/// The tests' config, with experimental features on or off.
+#[cfg(test)]
+pub(crate) fn init_test_config_with(experimental: bool) -> Res<Config> {
     let FigmentConfig {
         mut general,
         mut style,
@@ -763,6 +773,7 @@ pub(crate) fn init_test_config() -> Res<Config> {
         .map_err(Box::new)
         .map_err(Error::Config)?;
 
+    general.experimental = experimental;
     general.always_show_help.enabled = false;
     general.refresh_on_file_change.enabled = false;
     general.status_cursor_on_changes = false;
