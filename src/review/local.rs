@@ -3028,7 +3028,7 @@ impl Lock {
                 .open(path)
             {
                 Ok(_) => return Ok(Self(path.to_owned())),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists || being_removed(&e) => {
                     if start.elapsed() > LOCK_TIMEOUT {
                         return Err(Error::LocalPr(format!(
                             "Couldn't write the review: {} has been there for over {}s. \
@@ -3048,6 +3048,12 @@ impl Lock {
             }
         }
     }
+}
+
+/// Whether `e`, from creating a lock file, is Windows refusing to create it while another writer
+/// is still removing it, which it says is access denied: the lock is held until it is removed.
+fn being_removed(e: &io::Error) -> bool {
+    cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied
 }
 
 impl Drop for Lock {
