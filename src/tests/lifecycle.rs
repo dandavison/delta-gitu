@@ -440,9 +440,10 @@ impl World {
             let url = url::Url::from_file_path(&ctx.remote_dir)
                 .unwrap()
                 .to_string();
+            // Relative, as git can't clone into the `\\?\` paths Windows canonicalizes to.
             run(
                 ctx.dir.parent().unwrap(),
-                &["git", "clone", &url, dir.to_str().unwrap()],
+                &["git", "clone", &url, &format!("{store:?}")],
             );
             run(&dir, &["git", "config", "user.name", user]);
             run(&dir, &["git", "config", "user.email", "ci@example.com"]);

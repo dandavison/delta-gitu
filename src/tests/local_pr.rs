@@ -132,7 +132,8 @@ fn ticks_are_shared_by_the_repositorys_worktrees() {
             "git",
             "worktree",
             "add",
-            worktree.to_str().unwrap(),
+            // Relative, as git can't make a worktree under the `\\?\` paths Windows canonicalizes to.
+            "../feature-worktree",
             "feature",
         ],
     );
@@ -291,7 +292,8 @@ fn comments_are_shared_by_the_repositorys_worktrees() {
             "git",
             "worktree",
             "add",
-            worktree.to_str().unwrap(),
+            // Relative, as git can't make a worktree under the `\\?\` paths Windows canonicalizes to.
+            "../feature-worktree",
             "feature",
         ],
     );
@@ -2481,7 +2483,8 @@ fn the_pr_summary_in_a_linked_worktree_names_the_repository() {
             "git",
             "worktree",
             "add",
-            worktree.to_str().unwrap(),
+            // Relative, as git can't make a worktree under the `\\?\` paths Windows canonicalizes to.
+            "../elsewhere",
             "feature",
         ],
     );
@@ -3190,7 +3193,8 @@ fn an_agent_in_another_worktree_listens_with_head() {
             "git",
             "worktree",
             "add",
-            worktree.to_str().unwrap(),
+            // Relative, as git can't make a worktree under the `\\?\` paths Windows canonicalizes to.
+            "../feature-worktree",
             "feature",
         ],
     );
