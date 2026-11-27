@@ -247,6 +247,14 @@ pub(crate) fn layout_span<'a>(layout: &mut UiTree<'a>, span: (Cow<'a, str>, Styl
         layout.leaf(Span(span.0, span.1));
         return;
     }
+    // So is a link inside the span: only the text either side of it is split into words.
+    if let Some((before, link, after)) = split_link(&span.0) {
+        let (before, link, after) = (before.to_owned(), link.to_owned(), after.to_owned());
+        layout_span(layout, (before.into(), span.1));
+        layout.leaf(Span(link.into(), span.1));
+        layout_span(layout, (after.into(), span.1));
+        return;
+    }
 
     match span.0 {
         Cow::Borrowed(s) => {
@@ -276,6 +284,16 @@ pub(crate) fn display_text(text: &str) -> &str {
 
 pub(crate) fn osc8_hyperlink(text: &str, uri: &str) -> String {
     format!("\x1b]8;;{uri}\x1b\\{text}\x1b]8;;\x1b\\")
+}
+
+/// `text` as the text before its first OSC-8 link, the link, and the text after it, if it has one.
+fn split_link(text: &str) -> Option<(&str, &str, &str)> {
+    const OPEN: &str = "\x1b]8;;";
+    const CLOSE: &str = "\x1b]8;;\x1b\\";
+    let start = text.find(OPEN)?;
+    let opened = start + text[start..].find("\x1b\\")? + 2;
+    let end = opened + text[opened..].find(CLOSE)? + CLOSE.len();
+    Some((&text[..start], &text[start..end], &text[end..]))
 }
 
 fn osc8_parts(text: &str) -> Option<(&str, &str)> {

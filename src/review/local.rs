@@ -264,9 +264,23 @@ impl LocalBackend {
     }
 
     /// Ask GitHub again for the PR the local PR is linked to, as GitHub may have it at other
-    /// commits since, as after a push.
+    /// commits since, as after a push; or, if it is linked to none, whether GitHub has one for
+    /// the branch into the same base now, and link it to that.
     fn relink(&self) -> Res<()> {
+        if self.is_files() {
+            return Ok(());
+        }
         let Some(linked) = self.linked() else {
+            // GitHub may have a PR for the branch since, as once sync creates it.
+            if let Some(pr) = self.github.pr_for_branch(&self.head)?
+                && pr.base_ref == self.base
+            {
+                self.record_link(&pr)?;
+                *self.linked.borrow_mut() = Some(GitHubBackend {
+                    github: Rc::clone(&self.github),
+                    pr,
+                });
+            }
             return Ok(());
         };
         let number = linked.pr.number;
@@ -2209,7 +2223,7 @@ impl PrSummary {
             format!("PR into {}", self.base),
         ];
         parts.push(match &self.link {
-            Some(link) => format!("#{}", link.number),
+            Some(link) => crate::ui::osc8_hyperlink(&format!("#{}", link.number), &link.url),
             None => "not on GitHub".to_owned(),
         });
         parts.push(count(self.commits, "commit"));
