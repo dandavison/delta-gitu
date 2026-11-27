@@ -2429,9 +2429,10 @@ fn a_comment_on_a_line_outside_githubs_diff_is_local_only() {
 
     let screen = ctx.redact_buffer();
     assert!(
-        screen.contains("local-only: GitHub can't place a comment on long.txt:15"),
+        screen.contains("local-only: comments must be within 3 lines of a change"),
         "{screen}"
     );
+    assert!(screen.contains("(local-only, unpushable"), "{screen}");
     let file: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(feature_review_file(&ctx)).unwrap()).unwrap();
     let comment = &file["threads"][0]["comments"][0];
@@ -2473,7 +2474,7 @@ fn p_does_not_put_a_comment_github_cant_place_in_the_draft_review() {
 
     let screen = ctx.redact_buffer();
     assert!(
-        screen.contains("GitHub can't place a comment on long.txt:15"),
+        screen.contains("comments must be within 3 lines of a change"),
         "{screen}"
     );
     let file: serde_json::Value =
@@ -2484,10 +2485,10 @@ fn p_does_not_put_a_comment_github_cant_place_in_the_draft_review() {
     );
 }
 
-/// Sync posts nothing while a draft thread is on a line GitHub can't place, as one can come to be
-/// when the code changes, and says which.
+/// A draft thread on a line GitHub can't take a comment on, as one can come to be when the code
+/// changes, is kept local-only by sync, which posts the rest and says so.
 #[test]
-fn os_posts_nothing_while_a_draft_thread_is_outside_githubs_diff() {
+fn os_keeps_a_draft_thread_github_cant_take_local_only_and_posts_the_rest() {
     let mut ctx = setup_clone!();
     let github = setup_wide_context(&ctx);
     let mut app = init_app(&mut ctx, &github);
@@ -2506,10 +2507,16 @@ fn os_posts_nothing_while_a_draft_thread_is_outside_githubs_diff() {
 
     ctx.update(&mut app, keys("Os"));
 
-    assert_eq!(*github.posted.borrow(), vec![]);
-    let screen = ctx.redact_buffer();
-    assert!(screen.contains("Posted nothing"), "{screen}");
-    assert!(screen.contains("long.txt:15"), "{screen}");
+    assert_eq!(
+        *github.posted.borrow(),
+        vec![("R1 long.txt:(New, 11)".to_owned(), "two".to_owned())]
+    );
+    let screen = screen_text(&ctx);
+    assert!(screen.contains("1 thread kept local-only"), "{screen}");
+    assert!(
+        screen.contains("local-only, unpushable: comments must be within 3 lines of a change"),
+        "{screen}"
+    );
 }
 
 /// The rows the cursor is on, which are all of a thread's when it is on one.
