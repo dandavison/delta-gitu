@@ -1,4 +1,4 @@
-use std::{ops::Deref, str};
+use std::str;
 
 use git2::{Branch, Remote, Repository};
 
@@ -6,27 +6,12 @@ use crate::{Res, git};
 
 use super::{Error, Utf8Error};
 
-pub(crate) fn get_upstream(repo: &Repository) -> Res<Option<Branch<'_>>> {
-    get_branch_upstream(&git::get_current_branch(repo)?)
-}
-
 pub(crate) fn get_branch_upstream<'repo>(branch: &Branch<'repo>) -> Res<Option<Branch<'repo>>> {
     match branch.upstream() {
         Ok(v) => Ok(Some(v)),
         Err(e) if e.class() == git2::ErrorClass::Config => Ok(None),
         Err(e) => Err(Error::GetCurrentBranchUpstream(e)),
     }
-}
-
-pub(crate) fn get_remote_name(repo: &Repository, upstream: &Branch) -> Res<String> {
-    let branch_full = String::from_utf8_lossy(upstream.get().name_bytes());
-
-    Ok(String::from_utf8_lossy(
-        repo.branch_remote_name(&branch_full)
-            .map_err(Error::GetRemote)?
-            .deref(),
-    )
-    .into_owned())
 }
 
 /// If the branch has an upstream, returns the remote name and branch name in that order.
@@ -44,41 +29,56 @@ pub(crate) fn get_remote_name(repo: &Repository, upstream: &Branch) -> Res<Strin
 /// git … pull . refs/heads/main
 /// git … rebase --autostash main
 pub(crate) fn get_upstream_components(repo: &Repository) -> Res<Option<(String, String)>> {
-    let Some(upstream) = get_upstream(repo)? else {
-        return Ok(None);
+    // From git config, as git push and pull take it, rather than from the remote-tracking branch,
+    // which is gone once the branch is deleted on the remote.
+    let head = git::get_head_name(repo)?;
+    let config_error = |e: git2::Error| Error::GetCurrentBranchUpstream(e);
+    let remote = match repo.branch_upstream_remote(&head) {
+        Ok(remote) => remote,
+        Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
+        Err(e) => return Err(config_error(e)),
     };
-
-    let branch = String::from_utf8_lossy(upstream.get().shorthand_bytes()).into_owned();
-
-    if upstream.get().is_remote() {
-        let remote_name = get_remote_name(repo, &upstream)?;
-        let remote_prefix = format!("{remote_name}/");
-        Ok(Some((remote_name, branch.replace(&remote_prefix, ""))))
-    } else {
-        Ok(Some((".".into(), branch)))
-    }
+    let merge = repo.branch_upstream_merge(&head).map_err(config_error)?;
+    let remote = String::from_utf8_lossy(&remote).into_owned();
+    let merge = String::from_utf8_lossy(&merge).into_owned();
+    let branch = merge
+        .strip_prefix("refs/heads/")
+        .unwrap_or(&merge)
+        .to_owned();
+    Ok(Some((remote, branch)))
 }
 
+/// The current branch's upstream as git shows it, such as `origin/main`, or `main` for a local
+/// branch.
 pub(crate) fn get_upstream_shortname(repo: &Repository) -> Res<Option<String>> {
-    let Some(upstream) = get_upstream(repo)? else {
-        return Ok(None);
+    Ok(
+        get_upstream_components(repo)?.map(|(remote, branch)| match remote.as_str() {
+            "." => branch,
+            _ => format!("{remote}/{branch}"),
+        }),
+    )
+}
+
+/// Whether the current branch's upstream is a remote branch that is gone: one that its remote
+/// had, but no longer has, as the last fetch found.
+pub(crate) fn is_upstream_gone(repo: &Repository) -> Res<bool> {
+    let Some((remote, branch)) = get_upstream_components(repo)? else {
+        return Ok(false);
     };
-    Ok(Some(
-        String::from_utf8_lossy(upstream.get().shorthand_bytes()).into_owned(),
-    ))
+    if remote == "." {
+        return Ok(false);
+    }
+    match repo.find_reference(&format!("refs/remotes/{remote}/{branch}")) {
+        Ok(_) => Ok(false),
+        Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(true),
+        Err(e) => Err(Error::GetCurrentBranchUpstream(e)),
+    }
 }
 
 pub(crate) fn get_upstream_remote(repo: &Repository) -> Res<Option<String>> {
-    let Some(upstream) = get_upstream(repo)? else {
-        return Ok(None);
-    };
-
-    if upstream.get().is_remote() {
-        let remote_name = get_remote_name(repo, &upstream)?;
-        Ok(Some(remote_name))
-    } else {
-        Ok(None)
-    }
+    Ok(get_upstream_components(repo)?
+        .map(|(remote, _)| remote)
+        .filter(|remote| remote != "."))
 }
 
 pub(crate) fn get_push_remote(repo: &Repository) -> Res<Option<String>> {

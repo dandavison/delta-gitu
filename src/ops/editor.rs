@@ -7,7 +7,7 @@ use crate::{
     error::Error,
     item_data::ItemData,
     menu::PendingMenu,
-    picker::{Picked, PickerData, PickerItem, PickerState},
+    picker::{Picked, PickerData, PickerItem, PickerState, PickerStatus},
     screen::NavMode,
     term::Term,
 };
@@ -62,7 +62,12 @@ impl OpTrait for FoldOrBack {
             if menu != app.base_menu() {
                 return Ok(());
             }
-            if !app.screen_mut().fold_unfolded_here()? && app.state.screens.len() > 1 {
+            // A PR's screen is not left by going back, which would lose where the user is in
+            // it: q closes it.
+            if !app.screen_mut().fold_unfolded_here()?
+                && app.state.screens.len() > 1
+                && app.screen().pr.is_none()
+            {
                 app.state.screens.pop();
                 app.screen_mut().come_back()?;
             }
@@ -72,7 +77,8 @@ impl OpTrait for FoldOrBack {
     }
 
     fn display(&self, state: &State) -> String {
-        if state.screens.last().unwrap().has_unfolded_here() {
+        let screen = state.screens.last().unwrap();
+        if screen.has_unfolded_here() || screen.pr.is_some() {
             "Fold".into()
         } else {
             "Back".into()
@@ -113,7 +119,7 @@ pub(crate) struct Refresh;
 impl OpTrait for Refresh {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
         Some(Rc::new(|app, _term| {
-            super::pr::reread_review(app)?;
+            super::pr::reread_pr(app)?;
             app.update_screens()
         }))
     }
@@ -166,13 +172,14 @@ impl OpTrait for ToggleArg {
                 let arg = app.prompt(
                     term,
                     &PromptParams {
-                        prompt: display,
+                        prompt: display.into(),
                         create_default_value: Box::new(move |_| default.clone()),
                         hide_menu: false,
                         prefill: false,
                         history: None,
                         bare: false,
                         on_edit: None,
+                        on_key: None,
                     },
                 )?;
 
@@ -226,7 +233,7 @@ impl OpTrait for DiffContext {
             let answer = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "",
+                    prompt: "".into(),
                     create_default_value: Box::new(move |_| {
                         current.as_deref().map(|flag| match flag {
                             "-W" => "W".to_owned(),
@@ -238,6 +245,7 @@ impl OpTrait for DiffContext {
                     history: None,
                     bare: false,
                     on_edit: None,
+                    on_key: None,
                 },
             )?;
 
@@ -263,8 +271,8 @@ pub(crate) struct StepDiffContext(pub(crate) bool);
 impl OpTrait for StepDiffContext {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
         let wider = self.0;
-        Some(Rc::new(move |app: &mut App, _term: &mut Term| {
-            let lines = match app.state.context.as_deref() {
+        Some(Rc::new(move |app: &mut App, term: &mut Term| {
+            let from = match app.state.context.as_deref() {
                 Some("-W") => {
                     app.display_error("The context is the whole function; U sets a number");
                     return Ok(());
@@ -278,16 +286,21 @@ impl OpTrait for StepDiffContext {
                     .and_then(|config| config.get_i32("diff.context"))
                     .map_or(3, |lines| lines.max(0) as u32),
             };
-            let lines = if wider {
-                (lines + 1).next_power_of_two()
-            } else if lines <= 1 {
+            let to = if wider {
+                (from + 1).next_power_of_two()
+            } else if from <= 1 {
                 0
             } else {
-                // The largest power of two below `lines`.
-                1 << (u32::BITS - 1 - (lines - 1).leading_zeros())
+                // The largest power of two below `from`.
+                1 << (u32::BITS - 1 - (from - 1).leading_zeros())
             };
-            app.state.context = Some(Rc::from(format!("-U{lines}").as_str()));
-            app.rerender_screens()
+            let doing = if wider { "Widening" } else { "Narrowing" };
+            let said = format!("{doing} context: {from} -> {to}");
+            app.busy_with(term, said.clone());
+            app.state.context = Some(Rc::from(format!("-U{to}").as_str()));
+            app.rerender_screens()?;
+            app.display_info(said);
+            Ok(())
         }))
     }
 
@@ -316,7 +329,7 @@ impl OpTrait for EditGitCommand {
             let answer = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "",
+                    prompt: "".into(),
                     create_default_value: Box::new(move |_| Some(line.clone())),
                     prefill: true,
                     history: Some(crate::prompt::HistoryKind::GitCommand),
@@ -344,9 +357,10 @@ impl OpTrait for EditGitCommand {
     }
 }
 
-/// Limit the view to some of the files it covers, or drop some of them. Both
-/// are edits of the same command, and so of the same kind as [`EditGitCommand`]
-/// — this only saves writing the pathspec magic out.
+/// Limit the view to some of the files it covers, picked by fuzzy matching their names: the
+/// view shows the files the picker lists, or, with nothing typed, all of them. `&` again, in the
+/// picker, asks for patterns instead (see [`ask_for_patterns`]). Both are edits of the command,
+/// and so of the same kind as [`EditGitCommand`].
 pub(crate) struct FilePatterns;
 impl OpTrait for FilePatterns {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
@@ -356,33 +370,94 @@ impl OpTrait for FilePatterns {
                 return Ok(());
             };
 
-            let patterns = git.borrow().file_patterns().join(" ");
-            let answer = app.prompt(
-                term,
-                &PromptParams {
-                    prompt: "File filters",
-                    create_default_value: Box::new(move |_| Some(patterns.clone())),
-                    prefill: true,
-                    history: Some(crate::prompt::HistoryKind::FilePatterns),
-                    ..Default::default()
-                },
-            )?;
-
-            let patterns = match shell_words::split(&answer) {
-                Ok(patterns) => patterns,
-                Err(_) => {
-                    app.display_error(Error::EditedCommandQuotes.to_string());
-                    return Ok(());
+            let files = files_covered(app, &git.borrow())?;
+            let items = files
+                .into_iter()
+                .map(|file| PickerItem::new(file.clone(), PickerData::Item(file)))
+                .collect();
+            let picker = PickerState::new("Files", items, false).switched_by(Op::FilePatterns);
+            let picker = app.pick_listed(term, picker)?;
+            let typed = picker.pattern().to_owned();
+            match picker.status() {
+                PickerStatus::Done if typed.is_empty() => ask_for(app, &git, &[]),
+                PickerStatus::Done => {
+                    let patterns: Vec<String> = picker
+                        .filtered_items()
+                        .map(|(_, item)| crate::calling_process::including(item.data.display()))
+                        .collect();
+                    if patterns.is_empty() {
+                        app.display_error(format!("No file matches {typed}"));
+                        return Ok(());
+                    }
+                    ask_for(app, &git, &patterns)
                 }
-            };
-
-            ask_for(app, &git, &patterns)
+                PickerStatus::Switched => ask_for_patterns(app, term, &git, typed),
+                _ => Ok(()),
+            }
         }))
     }
 
     fn display(&self, _state: &State) -> String {
         "Files".into()
     }
+}
+
+/// Ask for the patterns of the files to show, in git's own language less the magic, starting from
+/// `typed`, or else from the view's patterns.
+fn ask_for_patterns(
+    app: &mut App,
+    term: &mut Term,
+    git: &Rc<RefCell<crate::calling_process::GitCommand>>,
+    typed: String,
+) -> Res<()> {
+    let patterns = match typed.is_empty() {
+        true => git.borrow().file_patterns().join(" "),
+        false => typed,
+    };
+    let answer = app.prompt(
+        term,
+        &PromptParams {
+            prompt: "File filters".into(),
+            create_default_value: Box::new(move |_| Some(patterns.clone())),
+            prefill: true,
+            history: Some(crate::prompt::HistoryKind::FilePatterns),
+            ..Default::default()
+        },
+    )?;
+
+    let patterns = match shell_words::split(&answer) {
+        Ok(patterns) => patterns,
+        Err(_) => {
+            app.display_error(Error::EditedCommandQuotes.to_string());
+            return Ok(());
+        }
+    };
+
+    ask_for(app, git, &patterns)
+}
+
+/// The files `git` covers, whatever paths it limits itself to, each once, in the order git names
+/// them.
+fn files_covered(app: &App, git: &crate::calling_process::GitCommand) -> Res<Vec<String>> {
+    let workdir = app.state.repo.workdir().ok_or(Error::NoRepoWorkdir)?;
+    let output = git
+        .listing_files()
+        .current_dir(workdir.join(git.prefix()))
+        .output()
+        .map_err(Error::GitDiff)?;
+    if !output.status.success() {
+        return Err(Error::GitDiff(std::io::Error::other(format!(
+            "couldn't list the files of the view: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))));
+    }
+    let names = String::from_utf8(output.stdout).map_err(Error::GitDiffUtf8)?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(names
+        .split('\0')
+        .filter(|name| !name.is_empty() && seen.insert(*name))
+        .map(str::to_owned)
+        .collect())
 }
 
 /// Drop the file whose header is under the cursor from the view, as if it were
@@ -426,7 +501,7 @@ fn ask_for(
 ) -> Res<()> {
     let asking_for = git.borrow().asking_for(patterns);
     app.state.prompt.remember(
-        crate::prompt::HistoryKind::GitCommand,
+        &crate::prompt::HistoryKind::GitCommand,
         &asking_for.line(app.state.context.as_deref()),
     )?;
     *git.borrow_mut() = asking_for;

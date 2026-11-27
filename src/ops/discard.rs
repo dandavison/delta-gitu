@@ -24,6 +24,10 @@ impl OpTrait for Discard {
                 super::refuse_patch_of_merge_conflict()
             }
             ItemData::Untracked(file) => clean_file(file.clone()),
+            ItemData::ReviewThread { .. } | ItemData::ReviewComment { .. } => {
+                let (thread_id, comment_id) = super::pr::comment_of(target)?;
+                super::pr::delete_comment(thread_id, comment_id)
+            }
             ItemData::Delta { diff, file_i, .. } => {
                 let patch = diff.format_file_patch(*file_i);
                 match diff.diff_type {

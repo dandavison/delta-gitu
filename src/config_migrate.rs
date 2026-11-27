@@ -1,4 +1,4 @@
-//! `delta --tui --migrate-old-config`: the TUI's settings in git config's old `[delta-tui]`
+//! `delta tui --migrate-old-config`: the TUI's settings in git config's old `[delta-tui]`
 //! sections, printed as they go in `[delta]` (see [`crate::config_git`]). The command is
 //! temporary, for the release that moved the settings, and will be removed.
 
@@ -122,7 +122,7 @@ fn dashed(name: &str) -> String {
 
 /// `value` as git config reads it back: in quotes, with `"` and `\` escaped, when it has what
 /// git would otherwise take as a comment, a quote or an escape, or space at either end.
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     let needs_quotes = value.contains(['"', '\\', '#', ';', '\n', '\t'])
         || value.starts_with(' ')
         || value.ends_with(' ');
@@ -278,7 +278,6 @@ mod tests {
              [delta-tui \"general.commands\"]\n\
              \tsend = redis-cli XADD delta '*' message \"{input}\"\n\
              [delta-tui \"general.diff-renderer.feature-keys\"]\n\
-             \tsend = @\n\
              \tdiff = D\n\
              [delta-tui \"bindings.root\"]\n\
              \tquit = q\n\
@@ -313,7 +312,7 @@ mod tests {
                 .feature_keys
                 .iter()
                 .collect::<Vec<_>>(),
-            [(&"diff".to_owned(), &'D'), (&"send".to_owned(), &'@')]
+            [(&"diff".to_owned(), &'D')]
         );
         let quit: Vec<&str> = config
             .bindings

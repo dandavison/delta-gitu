@@ -282,9 +282,11 @@ pub(crate) struct Screen {
     /// does not add to it.
     unfolded: HashSet<ItemId>,
     search: Option<Search>,
-    /// The GitHub PR this screen shows the diff of, whose files are drawn with
-    /// their Viewed checkboxes.
-    pub(crate) review: Option<Rc<crate::github::Review>>,
+    /// The PR this screen shows the diff of, whose files are drawn with their Viewed
+    /// checkboxes.
+    pub(crate) pr: Option<Rc<crate::review::OpenPr>>,
+    /// For the file view, the file it shows whole, by its path.
+    pub(crate) file: Option<String>,
     /// What adds rows of gitu's own to those built, such as a PR's review threads, each time
     /// they are built (see [`crate::screen::pager::Decorate`]).
     decorate: Option<crate::screen::pager::Decorate>,
@@ -345,7 +347,8 @@ impl Screen {
             seen: HashSet::new(),
             unfolded: HashSet::new(),
             search: None,
-            review: None,
+            pr: None,
+            file: None,
             decorate: None,
             undecorated: vec![],
         };
@@ -367,9 +370,9 @@ impl Screen {
 
     fn params(&self) -> RenderParams {
         let prefix = self
-            .review
+            .pr
             .as_ref()
-            .map_or(0, |_| crate::github::FILE_PREFIX_WIDTH);
+            .map_or(0, |_| crate::review::FILE_PREFIX_WIDTH);
         RenderParams {
             size: (self.size.0.saturating_sub(prefix), self.size.1),
             features: Rc::clone(&self.features),
@@ -579,6 +582,7 @@ impl Screen {
             hunk_i,
             line_i,
             line_range,
+            record_columns,
             ..
         } = &self.get_selected_item().data
         else {
@@ -606,6 +610,7 @@ impl Screen {
             line_i: *line_i,
             line_range: line_range.clone(),
             line_indices,
+            record_columns: record_columns.clone(),
         }
     }
 
@@ -862,8 +867,12 @@ impl Screen {
             .min_by_key(|&item_i| item_i.abs_diff(cursor))
     }
 
+    /// Fit the screen to `w` by `h`, scrolling to keep the cursor in view: a smaller terminal, as
+    /// when tmux zooms a pane and back, doesn't move the cursor.
     pub(crate) fn resize(&mut self, w: u16, h: u16) -> Res<()> {
         self.fit_to(w, h);
+        self.scroll_fit_end();
+        self.scroll_fit_start();
         self.update_cursor();
         Ok(())
     }
@@ -917,16 +926,29 @@ impl Screen {
     /// has, such as the last file once it is hidden, leaves the cursor on the
     /// row before it.
     pub(crate) fn refresh_keeping_position(&mut self) -> Res<()> {
-        let was_on = diff_position(&self.get_selected_item().data);
+        let selected = self.get_selected_item();
+        let was_on = diff_position(&selected.data);
+        // A row that is no line of the patch, as a comment under one, is found again by its id,
+        // which the hunk it is under being cut differently doesn't change, as it does the ids of
+        // the rows above it.
+        let was_item = selected.id;
         let was_at = self.cursor_row();
         self.refresh()?;
 
-        let Some(position) = was_on else {
-            return Ok(());
-        };
-        while !self.select_at_row(position, was_at) {
+        loop {
+            let found = match was_on {
+                Some(position) => self.select_at_row(position, was_at),
+                // As the rebuild found it by its lineage, where that was unchanged.
+                None if self.get_selected_item().id == was_item => true,
+                None => self.select_item_at_row(was_item, was_at),
+            };
+            if found {
+                break;
+            }
             if !self.is_drawing() {
-                self.select_before_row(position, was_at);
+                if let Some(position) = was_on {
+                    self.select_before_row(position, was_at);
+                }
                 break;
             }
             if !self.finish()? {
@@ -934,6 +956,13 @@ impl Screen {
             }
         }
         Ok(())
+    }
+
+    /// Selects the item whose id is `id`, drawn on row `row` of the screen as far as the content
+    /// allows, and says whether there is one.
+    fn select_item_at_row(&mut self, id: ItemId, row: Option<usize>) -> bool {
+        let item_i = self.find_item(|item| !item.unselectable && item.id == id);
+        self.select_on_row(item_i, row)
     }
 
     /// Selects the row at `position` in the patch, drawn on row `row` of the
@@ -1600,6 +1629,44 @@ impl Screen {
         true
     }
 
+    /// Put the cursor on the first selectable item `predicate` holds for, unfolding the sections
+    /// it is in, and center on it.
+    pub(crate) fn select_revealing<F: Fn(&ItemData) -> bool>(&mut self, predicate: F) -> bool {
+        let Some(item_i) = (0..self.items.len())
+            .find(|&i| !self.items[i].unselectable && predicate(&self.items[i].data))
+        else {
+            return false;
+        };
+        self.reveal(item_i);
+        self.cursor = item_i;
+        self.center_on_cursor();
+        self.scroll_fit_end();
+        self.scroll_fit_start();
+        true
+    }
+
+    /// Move the cursor to the next visible item after it that `predicate` holds for, if there is
+    /// one, or else the previous one before it, when `backward`.
+    pub(crate) fn select_adjacent_matching<F: Fn(&ItemData) -> bool>(
+        &mut self,
+        predicate: F,
+        backward: bool,
+    ) {
+        let found = match backward {
+            false => self
+                .visible_from(self.cursor + 1)
+                .find(|&i| !self.items[i].unselectable && predicate(&self.items[i].data)),
+            true => self
+                .visible_before(self.cursor)
+                .find(|&i| !self.items[i].unselectable && predicate(&self.items[i].data)),
+        };
+        if let Some(item_i) = found {
+            self.cursor = item_i;
+            self.scroll_fit_end();
+            self.scroll_fit_start();
+        }
+    }
+
     pub(crate) fn select_matching<F: Fn(&ItemData) -> bool>(&mut self, predicate: F) -> bool {
         let Some(item_i) = self.find_item(|item| !item.unselectable && predicate(&item.data))
         else {
@@ -1921,23 +1988,56 @@ fn same_hunk(a: &ItemData, b: &ItemData) -> bool {
     }
 }
 
-/// Where a row sits in the patch, for the rows that sit anywhere in one: a
-/// file, a hunk within it, and for a content row the line within that. Two rows
-/// of one wrapped line share a position, which is right — they are one line.
-type DiffPosition = (usize, Option<usize>, Option<usize>);
+/// Where a row sits in the files a patch is of, for the rows that sit anywhere in one: its file,
+/// and, for a hunk's row or a content row, the place in the file of its line (a hunk's first),
+/// which no change of context moves, as it does a row's place in its hunk. Two rows of one wrapped
+/// line share a position, which is right: they are one line.
+type DiffPosition = (usize, Option<LinePlace>);
+
+/// Where a line of a hunk is in the file, as the new side's line number then the old side's,
+/// so that positions sort as the diff's rows do: a removed line has the new side's number of the
+/// line that follows it, and an added line the old side's.
+type LinePlace = (u32, u32);
 
 fn diff_position(data: &ItemData) -> Option<DiffPosition> {
     match data {
-        ItemData::Delta { file_i, .. } => Some((*file_i, None, None)),
-        ItemData::Hunk { file_i, hunk_i, .. } => Some((*file_i, Some(*hunk_i), None)),
+        ItemData::Delta { file_i, .. } => Some((*file_i, None)),
+        ItemData::Hunk {
+            diff,
+            file_i,
+            hunk_i,
+        } => Some((*file_i, Some(line_place(diff, *file_i, *hunk_i, 0)))),
         ItemData::HunkLine {
+            diff,
             file_i,
             hunk_i,
             line_i,
             ..
-        } => Some((*file_i, Some(*hunk_i), Some(*line_i))),
+        } => Some((*file_i, Some(line_place(diff, *file_i, *hunk_i, *line_i)))),
         _ => None,
     }
+}
+
+/// The place in the file (see [`LinePlace`]) of line `line_i` of hunk `hunk_i` of file `file_i`.
+fn line_place(
+    diff: &crate::git::diff::Diff,
+    file_i: usize,
+    hunk_i: usize,
+    line_i: usize,
+) -> LinePlace {
+    let header = &diff.file_diffs[file_i].hunks[hunk_i].header;
+    let (mut old, mut new) = (header.old_line_start, header.new_line_start);
+    for line in diff.hunk_content(file_i, hunk_i).lines().take(line_i) {
+        match line.chars().next() {
+            Some('-') => old += 1,
+            Some('+') => new += 1,
+            _ => {
+                old += 1;
+                new += 1;
+            }
+        }
+    }
+    (new, old)
 }
 
 struct ItemView {
@@ -1997,10 +2097,10 @@ fn layout_item<'a>(layout: &mut UiTree<'a>, screen: &'a Screen, hide_cursor: boo
         layout.row(opts(), |layout| layout_span(layout, gutter_char));
 
         let item = &screen.items[line.item_index];
-        if let (Some(review), ItemData::Delta { diff, file_i, .. }) = (&screen.review, &item.data) {
-            let path = crate::github::file_path(diff, *file_i);
+        if let (Some(pr), ItemData::Delta { diff, file_i, .. }) = (&screen.pr, &item.data) {
+            let path = crate::review::file_path(diff, *file_i);
             layout.row(opts(), |layout| {
-                layout_span(layout, (review.checkbox(&path).into(), bg));
+                layout_span(layout, (pr.checkbox(&path).into(), bg));
             });
         }
         if let Some(row) = screen.standing_in_row(item) {
@@ -2334,6 +2434,7 @@ mod tests {
                             line_i,
                             line_range: 0..0,
                             line_indices: vec![line_i],
+                            record_columns: vec![0],
                         }
                     } else {
                         ItemData::default()

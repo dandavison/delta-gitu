@@ -5,7 +5,8 @@ use crate::app::State;
 use crate::error::Error;
 use crate::git;
 use crate::git::remote::{
-    get_push_remote, get_upstream_components, get_upstream_shortname, set_push_remote,
+    get_push_remote, get_upstream_components, get_upstream_shortname, is_upstream_gone,
+    set_push_remote,
 };
 use crate::item_data::ItemData;
 use crate::{Res, menu::arg::Arg, term::Term};
@@ -29,7 +30,7 @@ impl OpTrait for PushToPushRemote {
                     let push_remote_name = app.prompt(
                         term,
                         &PromptParams {
-                            prompt: "Set pushRemote then push",
+                            prompt: "Set pushRemote then push".into(),
                             ..Default::default()
                         },
                     )?;
@@ -79,7 +80,7 @@ impl OpTrait for PushToUpstream {
                         let upstream_name = app.prompt(
                             term,
                             &PromptParams {
-                                prompt: "Set upstream then push",
+                                prompt: "Set upstream then push".into(),
                                 ..Default::default()
                             },
                         )?;
@@ -95,10 +96,14 @@ impl OpTrait for PushToUpstream {
     }
 
     fn display(&self, state: &State) -> String {
-        match get_upstream_shortname(&state.repo) {
-            Ok(Some(upstream)) => format!("to {upstream}"),
-            Ok(None) => "upstream, setting that".into(),
-            Err(e) => format!("error: {e}"),
+        match (
+            get_upstream_shortname(&state.repo),
+            is_upstream_gone(&state.repo),
+        ) {
+            (Ok(Some(upstream)), Ok(true)) => format!("to {upstream}, creating it"),
+            (Ok(Some(upstream)), Ok(false)) => format!("to {upstream}"),
+            (Ok(None), _) => "upstream, setting that".into(),
+            (Err(e), _) | (_, Err(e)) => format!("error: {e}"),
         }
     }
 }
@@ -122,7 +127,7 @@ impl OpTrait for PushToElsewhere {
             let remote = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Select remote",
+                    prompt: "Select remote".into(),
                     ..Default::default()
                 },
             )?;
@@ -152,6 +157,6 @@ fn push(app: &mut App, term: &mut Term, extra_args: &[&str]) -> Res<()> {
     cmd.args(["push"]);
     cmd.args(app.state.pending_menu.as_ref().unwrap().args());
     cmd.args(extra_args);
-    app.run_cmd_async(term, &[], cmd)?;
+    app.run_cmd_async_then(term, cmd, Box::new(crate::ops::pr::after_push))?;
     Ok(())
 }

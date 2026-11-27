@@ -13,7 +13,7 @@ pub(crate) enum Outcome {
     Edited,
     /// Only the cursor moved.
     Moved,
-    /// The text is to be sent: `alt+enter` or `ctrl+s`.
+    /// The text is to be sent: `ctrl+s`.
     Submit,
     /// The box is to be left, its text kept: `esc`.
     Leave,
@@ -93,7 +93,8 @@ impl TextArea {
         let ctrl = |c: char| (KeyCode::Char(c), KeyModifiers::CONTROL);
         let code_and_modifiers = (key.code, key.modifiers);
         let outcome = match code_and_modifiers {
-            (KeyCode::Enter, KeyModifiers::ALT) => return Outcome::Submit,
+            // Only ctrl+s: some terminals send shift+enter as alt+enter, and people mean either
+            // as a new line.
             c if c == ctrl('s') => return Outcome::Submit,
             (KeyCode::Esc, _) => return Outcome::Leave,
             (KeyCode::Enter, _) => {
@@ -115,6 +116,12 @@ impl TextArea {
             c if c == ctrl('h') => self.delete(self.cursor.saturating_sub(1)..self.cursor),
             (KeyCode::Delete, _) => self.delete(self.cursor..self.cursor + 1),
             c if c == ctrl('d') => self.delete(self.cursor..self.cursor + 1),
+            (KeyCode::Left, KeyModifiers::ALT | KeyModifiers::CONTROL) => {
+                self.move_to(text_input::previous_word_start(&self.chars(), self.cursor))
+            }
+            (KeyCode::Right, KeyModifiers::ALT | KeyModifiers::CONTROL) => {
+                self.move_to(text_input::next_word_end(&self.chars(), self.cursor))
+            }
             (KeyCode::Left, _) => self.move_to(self.cursor.saturating_sub(1)),
             c if c == ctrl('b') => self.move_to(self.cursor.saturating_sub(1)),
             (KeyCode::Right, _) => self.move_to(self.cursor + 1),
@@ -434,16 +441,36 @@ mod tests {
         assert_eq!(area.value(), "abcd");
     }
 
+    /// Only ctrl+s submits: some terminals send shift+enter as alt+enter, and either is a new
+    /// line, as people expect, rather than a submission they didn't mean.
     #[test]
-    fn alt_enter_and_ctrl_s_submit_and_esc_leaves() {
+    fn only_ctrl_s_submits_and_esc_leaves() {
         let mut area = typed("ab");
         assert_eq!(
             area.handle_key(key(KeyCode::Enter, KeyModifiers::ALT), WIDTH),
-            Outcome::Submit
+            Outcome::Edited
         );
+        assert_eq!(
+            area.handle_key(key(KeyCode::Enter, KeyModifiers::SHIFT), WIDTH),
+            Outcome::Edited
+        );
+        assert_eq!(area.value(), "ab\n\n");
         assert_eq!(ctrl(&mut area, 's'), Outcome::Submit);
         assert_eq!(press(&mut area, KeyCode::Esc), Outcome::Leave);
-        assert_eq!(area.value(), "ab");
+    }
+
+    #[test]
+    fn alt_and_ctrl_with_left_and_right_move_by_word() {
+        for modifiers in [KeyModifiers::ALT, KeyModifiers::CONTROL] {
+            let mut area = typed("one two three");
+            area.handle_key(key(KeyCode::Left, modifiers), WIDTH);
+            area.handle_key(key(KeyCode::Left, modifiers), WIDTH);
+            press(&mut area, KeyCode::Char('x'));
+            assert_eq!(area.value(), "one xtwo three", "{modifiers:?}");
+            area.handle_key(key(KeyCode::Right, modifiers), WIDTH);
+            press(&mut area, KeyCode::Char('y'));
+            assert_eq!(area.value(), "one xtwoy three", "{modifiers:?}");
+        }
     }
 
     #[test]

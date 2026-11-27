@@ -20,7 +20,7 @@ use crate::{
     items::{self, Item, RenderParams},
     stream::{Input, Snapshot, Stream, Streams},
 };
-use git2::{Oid, Repository};
+use git2::Repository;
 use regex::Regex;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -59,6 +59,31 @@ fn create_decorated(
     decorate: Option<Decorate>,
 ) -> Res<Screen> {
     let source = Source::of(paged, &config.general.hide);
+    of_source(config, repo, params, source, decorate)
+}
+
+/// A screen showing the file at `path` whole, as in the commit `commit` gives, as a patch every
+/// line of which is context, so that its lines are numbered and take comments as a diff's do,
+/// with gitu's own rows added by `decorate`.
+pub(crate) fn whole(
+    config: Arc<Config>,
+    repo: Rc<Repository>,
+    params: RenderParams,
+    path: String,
+    commit: Rc<dyn Fn() -> Res<git2::Oid>>,
+    decorate: Decorate,
+) -> Res<Screen> {
+    let source = Source::File { path, commit };
+    of_source(config, repo, params, source, Some(decorate))
+}
+
+fn of_source(
+    config: Arc<Config>,
+    repo: Rc<Repository>,
+    params: RenderParams,
+    source: Source,
+    decorate: Option<Decorate>,
+) -> Res<Screen> {
     let git_command = source.git_command();
 
     let mut screen = Screen::streamed(
@@ -103,14 +128,15 @@ pub(crate) fn show(
     live(config, repo, params, git_argv)
 }
 
-/// The view `git log` gives with gitu as git's pager: of `rev`, or of `HEAD`,
-/// at most `limit` commits, and only those whose message matches `msg_regex`.
+/// The view `git log` gives with gitu as git's pager: of `revs`, or of `HEAD`
+/// if there are none, at most `limit` commits, and only those whose message
+/// matches `msg_regex`.
 pub(crate) fn log(
     config: Arc<Config>,
     repo: Rc<Repository>,
     params: RenderParams,
     limit: usize,
-    rev: Option<Oid>,
+    revs: Vec<String>,
     msg_regex: Option<&Regex>,
 ) -> Res<Screen> {
     let mut git_argv: Vec<String> = ["git", "log"]
@@ -127,7 +153,7 @@ pub(crate) fn log(
         git_argv.push("--extended-regexp".into());
         git_argv.push(format!("--grep={regex}"));
     }
-    git_argv.extend(rev.map(|oid| oid.to_string()));
+    git_argv.extend(revs);
     live(config, repo, params, git_argv)
 }
 
@@ -186,6 +212,44 @@ pub(crate) fn live_in(
     )
 }
 
+/// The file at `path` in `commit` as a patch every line of which is context. A file in no commit,
+/// or that is binary or not UTF-8, is an error, as it has no lines to show.
+fn whole_file(repo: &Repository, commit: git2::Oid, path: &str) -> Res<String> {
+    let error = |e: git2::Error| Error::LocalPr(format!("Couldn't read {path} in {commit}: {e}"));
+    let tree = repo
+        .find_commit(commit)
+        .and_then(|commit| commit.tree())
+        .map_err(error)?;
+    let entry = match tree.get_path(std::path::Path::new(path)) {
+        Ok(entry) => entry,
+        Err(e) if e.code() == git2::ErrorCode::NotFound => {
+            return Err(Error::LocalPr(format!(
+                "{path} is in no commit: commit it to open it"
+            )));
+        }
+        Err(e) => return Err(error(e)),
+    };
+    let blob = repo.find_blob(entry.id()).map_err(error)?;
+    if blob.is_binary() {
+        return Err(Error::LocalPr(format!(
+            "{path} is binary, which can't be opened"
+        )));
+    }
+    let text = std::str::from_utf8(blob.content())
+        .map_err(|_| Error::LocalPr(format!("{path} is not UTF-8, which can't be opened")))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let mut patch = format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n");
+    if !lines.is_empty() {
+        patch += &format!("@@ -1,{n} +1,{n} @@\n", n = lines.len());
+        for line in lines {
+            patch += " ";
+            patch += line;
+            patch += "\n";
+        }
+    }
+    Ok(patch)
+}
+
 /// Where the rows come from each time the screen is rebuilt.
 enum Source {
     /// A question git can be put again, gitu having found the command that
@@ -201,6 +265,12 @@ enum Source {
     /// no structure of its own to impose, so the renderer draws it and what it
     /// says about the rows it drew decides what they are.
     Unstructured { text: String, truncated: bool },
+    /// The file at `path` whole, as in the commit `commit` gives, read again each time, as the
+    /// commit may have moved on (see [`whole_file`]).
+    File {
+        path: String,
+        commit: Rc<dyn Fn() -> Res<git2::Oid>>,
+    },
 }
 
 impl Source {
@@ -244,7 +314,7 @@ impl Source {
     fn git_command(&self) -> Option<Rc<RefCell<GitCommand>>> {
         match self {
             Source::Live { git, .. } => Some(Rc::clone(git)),
-            Source::Patch { .. } | Source::Unstructured { .. } => None,
+            Source::Patch { .. } | Source::Unstructured { .. } | Source::File { .. } => None,
         }
     }
 
@@ -307,6 +377,7 @@ impl Source {
                     stat,
                     truncated: false,
                     difftastic,
+                    whole_file: false,
                 };
                 (input, shape)
             }
@@ -317,8 +388,20 @@ impl Source {
                     stat: Stat::No,
                     truncated: *truncated,
                     difftastic: None,
+                    whole_file: false,
                 };
                 (Input::Text(text.clone()), shape)
+            }
+            Source::File { path, commit } => {
+                let shape = Shape::Diff {
+                    diff_type: DiffType::TreeToTree,
+                    named_commit: false,
+                    stat: Stat::No,
+                    truncated: false,
+                    difftastic: None,
+                    whole_file: true,
+                };
+                (Input::Text(whole_file(repo, commit()?, path)?), shape)
             }
             Source::Unstructured { text, truncated } => (
                 Input::Text(text.clone()),
@@ -399,6 +482,9 @@ enum Shape {
         truncated: bool,
         /// For a patch drawn as difftastic sees it, git's patch and what is drawn in its place.
         difftastic: Option<Rc<Difftastic>>,
+        /// Whether it is a file whole (see [`Source::File`]), which is never folded or headed by
+        /// a stat row, as it is the one file, and has no changes.
+        whole_file: bool,
     },
     /// Output with no diff in it, which the renderer draws.
     Rows { truncated: bool },
@@ -431,10 +517,11 @@ fn built(
             stat,
             truncated,
             difftastic,
+            whole_file,
         } => {
             let mut items = Vec::new();
-            let headed_by_stat =
-                stat.is_counted() || config.general.file_header == FileHeader::Stat;
+            let headed_by_stat = !whole_file
+                && (stat.is_counted() || config.general.file_header == FileHeader::Stat);
             // Files folded to stat rows are shown before the renderer reaches
             // them; other files are not, and only what the renderer has taken
             // need be parsed.
@@ -459,7 +546,7 @@ fn built(
             // draws it.
             // `git diff --stat` is the patch with its files folded, as every
             // patch is with `start_folded`.
-            let fold = *stat == Stat::Folded || config.general.start_folded;
+            let fold = *stat == Stat::Folded || (config.general.start_folded && !whole_file);
             let patches = items::patches_of(&text, &file_diffs);
             if file_diffs.is_empty() {
                 items.extend(rows(repo, drawn));

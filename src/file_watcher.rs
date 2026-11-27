@@ -4,37 +4,108 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
 
 pub struct FileWatcher {
     pending_updates: Arc<AtomicBool>,
+    /// Whether the watcher has started watching, which it does on a thread of its own some time
+    /// after [`FileWatcher::new`] returns: on macOS, registering with fseventsd has taken over
+    /// half a second. A change made before then is not seen. Only tests read it, to wait for it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    watching: Arc<AtomicBool>,
+    /// The paths whose changes it has taken as reasons to refresh. Only tests read it, to say
+    /// what the watcher saw.
+    #[cfg_attr(not(test), allow(dead_code))]
+    seen: Arc<Mutex<Vec<PathBuf>>>,
+    /// What went wrong in the watcher's thread, for the user to be told: until they are, the
+    /// screens may not show changes made elsewhere.
+    errors: Arc<Mutex<Vec<String>>>,
 }
 
 impl FileWatcher {
     pub fn new(repo: &Repository) -> Res<Self> {
         let pending_updates = Arc::new(AtomicBool::new(false));
         let pending_updates_w = pending_updates.clone();
+        let errors = Arc::new(Mutex::new(vec![]));
+        let errors_w = Arc::clone(&errors);
+        let watching = Arc::new(AtomicBool::new(false));
+        let watching_w = Arc::clone(&watching);
+        let seen = Arc::new(Mutex::new(vec![]));
+        let seen_w = Arc::clone(&seen);
         let git_dir = repo.path().to_path_buf();
         let workdir = repo.workdir().expect("Bare repos unhandled").to_path_buf();
 
         std::thread::spawn(move || {
-            if let Err(e) = watch(&git_dir, &workdir, pending_updates_w) {
-                log::error!("File watcher error: {:?}", e)
+            match watch(
+                &git_dir,
+                &workdir,
+                pending_updates_w,
+                Arc::clone(&errors_w),
+                seen_w,
+            ) {
+                Ok(()) => watching_w.store(true, Ordering::Relaxed),
+                Err(e) => report(&errors_w, format!("File watcher stopped: {e}")),
             }
         });
 
-        Ok(Self { pending_updates })
+        Ok(Self {
+            pending_updates,
+            watching,
+            seen,
+            errors,
+        })
     }
 
     pub fn pending_updates(&self) -> bool {
         self.pending_updates.swap(false, Ordering::Relaxed)
     }
+
+    /// Whether the watcher has started watching.
+    #[cfg(test)]
+    pub fn is_watching(&self) -> bool {
+        self.watching.load(Ordering::Relaxed)
+    }
+
+    /// The paths whose changes it has taken as reasons to refresh since last asked.
+    #[cfg(test)]
+    pub fn take_seen(&self) -> Vec<PathBuf> {
+        std::mem::take(
+            &mut *self
+                .seen
+                .lock()
+                .expect("no watcher thread panics holding it"),
+        )
+    }
+
+    /// What has gone wrong since last asked.
+    pub fn take_errors(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .errors
+                .lock()
+                .expect("no watcher thread panics holding it"),
+        )
+    }
 }
 
-fn watch(git_dir: &Path, workdir: &Path, pending_updates_w: Arc<AtomicBool>) -> Res<()> {
+fn report(errors: &Mutex<Vec<String>>, error: String) {
+    log::error!("{error}");
+    errors
+        .lock()
+        .expect("no watcher thread panics holding it")
+        .push(error);
+}
+
+fn watch(
+    git_dir: &Path,
+    workdir: &Path,
+    pending_updates_w: Arc<AtomicBool>,
+    errors: Arc<Mutex<Vec<String>>>,
+    seen: Arc<Mutex<Vec<PathBuf>>>,
+) -> Res<()> {
     let repo = Repository::open(git_dir).map_err(Error::OpenRepo)?;
     repo.set_workdir(workdir, false).map_err(Error::OpenRepo)?;
     let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -48,34 +119,64 @@ fn watch(git_dir: &Path, workdir: &Path, pending_updates_w: Arc<AtomicBool>) -> 
         (!git_dirs.common_dir.starts_with(&workdir)).then(|| git_dirs.common_dir.clone());
 
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-        if let Ok(event) = res {
-            if !is_changed(&event) {
+        let event = match res {
+            Ok(event) => event,
+            Err(e) => {
+                report(&errors, format!("File watcher error: {e}"));
                 return;
             }
+        };
+        if !is_changed(&event) {
+            return;
+        }
 
-            for path in event.paths {
-                let relevant = match git_dirs.is_relevant(&path) {
-                    Some(relevant) => relevant,
-                    None => !repo.status_should_ignore(&path).unwrap_or(false),
-                };
-                if relevant {
-                    log::info!("File changed: {:?} ({:?})", path, event.kind);
-                    pending_updates_w.store(true, Ordering::Relaxed);
-                    break;
-                }
+        for path in event.paths {
+            // A directory is modified, as Windows says, when what is in it changes, as when a lock
+            // file comes and goes; what changed is reported with its own path.
+            if matches!(event.kind, EventKind::Modify(_)) && path.is_dir() {
+                continue;
+            }
+            let relevant = match git_dirs.is_relevant(&path) {
+                Some(relevant) => relevant,
+                None => match repo.status_should_ignore(&path) {
+                    Ok(ignored) => !ignored,
+                    Err(e) => {
+                        report(
+                            &errors,
+                            format!(
+                                "File watcher couldn't tell whether git ignores {}: {e}",
+                                path.display()
+                            ),
+                        );
+                        true
+                    }
+                },
+            };
+            if relevant {
+                log::info!("File changed: {:?} ({:?})", path, event.kind);
+                seen.lock()
+                    .expect("no watcher thread panics holding it")
+                    .push(path);
+                pending_updates_w.store(true, Ordering::Relaxed);
+                break;
             }
         }
     })
     .map_err(Error::FileWatcher)?;
 
-    watcher
-        .watch(&workdir, RecursiveMode::Recursive)
+    // Adding both paths before committing starts one FSEvents stream. Calling
+    // `watch` for each would start a stream and then restart it, and each
+    // start registers the stream with fseventsd, which has taken over 100ms.
+    let mut paths = watcher.paths_mut();
+    paths
+        .add(&workdir, RecursiveMode::Recursive)
         .map_err(Error::FileWatcher)?;
     if let Some(common_dir) = common_dir_outside_workdir {
-        watcher
-            .watch(&common_dir, RecursiveMode::Recursive)
+        paths
+            .add(&common_dir, RecursiveMode::Recursive)
             .map_err(Error::FileWatcher)?;
     }
+    paths.commit().map_err(Error::FileWatcher)?;
 
     log::info!(
         "File watcher started (kind: {:?})",

@@ -152,7 +152,7 @@ fn a_command_typed_is_not_saved_to_the_history() {
 
     ctx.update(&mut app, keys(": HEAD<enter>"));
 
-    assert!(!ctx.dir.join(".git/gitu").exists());
+    assert!(!ctx.dir.join(".git/delta").exists());
 }
 
 /// `read-only` in git config is a boolean, or `auto`.

@@ -1,11 +1,10 @@
 use crate::Res;
 use crate::error::Error;
-use crate::text_input::{self, TextInput};
+use crate::text_input::TextInput;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::borrow::Cow;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 pub(crate) struct PromptData {
@@ -15,18 +14,22 @@ pub(crate) struct PromptData {
     pub(crate) bare: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum HistoryKind {
     GitCommand,
     FilePatterns,
     Search,
+    /// What was typed for `{input}` in the command or view of this name.
+    Input(String),
+    /// Messages to agents.
+    AgentMessage,
+    /// What the thread view was narrowed to.
+    ThreadFilter,
 }
 
 pub(crate) struct Prompt {
     pub(crate) data: Option<PromptData>,
     pub(crate) state: TextInput,
-    /// What the last kill took, for `ctrl+y` to put back.
-    killed: String,
     history_dir: Option<PathBuf>,
     /// Whether history is read but not added to.
     history_read_only: bool,
@@ -44,7 +47,6 @@ impl Prompt {
         Prompt {
             data: None,
             state: TextInput::default(),
-            killed: String::new(),
             history_dir: None,
             history_read_only: false,
             active_history: None,
@@ -66,11 +68,14 @@ impl Prompt {
 
     pub(crate) fn reset(&mut self) {
         self.data = None;
+        // What was killed can be put back at the next prompt.
+        let killed = std::mem::take(&mut self.state.killed);
         self.state = TextInput::default();
+        self.state.killed = killed;
         self.active_history = None;
     }
 
-    pub(crate) fn start_history(&mut self, kind: Option<HistoryKind>) -> Res<()> {
+    pub(crate) fn start_history(&mut self, kind: Option<&HistoryKind>) -> Res<()> {
         let (Some(kind), Some(dir)) = (kind, &self.history_dir) else {
             return Ok(());
         };
@@ -87,7 +92,7 @@ impl Prompt {
         Ok(())
     }
 
-    pub(crate) fn remember(&self, kind: HistoryKind, value: &str) -> Res<()> {
+    pub(crate) fn remember(&self, kind: &HistoryKind, value: &str) -> Res<()> {
         let Some(dir) = &self.history_dir else {
             return Ok(());
         };
@@ -95,68 +100,28 @@ impl Prompt {
             return Ok(());
         }
 
-        fs::create_dir_all(dir).map_err(Error::WritePromptHistory)?;
+        let path = history_path(dir, kind);
+        fs::create_dir_all(path.parent().unwrap()).map_err(Error::WritePromptHistory)?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(history_path(dir, kind))
+            .open(path)
             .map_err(Error::WritePromptHistory)?;
         file.write_all(format!("{value}\n").as_bytes())
             .map_err(Error::WritePromptHistory)
     }
 
-    /// A line being edited is a line to edit as any other: the readline keys,
-    /// over and above the single-character motions and deletions
-    /// [`TextInput`] already binds.
-    ///
-    /// Words come in the two kinds readline has, and the distinction earns its
-    /// keep on the commands gitu puts here: `alt+b`/`alt+f`/`alt+d` step over
-    /// runs of letters and digits, so they move within a path, while `ctrl+w`
-    /// takes back a whole whitespace-delimited token, which is what a pathspec
-    /// is.
+    /// Up and down step through the prompt's history; the line is edited with readline's keys
+    /// (see [`TextInput::handle_key_event`]).
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
         }
-
-        const ALT: KeyModifiers = KeyModifiers::ALT;
-        const CTRL: KeyModifiers = KeyModifiers::CONTROL;
-        let cursor = self.cursor();
-
         match (key.code, key.modifiers) {
             (KeyCode::Up, KeyModifiers::NONE) => self.history_previous(),
             (KeyCode::Down, KeyModifiers::NONE) => self.history_next(),
-            (KeyCode::Char('b'), ALT) | (KeyCode::Left, ALT | CTRL) => {
-                self.move_to(self.previous_word_start());
-            }
-            (KeyCode::Char('f'), ALT) | (KeyCode::Right, ALT | CTRL) => {
-                self.move_to(self.next_word_end());
-            }
-            (KeyCode::Char('w'), CTRL) => self.kill(self.previous_token_start()..cursor),
-            (KeyCode::Backspace, ALT) => self.kill(self.previous_word_start()..cursor),
-            (KeyCode::Char('d'), ALT) => self.kill(cursor..self.next_word_end()),
-            (KeyCode::Char('k'), CTRL) => self.kill(cursor..self.len()),
-            (KeyCode::Char('u'), CTRL) => self.kill(0..self.len()),
-            (KeyCode::Char('y'), CTRL) => self.yank(),
-            (KeyCode::Char('t'), CTRL) => self.transpose(),
             _ => self.state.handle_key_event(key),
         }
-    }
-
-    fn cursor(&self) -> usize {
-        self.state.position().min(self.len())
-    }
-
-    fn len(&self) -> usize {
-        self.state.value.as_str().chars().count()
-    }
-
-    fn chars(&self) -> Vec<char> {
-        self.state.value.as_str().chars().collect()
-    }
-
-    fn move_to(&mut self, cursor: usize) {
-        self.state.move_to(cursor);
     }
 
     fn history_previous(&mut self) {
@@ -192,61 +157,6 @@ impl Prompt {
         self.state.value = value.clone();
         self.state.move_to(usize::MAX);
     }
-
-    /// Take `range` out of the line, keeping it for [`Self::yank`]. A kill of
-    /// nothing is not a kill: it leaves what was killed before to be put back.
-    fn kill(&mut self, range: Range<usize>) {
-        if range.is_empty() {
-            return;
-        }
-
-        let chars = self.chars();
-        self.killed = chars[range.clone()].iter().collect();
-        self.state.value = chars[..range.start]
-            .iter()
-            .chain(&chars[range.end..])
-            .collect();
-        self.move_to(range.start);
-    }
-
-    fn yank(&mut self) {
-        let chars = self.chars();
-        let cursor = self.cursor();
-
-        self.state.value = chars[..cursor]
-            .iter()
-            .chain(self.killed.chars().collect::<Vec<_>>().iter())
-            .chain(&chars[cursor..])
-            .collect();
-        self.move_to(cursor + self.killed.chars().count());
-    }
-
-    /// Swap the two characters the cursor sits between, and step over them. At
-    /// the end of the line there is nothing to the right to swap with, so the
-    /// last two change places instead.
-    fn transpose(&mut self) {
-        let mut chars = self.chars();
-        let cursor = self.cursor().min(chars.len().saturating_sub(1)).max(1);
-        if chars.len() < 2 {
-            return;
-        }
-
-        chars.swap(cursor - 1, cursor);
-        self.state.value = chars.iter().collect();
-        self.move_to((cursor + 1).min(self.len()));
-    }
-
-    fn previous_word_start(&self) -> usize {
-        text_input::previous_word_start(&self.chars(), self.cursor())
-    }
-
-    fn next_word_end(&self) -> usize {
-        text_input::next_word_end(&self.chars(), self.cursor())
-    }
-
-    fn previous_token_start(&self) -> usize {
-        text_input::previous_token_start(&self.chars(), self.cursor())
-    }
 }
 
 fn save_history_edit(history: &mut ActiveHistory, value: &str) {
@@ -257,7 +167,7 @@ fn save_history_edit(history: &mut ActiveHistory, value: &str) {
     }
 }
 
-fn read_history(dir: &Path, kind: HistoryKind) -> Res<Vec<String>> {
+fn read_history(dir: &Path, kind: &HistoryKind) -> Res<Vec<String>> {
     match fs::read_to_string(history_path(dir, kind)) {
         Ok(contents) => Ok(contents.lines().map(str::to_owned).collect()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -265,12 +175,18 @@ fn read_history(dir: &Path, kind: HistoryKind) -> Res<Vec<String>> {
     }
 }
 
-fn history_path(dir: &Path, kind: HistoryKind) -> PathBuf {
-    dir.join(match kind {
-        HistoryKind::GitCommand => "git-command-history",
-        HistoryKind::FilePatterns => "file-pattern-history",
-        HistoryKind::Search => "search-history",
-    })
+fn history_path(dir: &Path, kind: &HistoryKind) -> PathBuf {
+    match kind {
+        HistoryKind::GitCommand => dir.join("git-command-history"),
+        HistoryKind::FilePatterns => dir.join("file-pattern-history"),
+        HistoryKind::Search => dir.join("search-history"),
+        HistoryKind::AgentMessage => dir.join("agent-message-history"),
+        HistoryKind::ThreadFilter => dir.join("thread-filter-history"),
+        // A name is any string, so it is escaped to be one file name.
+        HistoryKind::Input(name) => dir
+            .join("input-history")
+            .join(name.replace('%', "%25").replace('/', "%2F")),
+    }
 }
 
 #[cfg(test)]
@@ -284,7 +200,7 @@ mod tests {
         let (value, rest) = before.split_once('|').expect("no cursor in the line");
         let mut prompt = Prompt::new();
         prompt.state.value = format!("{value}{rest}");
-        prompt.move_to(value.chars().count());
+        prompt.state.move_to(value.chars().count());
 
         let ("", keys) = parse_test_keys(keys).unwrap() else {
             unreachable!()
@@ -293,8 +209,8 @@ mod tests {
             prompt.handle_key(KeyEvent::new(code, modifiers));
         }
 
-        let chars = prompt.chars();
-        let cursor = prompt.cursor();
+        let chars: Vec<char> = prompt.state.value.chars().collect();
+        let cursor = prompt.state.position();
         format!(
             "{}|{}",
             chars[..cursor].iter().collect::<String>(),

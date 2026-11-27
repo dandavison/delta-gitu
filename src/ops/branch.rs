@@ -62,7 +62,7 @@ impl OpTrait for CheckoutNewBranch {
             let branch_name = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Create and checkout branch",
+                    prompt: "Create and checkout branch".into(),
                     ..Default::default()
                 },
             )?;
@@ -161,7 +161,7 @@ impl OpTrait for Rename {
                 let new_name = app.prompt(
                     term,
                     &PromptParams {
-                        prompt: "Rename branch to",
+                        prompt: "Rename branch to".into(),
                         ..Default::default()
                     },
                 )?;
@@ -207,7 +207,7 @@ impl OpTrait for Spinoff {
             let new_branch_name = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Name for new branch",
+                    prompt: "Name for new branch".into(),
                     create_default_value: Box::new(move |_| default.clone()),
                     ..Default::default()
                 },

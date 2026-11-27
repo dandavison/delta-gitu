@@ -13,7 +13,6 @@ mod difftastic;
 pub mod error;
 mod file_watcher;
 mod git;
-mod github;
 mod gitu_diff;
 mod item_data;
 mod items;
@@ -23,8 +22,10 @@ mod ops;
 mod picker;
 mod prompt;
 mod rebase_todo;
+mod review;
 mod screen;
 mod search;
+mod show_config;
 mod stream;
 mod style;
 pub mod term;
@@ -55,7 +56,7 @@ use crate::capped_input::Capped;
 use crate::config::Config;
 use crate::screen::pager::Paged;
 
-pub const LOG_FILE_NAME: &str = "gitu.log";
+pub const LOG_FILE_NAME: &str = "delta-tui.log";
 
 //                                An overview of Gitu's ui and terminology:
 //
@@ -101,6 +102,54 @@ pub fn run(config: Arc<Config>, args: &cli::Args, term: &mut Term) -> Res<i32> {
     // Before anything that reads the TUI's settings, which refuses an old [delta-tui] section.
     if args.migrate_old_config {
         config_migrate::print()?;
+        return Ok(0);
+    }
+    let reviewing = args.agent_instructions
+        || args.pr_state_machine_diagram.is_some()
+        || matches!(args.command, Some(cli::Commands::Review { .. }));
+    // `experimental` is set in git config, which `config` has not read yet.
+    if reviewing {
+        let dir = match open_repo_from_env() {
+            Ok(repo) => repo.workdir().unwrap_or(repo.path()).to_owned(),
+            Err(_) => std::env::current_dir().map_err(Error::Term)?,
+        };
+        if !config.resolved(&dir, None)?.general.experimental {
+            return Err(Error::LocalPr(config::NOT_EXPERIMENTAL.to_owned()));
+        }
+    }
+    if args.agent_instructions {
+        print!("{}", review::AGENT_INSTRUCTIONS);
+        return Ok(0);
+    }
+    if let Some(format) = args.show_config {
+        let dir = std::env::current_dir().map_err(Error::Term)?;
+        let settings = show_config::settings(&config, &dir)?;
+        match format {
+            cli::ConfigFormat::Text => print!(
+                "{}",
+                show_config::text(&settings, io::stdout().is_terminal())
+            ),
+            cli::ConfigFormat::Json => println!(
+                "{}",
+                serde_json::to_string_pretty(&show_config::json(&settings)).expect("JSON")
+            ),
+        }
+        return Ok(0);
+    }
+    if let Some(cli::DiagramFormat::D2) = args.pr_state_machine_diagram {
+        print!("{}", review::diagram::d2());
+        return Ok(0);
+    }
+    if let Some(cli::Commands::Review { command }) = &args.command {
+        review::cli::run(
+            command,
+            open_repo_from_env()?,
+            Rc::new(review::github::Gh {
+                workdir: std::env::current_dir().map_err(Error::Term)?,
+            }),
+            &mut io::stdin(),
+            &mut io::stdout(),
+        )?;
         return Ok(0);
     }
     needs_terminal(io::stdout().is_terminal())?;
@@ -164,9 +213,7 @@ fn run_app(app: &mut app::App, args: &cli::Args, term: &mut Term) -> Res<i32> {
             panic!("Couldn't parse keys");
         };
 
-        for event in keys_to_events(&keys) {
-            app.handle_event(term, event)?;
-        }
+        replay_keys(app, term, keys_to_events(&keys), !args.print)?;
     }
 
     app.redraw_now(term)?;
@@ -178,6 +225,24 @@ fn run_app(app: &mut app::App, args: &cli::Args, term: &mut Term) -> Res<i32> {
     app.run(term, Duration::from_millis(100))?;
 
     Ok(app.state.exit_code)
+}
+
+/// Handle `events`, keys given on the command line, as typed keys are handled: when `draw`, with
+/// the screen drawn before each, so that a menu one opens shows, as does what one is busy with,
+/// over the screen rather than a blank one. `--print` draws only the frame after them.
+pub(crate) fn replay_keys(
+    app: &mut app::App,
+    term: &mut Term,
+    events: Vec<event::Event>,
+    draw: bool,
+) -> Res<()> {
+    for event in events {
+        if draw {
+            app.redraw_now(term)?;
+        }
+        app.handle_event(term, event)?;
+    }
+    Ok(())
 }
 
 /// What git piped to us as its pager, alongside the command already found to

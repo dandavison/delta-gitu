@@ -477,11 +477,73 @@ fn the_files_to_show_can_be_said_by_pattern() {
     two_changed_files(&ctx);
 
     let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
-    ctx.update(&mut app, keys("&!*_test.rs<enter>"));
+    ctx.update(&mut app, keys("&&!*_test.rs<enter>"));
 
     let buffer = ctx.redact_buffer();
     assert!(buffer.contains("alpha"), "{buffer}");
     assert!(!buffer.contains("beta"), "{buffer}");
+}
+
+/// `&` picks files by fuzzy matching their names, and the view shows the files the picker lists.
+#[test]
+fn the_file_picker_limits_the_view_to_the_files_it_lists() {
+    let mut ctx = setup_clone!();
+    two_changed_files(&ctx);
+
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("&test<enter>"));
+
+    let buffer = ctx.redact_buffer();
+    assert!(buffer.contains("beta"), "{buffer}");
+    assert!(!buffer.contains("alpha"), "{buffer}");
+}
+
+/// With nothing typed, the picker lists every file, and the view shows them all.
+#[test]
+fn the_file_picker_with_nothing_typed_shows_every_file() {
+    let mut ctx = setup_clone!();
+    two_changed_files(&ctx);
+
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("&test<enter>&<enter>"));
+
+    let buffer = ctx.redact_buffer();
+    assert!(buffer.contains("alpha"), "{buffer}");
+    assert!(buffer.contains("beta"), "{buffer}");
+}
+
+/// The picker lists the files the command covers, those the view hides too.
+#[test]
+fn the_file_picker_lists_the_files_the_view_hides() {
+    let mut ctx = setup_clone!();
+    two_changed_files(&ctx);
+
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("kd&"));
+
+    let buffer = ctx.redact_buffer();
+    assert!(
+        buffer
+            .lines()
+            .any(|line| line.trim_start_matches('▌').trim_end_matches([' ', '|']) == "a.rs"),
+        "{buffer}"
+    );
+}
+
+/// `&` again, in the picker, asks for patterns, starting from what was typed, or else from the
+/// view's patterns.
+#[test]
+fn a_second_ampersand_asks_for_patterns() {
+    let mut ctx = setup_clone!();
+    two_changed_files(&ctx);
+
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("&src&"));
+    assert_eq!(ctx.prompt_line(), "File filters: src|");
+
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("kd&&"));
+    assert_eq!(ctx.prompt_line(), "File filters: !a.rs|");
 }
 
 /// Hiding a file is an edit of the command like any other, so it is there to
@@ -492,7 +554,7 @@ fn the_files_asked_for_come_back_for_editing() {
     two_changed_files(&ctx);
 
     let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
-    ctx.update(&mut app, keys("kd&"));
+    ctx.update(&mut app, keys("kd&&"));
     assert!(
         ctx.redact_buffer().contains("File filters: !a.rs"),
         "{}",
@@ -535,7 +597,7 @@ fn command_and_file_histories_persist_separately() {
     ctx.update(
         &mut app,
         keys(
-            "&!a_test.rs<enter>&<ctrl+u>!a.rs<enter>\
+            "&&!a_test.rs<enter>&&<ctrl+u>!a.rs<enter>\
              : HEAD<enter>:<ctrl+u>git diff --cached<enter>",
         ),
     );
@@ -545,7 +607,7 @@ fn command_and_file_histories_persist_separately() {
     ctx.update(&mut app, keys(":<up>"));
     assert_eq!(ctx.prompt_line(), "git diff --cached|");
 
-    ctx.update(&mut app, keys("&<up>"));
+    ctx.update(&mut app, keys("&&<up>"));
     assert_eq!(ctx.prompt_line(), "File filters: !a.rs|");
 
     ctx.update(&mut app, keys(":<up><up><down>"));
@@ -977,6 +1039,61 @@ pub(super) fn annotating_renderer() -> Vec<String> {
     ]
     .map(String::from)
     .to_vec()
+}
+
+/// A renderer that lays a diff out as delta does, with OSC 1717 records where the spec puts them
+/// (§6), for the layout to be tested: `side_by_side` is `never`, `always`, or `hunk`, for only a
+/// hunk that both removes and adds lines, as delta's `side-by-side = hunk`. Side by side, the right
+/// column starts halfway across the width given in `COLUMNS`, each column's row starts with its
+/// record, a context line has its record before each column, and a row with a line on one side
+/// only has no record on the other. Drawn unified, a line longer than `wrap` columns, if `wrap` is
+/// not 0, is drawn on more rows, each starting with the line's record. A file's header is its
+/// path, and a hunk's is git's `@@` line.
+pub(super) fn layout_renderer(side_by_side: &str, wrap: usize) -> Vec<String> {
+    [
+        "awk".to_owned(),
+        "-v".to_owned(),
+        format!("scope={side_by_side}"),
+        "-v".to_owned(),
+        format!("wrap={wrap}"),
+        r#"
+        BEGIN{bs=sprintf("%c",92);osc="\033]1717;1";st="\033" bs;printf "%s",osc st;half=int(ENVIRON["COLUMNS"]/2);n=0}
+        function rec(type,new,old){return osc ";" type ";" new ";" old ";" file st}
+        function pad(s,w){if(length(s)>=w)return substr(s,1,w);return s sprintf("%" (w-length(s)) "s","")}
+        function unified(r,s){if(wrap==0){printf "%s%s\n",r,s;return}while(length(s)>wrap){printf "%s%s\n",r,substr(s,1,wrap);s=substr(s,wrap+1)}printf "%s%s\n",r,s}
+        function flush(i,k,nd,na,sbs,hasA,hasD,left,right){
+          if(n==0)return
+          hasA=0;hasD=0
+          for(i=1;i<=n;i++){if(t[i]=="a")hasA=1;if(t[i]=="d")hasD=1}
+          sbs=scope=="always"||(scope=="hunk"&&hasA&&hasD)
+          if(!sbs){for(i=1;i<=n;i++)unified(rec(t[i],nl[i],ol[i]),x[i]);n=0;return}
+          i=1
+          while(i<=n){
+            if(t[i]=="c"){printf "%s%s%s%s\n",rec("c",nl[i],""),pad(x[i],half),rec("c",nl[i],""),x[i];i++;continue}
+            nd=0;while(i+nd<=n&&t[i+nd]=="d")nd++
+            na=0;while(i+nd+na<=n&&t[i+nd+na]=="a")na++
+            for(k=0;k<(nd>na?nd:na);k++){
+              left=k<nd?rec("d",nl[i+k],ol[i+k]) pad(x[i+k],half):pad("",half)
+              right=k<na?rec("a",nl[i+nd+k],"") x[i+nd+k]:""
+              printf "%s%s\n",left,right
+            }
+            i+=nd+na
+          }
+          n=0
+        }
+        {gsub(/\033\[[0-9;]*m/,"")}
+        /^diff --git /{flush();file=$0;sub(/^diff --git a\/.* b\//,"",file);printf "%s%s\n",rec("f","",""),file;hunk=0;next}
+        /^@@ /{flush();o=$2;m=$3;sub(/^-/,"",o);sub(/^\+/,"",m);split(o,a,",");split(m,b,",");old=a[1];new=b[1];printf "%s%s\n",rec("h",new,""),$0;hunk=1;next}
+        hunk&&/^\+/{n++;t[n]="a";nl[n]=new++;ol[n]="";x[n]=$0;next}
+        hunk&&/^-/{n++;t[n]="d";nl[n]=new;ol[n]=old++;x[n]=$0;next}
+        hunk&&/^ /{n++;t[n]="c";nl[n]=new++;old++;ol[n]="";x[n]=$0;next}
+        !hunk{next}
+        {flush();hunk=0}
+        END{flush()}
+        "#
+        .to_owned(),
+    ]
+    .into()
 }
 
 fn selected_hunk_line(app: &App) -> Option<usize> {
@@ -2333,4 +2450,37 @@ fn a_file_with_a_non_ascii_name_shows_its_lines() {
     let buffer = ctx.redact_buffer();
     assert!(buffer.contains("hahaha"), "{buffer}");
     assert!(!buffer.contains("not a file in this diff"), "{buffer}");
+}
+
+/// Forty lines, `line 1` to `line 40`, with lines 10 and 30 as `changed 10` and `changed 30` when
+/// `changed`.
+fn forty_lines(changed: bool) -> String {
+    (1..=40)
+        .map(|i| match i {
+            10 | 30 if changed => format!("changed {i}\n"),
+            i => format!("line {i}\n"),
+        })
+        .collect()
+}
+
+/// `-` and `+` leave the cursor on the line it was on, though the hunks are cut differently: with
+/// wide context, the two changes are in one hunk, and with narrow, in two.
+#[test]
+fn changing_the_context_keeps_the_cursor_on_its_line() {
+    let mut ctx = setup_clone!();
+    commit(&ctx.dir, "file", &forty_lines(false));
+    fs::write(ctx.dir.join("file"), forty_lines(true)).unwrap();
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff", "-U16"]);
+    ctx.update(&mut app, keys("/changed 30<enter>"));
+    assert!(selected_rendered_row(&app).contains("changed 30"));
+
+    for key in ["-", "-", "+"] {
+        ctx.update(&mut app, keys(key));
+        assert!(
+            selected_rendered_row(&app).contains("changed 30"),
+            "after {key}: {}\n{}",
+            selected_rendered_row(&app),
+            ctx.redact_buffer()
+        );
+    }
 }

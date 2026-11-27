@@ -29,6 +29,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
+use unicode_width::UnicodeWidthStr;
 
 /// Protocol versions of the OSC-1717 diff-line-metadata spec we understand,
 /// advertised to the renderer via `OSC1717` (a version set, `V`-prefixed).
@@ -132,6 +133,10 @@ pub(crate) struct ParsedLine {
     pub runs: Vec<(Range<usize>, Style)>,
     pub hyperlinks: Vec<Hyperlink>,
     pub records: Vec<LineMetadata>,
+    /// The column each of `records` starts at: the width of the row's text before it. The
+    /// renderer puts a record before the first cell of what it is drawn as (spec §6.1), so a
+    /// side-by-side row's right column starts at its second record's column (spec §6.2).
+    pub record_columns: Vec<usize>,
 }
 
 /// The result of parsing a renderer's output.
@@ -692,6 +697,8 @@ struct Performer {
     hyperlinks: Vec<Hyperlink>,
     /// The OSC-1717 records seen on the current line, in emission order.
     records: Vec<LineMetadata>,
+    /// The column each of `records` starts at.
+    record_columns: Vec<usize>,
     /// Set when the current line carries the version-only handshake record. Its
     /// line is dropped, unless the renderer put content or another record on it.
     handshake_line: bool,
@@ -711,6 +718,7 @@ impl Performer {
             runs: mem::take(&mut self.runs),
             hyperlinks: mem::take(&mut self.hyperlinks),
             records: mem::take(&mut self.records),
+            record_columns: mem::take(&mut self.record_columns),
         };
         if let Some((start, _)) = &mut self.hyperlink {
             *start = 0;
@@ -809,6 +817,7 @@ impl Perform for Performer {
             [_, version, kind, new_line, old_line, file_head @ ..] if !file_head.is_empty() => {
                 self.protocol_version = self.protocol_version.or_else(|| parse_u32(version));
                 if let Some(kind) = line_kind(kind) {
+                    self.record_columns.push(self.text.width());
                     self.records.push(LineMetadata {
                         kind,
                         new_line: parse_u32(new_line).unwrap_or(0),

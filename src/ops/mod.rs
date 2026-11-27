@@ -98,9 +98,15 @@ pub(crate) enum Op {
     PushToElsewhere,
     PrCurrent,
     PrOther,
+    PrSync,
+    PrThreads,
     ToggleViewed,
+    ToggleLocalOnly,
     ShowOnGithub,
     WriteComment,
+    EditComment,
+    MessageAgent,
+    OpenFile,
     RebaseAbort,
     RebaseContinue,
     RebaseElsewhere,
@@ -214,6 +220,15 @@ impl Op {
     }
 
     /// What the op does, for the list of bindings.
+    /// What the spinner says while the op takes long enough to show it: what it is doing, where
+    /// that is not what its description says it does.
+    pub(crate) fn doing(&self) -> std::borrow::Cow<'static, str> {
+        match self {
+            Op::PrSync => "Syncing with GitHub".into(),
+            _ => self.description(),
+        }
+    }
+
     pub(crate) fn description(&self) -> std::borrow::Cow<'static, str> {
         match self {
             Op::AddRemote => "Add a remote",
@@ -240,11 +255,24 @@ impl Op {
             Op::PushToPushRemote => "Push to the push remote",
             Op::PushToUpstream => "Push to the upstream",
             Op::PushToElsewhere => "Push to a branch you choose",
-            Op::PrCurrent => "Check out the current branch's GitHub PR and review it",
-            Op::PrOther => "Check out a GitHub PR you choose by number or URL and review it",
+            Op::PrCurrent => "Open the current branch's PR",
+            Op::PrOther => "Check out a GitHub PR you choose by number or URL, and open it",
+            Op::PrSync => "Sync the PR with GitHub: post your draft comments, and fetch its reviews",
+            Op::PrThreads => "Show the PR's threads, narrowed as you type, and go to one",
             Op::ToggleViewed => "Tick or untick the PR file's Viewed checkbox on GitHub",
+            Op::ToggleLocalOnly => {
+                "Move the comment between your draft review, which sync posts, and local-only"
+            }
             Op::ShowOnGithub => "Open the PR file, hunk, line or comment on GitHub, to comment there",
-            Op::WriteComment => "Write a comment on the PR line, or a reply to the thread, in a box in the diff",
+            Op::WriteComment => "Write a comment, or a reply to the thread",
+            Op::EditComment => "Edit your comment",
+            Op::OpenFile => {
+                "Open the file under the cursor whole, as committed, to comment on for an agent, \
+                 or else pick one"
+            }
+            Op::MessageAgent => {
+                "Send an agent a message about the thread or the PR"
+            }
             Op::RebaseAbort => "Abort the rebase",
             Op::RebaseContinue => "Continue the rebase",
             Op::RebaseElsewhere => "Rebase onto a branch or commit you choose",
@@ -373,8 +401,8 @@ impl Op {
             | Op::PushToPushRemote
             | Op::PushToUpstream
             | Op::PushToElsewhere
-            | Op::PrCurrent
             | Op::PrOther
+            | Op::PrSync
             | Op::RebaseAbort
             | Op::RebaseContinue
             | Op::RebaseElsewhere
@@ -470,9 +498,15 @@ impl Op {
             Op::PushToElsewhere => Box::new(push::PushToElsewhere),
             Op::PrCurrent => Box::new(pr::PrCurrent),
             Op::PrOther => Box::new(pr::PrOther),
+            Op::PrSync => Box::new(pr::PrSync),
+            Op::PrThreads => Box::new(pr::PrThreads),
             Op::ToggleViewed => Box::new(pr::ToggleViewed),
+            Op::ToggleLocalOnly => Box::new(pr::ToggleLocalOnly),
             Op::ShowOnGithub => Box::new(pr::ShowOnGithub),
             Op::WriteComment => Box::new(pr::WriteComment),
+            Op::EditComment => Box::new(pr::EditComment),
+            Op::MessageAgent => Box::new(pr::MessageAgent),
+            Op::OpenFile => Box::new(pr::OpenFile),
             Op::RebaseAbort => Box::new(rebase::RebaseAbort),
             Op::RebaseContinue => Box::new(rebase::RebaseContinue),
             Op::RebaseElsewhere => Box::new(rebase::RebaseElsewhere),

@@ -24,7 +24,7 @@ impl OpTrait for Stash {
             let message = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Stash message",
+                    prompt: "Stash message".into(),
                     ..Default::default()
                 },
             )?;
@@ -58,7 +58,7 @@ impl OpTrait for StashIndex {
             let message = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Stash message",
+                    prompt: "Stash message".into(),
                     ..Default::default()
                 },
             )?;
@@ -96,7 +96,7 @@ impl OpTrait for StashWorktree {
             let message = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Stash message",
+                    prompt: "Stash message".into(),
                     ..Default::default()
                 },
             )?;
@@ -187,7 +187,7 @@ impl OpTrait for StashKeepIndex {
             let message = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Stash message",
+                    prompt: "Stash message".into(),
                     ..Default::default()
                 },
             )?;
@@ -221,7 +221,7 @@ impl OpTrait for StashPop {
             let input = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Pop stash",
+                    prompt: "Pop stash".into(),
                     create_default_value: Box::new(selected_stash),
                     ..Default::default()
                 },
@@ -253,7 +253,7 @@ impl OpTrait for StashApply {
             let input = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Apply stash",
+                    prompt: "Apply stash".into(),
                     create_default_value: Box::new(selected_stash),
                     ..Default::default()
                 },
@@ -285,7 +285,7 @@ impl OpTrait for StashDrop {
             let input = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Drop stash",
+                    prompt: "Drop stash".into(),
                     create_default_value: Box::new(selected_stash),
                     ..Default::default()
                 },

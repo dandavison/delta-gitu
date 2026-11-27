@@ -153,6 +153,7 @@ impl TestContext {
             paged,
         )
         .unwrap();
+        app.state.github = std::rc::Rc::new(crate::tests::helpers::github::NoGitHub);
 
         app.redraw_now(&mut self.term).unwrap();
         app

@@ -3,22 +3,25 @@
 
 use crate::{
     Res,
-    app::App,
+    app::{App, PromptParams},
     calling_process::GitCommand,
     error::Error,
     item_data::{ItemData, Ref},
+    prompt::HistoryKind,
     screen,
     term::Term,
 };
 use std::{rc::Rc, sync::Arc};
 
 /// Run the command `name`, with what it asks for filled in from the item under
-/// the cursor, as a fetch is run: in the repository's root, while gitu stays
-/// usable, with the width and features gitu draws with in its environment. Its
-/// output is not shown, unless with `--debug`; one that fails says so. A
-/// command asking for what is not under the cursor is not run.
+/// the cursor, and `{input}` from a prompt, as a fetch is run: in the
+/// repository's root, while gitu stays usable, with the width and features gitu
+/// draws with in its environment. Its output is not shown, unless with
+/// `--debug`; one that fails says so. A command asking for what is not under
+/// the cursor is not run, nor one whose prompt is cancelled or left empty.
 pub(crate) fn run(app: &mut App, term: &mut Term, name: &str) -> Res<()> {
     let Some(template) = app.state.config.general.commands.get(name) else {
+        app.display_error(format!("{name}: there is no command of that name"));
         return Ok(());
     };
     let mut template = template.clone();
@@ -30,16 +33,12 @@ pub(crate) fn run(app: &mut App, term: &mut Term, name: &str) -> Res<()> {
         // Already as a shell takes it.
         template = template.replace(COMMAND, &line);
     }
-    let target = &app.screen().get_selected_item().data;
-    let command = match filled_in(&template, target, |value| {
-        shell_words::quote(value).into_owned()
-    }) {
-        Ok(command) => command,
-        Err(placeholder) => {
-            app.display_error(nothing_for(app, name, placeholder));
-            return Ok(());
-        }
+    let Some(values) = values_or_say_why(app, term, name, &template)? else {
+        return Ok(());
     };
+    let command = filled_in(&template, &values, |value| {
+        shell_words::quote(value).into_owned()
+    });
 
     // A delta it runs draws as gitu draws the screen.
     let params = app.render_params(term.size().map_err(Error::Term)?);
@@ -48,11 +47,13 @@ pub(crate) fn run(app: &mut App, term: &mut Term, name: &str) -> Res<()> {
 }
 
 /// Open the view `name` on top of the screen in view, with what it asks for
-/// filled in from the item under the cursor. A view asking for what is not
-/// under the cursor, or that is not a `git diff`, `git show` or `git log`, is
-/// not opened.
+/// filled in from the item under the cursor, and `{input}` from a prompt, as
+/// one word. A view asking for what is not under the cursor, or that is not a
+/// `git diff`, `git show` or `git log`, is not opened, nor one whose prompt is
+/// cancelled or left empty.
 pub(crate) fn open_view(app: &mut App, term: &mut Term, name: &str) -> Res<()> {
     let Some(template) = app.state.config.general.views.get(name) else {
+        app.display_error(format!("{name}: there is no view of that name"));
         return Ok(());
     };
     let Ok(words) = shell_words::split(template) else {
@@ -84,19 +85,14 @@ pub(crate) fn open_view(app: &mut App, term: &mut Term, name: &str) -> Res<()> {
         spliced.extend(shell_words::split(&line).map_err(|_| Error::EditedCommandQuotes)?);
     }
 
-    let target = &app.screen().get_selected_item().data;
-    // Word by word, so that a value with spaces stays one word.
-    let argv: Result<Vec<String>, _> = spliced
-        .iter()
-        .map(|word| filled_in(word, target, |value| value.to_owned()))
-        .collect();
-    let argv = match argv {
-        Ok(argv) => argv,
-        Err(placeholder) => {
-            app.display_error(nothing_for(app, name, placeholder));
-            return Ok(());
-        }
+    let Some(values) = values_or_say_why(app, term, name, &spliced.join(" "))? else {
+        return Ok(());
     };
+    // Word by word, so that a value with spaces stays one word.
+    let argv: Vec<String> = spliced
+        .iter()
+        .map(|word| filled_in(word, &values, |value| value.to_owned()))
+        .collect();
     if GitCommand::of(argv.clone()).is_none() {
         app.display_error(format!(
             "{name}: a view is a git diff, git show or git log command"
@@ -118,6 +114,9 @@ pub(crate) fn open_view(app: &mut App, term: &mut Term, name: &str) -> Res<()> {
 
 /// The placeholder for the git command the screen is showing.
 const COMMAND: &str = "{command}";
+
+/// The placeholder for what is typed at the prompt the command's key opens.
+const INPUT: &str = "{input}";
 
 /// The git command the screen in view is showing, as `:` shows it, and where it
 /// was run (see [`GitCommand::prefix`]). `None` for a screen that is not a git
@@ -144,26 +143,82 @@ fn nothing_for(app: &App, name: &str, placeholder: &str) -> String {
     }
 }
 
-/// `template` with each placeholder replaced by `written` of its value for
-/// `target`, or the first placeholder that has none.
-fn filled_in(
+/// The value of each placeholder `template` uses: from `target`, the item under
+/// the cursor, and then `{input}` typed at a prompt labelled with `name`.
+/// `None`, having said why, when `target` has no value for one, and `None` when
+/// the prompt is cancelled or left empty. The prompt opens only once the values
+/// from `target` are known, so that nothing typed is wasted.
+fn values_or_say_why(
+    app: &mut App,
+    term: &mut Term,
+    name: &str,
     template: &str,
-    target: &ItemData,
-    written: impl Fn(&str) -> String,
-) -> Result<String, &'static str> {
-    let mut filled = template.to_owned();
+) -> Res<Option<Vec<(&'static str, String)>>> {
+    let target = &app.screen().get_selected_item().data;
+    let mut values = vec![];
     for (placeholder, value) in [
         ("{commit}", commit_of(target)),
         ("{file}", file_of(target)),
         ("{branch}", branch_of(target)),
     ] {
-        if !filled.contains(placeholder) {
+        if !template.contains(placeholder) {
             continue;
         }
-        let value = value.ok_or(placeholder)?;
-        filled = filled.replace(placeholder, &written(&value));
+        let Some(value) = value else {
+            app.display_error(nothing_for(app, name, placeholder));
+            return Ok(None);
+        };
+        values.push((placeholder, value));
     }
-    Ok(filled)
+    if template.contains(INPUT) {
+        let input = match app.prompt(
+            term,
+            &PromptParams {
+                prompt: name.to_owned().into(),
+                history: Some(HistoryKind::Input(name.to_owned())),
+                ..Default::default()
+            },
+        ) {
+            Ok(input) => input,
+            Err(Error::PromptAborted) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        if input.is_empty() {
+            return Ok(None);
+        }
+        values.push((INPUT, input));
+    }
+    Ok(Some(values))
+}
+
+/// `template` with each placeholder in `values` replaced by `written` of its
+/// value, in one pass, so that a value is never itself filled in.
+fn filled_in(
+    template: &str,
+    values: &[(&'static str, String)],
+    written: impl Fn(&str) -> String,
+) -> String {
+    let mut filled = String::new();
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        filled.push_str(&rest[..start]);
+        rest = &rest[start..];
+        match values
+            .iter()
+            .find(|(placeholder, _)| rest.starts_with(placeholder))
+        {
+            Some((placeholder, value)) => {
+                filled.push_str(&written(value));
+                rest = &rest[placeholder.len()..];
+            }
+            None => {
+                filled.push('{');
+                rest = &rest[1..];
+            }
+        }
+    }
+    filled.push_str(rest);
+    filled
 }
 
 fn commit_of(target: &ItemData) -> Option<String> {

@@ -16,7 +16,7 @@ impl OpTrait for AddRemote {
             let remote_name = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Remote name",
+                    prompt: "Remote name".into(),
                     ..Default::default()
                 },
             )?;
@@ -24,7 +24,7 @@ impl OpTrait for AddRemote {
             let remote_url = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Remote url",
+                    prompt: "Remote url".into(),
                     ..Default::default()
                 },
             )?;
@@ -47,7 +47,7 @@ impl OpTrait for RenameRemote {
             let remote_name = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Rename remote",
+                    prompt: "Rename remote".into(),
                     ..Default::default()
                 },
             )?;
@@ -55,7 +55,7 @@ impl OpTrait for RenameRemote {
             let new_remote_name = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Rename to",
+                    prompt: "Rename to".into(),
                     ..Default::default()
                 },
             )?;
@@ -77,7 +77,7 @@ impl OpTrait for RemoveRemote {
             let remote_name = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Delete remote",
+                    prompt: "Delete remote".into(),
                     ..Default::default()
                 },
             )?;

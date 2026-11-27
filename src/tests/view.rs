@@ -180,3 +180,19 @@ fn a_view_of_the_command_shown_is_not_opened_off_one() {
         ctx.redact_buffer()
     );
 }
+
+/// `{input}` in a view is what is typed at its prompt, as one word.
+#[test]
+fn a_view_with_input_opens_with_what_is_typed_at_its_prompt() {
+    let ctx = setup_clone!();
+    commit(&ctx.dir, "a", "a needle\n");
+    commit(&ctx.dir, "b", "hay\n");
+    let mut ctx = with_view(ctx, "search", "git log --format=found-%s -S {input}", 't');
+    let mut app = ctx.init_app();
+
+    ctx.update(&mut app, keys("ta needle<enter>"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("found-add a"), "{screen}");
+    assert!(!screen.contains("found-add b"), "{screen}");
+}

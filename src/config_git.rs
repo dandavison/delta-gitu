@@ -51,22 +51,26 @@ pub(crate) const FEATURE_KEY: &str = "feature-key";
 pub(crate) const THEME: &str = "diff-renderer-theme";
 
 /// The settings that have no value by default, so are not in gitu's defaults.
-const UNSET_BY_DEFAULT: [&str; 2] = ["general.alt_editor", "general.diff_renderer.theme"];
+pub(crate) const UNSET_BY_DEFAULT: [&str; 3] = [
+    "general.alt_editor",
+    "general.diff_renderer.theme",
+    "general.send_message_command",
+];
 
 /// The names gitu's styles would have that are delta's options.
 const DELTAS: [&str; 1] = ["hunk-header-style"];
 
 /// A setting gitu takes from git config.
-struct Setting {
+pub(crate) struct Setting {
     /// Its name in git config.
-    name: String,
+    pub name: String,
     /// Where it is in gitu's config.
-    path: Vec<String>,
-    kind: Kind,
+    pub path: Vec<String>,
+    pub kind: Kind,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Kind {
     Bool,
     Int,
     Str,
@@ -78,7 +82,7 @@ enum Kind {
 }
 
 /// Every setting gitu takes from git config, from gitu's `defaults`.
-fn settings(defaults: &Figment) -> Vec<Setting> {
+pub(crate) fn settings(defaults: &Figment) -> Vec<Setting> {
     let mut settings = vec![];
     if let Ok(Value::Dict(_, general)) = defaults.find_value("general") {
         general_settings(&general, &mut vec!["general".to_owned()], &mut settings);

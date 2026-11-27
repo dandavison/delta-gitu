@@ -44,7 +44,7 @@ fn shown(entry: &Arc<RwLock<CmdLogEntry>>, debug: bool) -> bool {
 }
 
 /// A spinner frame that turns every [`SPINNER_STEP`].
-fn spinner() -> &'static str {
+pub(crate) fn spinner() -> &'static str {
     const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let steps = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -25,11 +25,25 @@ pub(crate) fn init_args() -> Vec<Arg> {
     ]
 }
 
+/// The current branch's log, or, on a PR's screen, the PR's: its commits, on top of its screen.
 pub(crate) struct LogCurrent;
 impl OpTrait for LogCurrent {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
         Some(Rc::new(|app: &mut App, _term: &mut Term| {
-            goto_log_screen(app, None)
+            let pr = app.screen().pr.clone();
+            match pr {
+                Some(pr) => {
+                    let local = pr.backend.as_local().ok_or_else(|| {
+                        Error::LocalPr(
+                            "Couldn't show the PR's log: the PR on screen is not a local PR"
+                                .to_owned(),
+                        )
+                    })?;
+                    let range = local.log_range()?;
+                    push_log_screen(app, vec![range])
+                }
+                None => goto_log_screen(app, None),
+            }
         }))
     }
 
@@ -45,7 +59,7 @@ impl OpTrait for LogOther {
             let rev = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Log rev",
+                    prompt: "Log rev".into(),
                     create_default_value: Box::new(|app| {
                         selected_rev(app)
                             .as_ref()
@@ -79,6 +93,11 @@ fn log_other(app: &mut App, _term: &mut Term, result: &str) -> Res<()> {
 
 fn goto_log_screen(app: &mut App, rev: Option<Oid>) -> Res<()> {
     app.state.screens.drain(1..);
+    push_log_screen(app, rev.map(|oid| oid.to_string()).into_iter().collect())
+}
+
+/// Open the log of `revs` on top of the screen in view, as the log menu's arguments limit it.
+fn push_log_screen(app: &mut App, revs: Vec<String>) -> Res<()> {
     let params = app.render_params(app.state.screens.last().unwrap().size);
     let limit = *app
         .state
@@ -101,7 +120,7 @@ fn goto_log_screen(app: &mut App, rev: Option<Oid>) -> Res<()> {
         Rc::clone(&app.state.repo),
         params,
         limit as usize,
-        rev,
+        revs,
         msg_regex.as_ref(),
     )?);
     Ok(())

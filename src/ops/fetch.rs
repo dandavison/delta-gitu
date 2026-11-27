@@ -41,7 +41,7 @@ impl OpTrait for FetchElsewhere {
             let remote = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "Select remote",
+                    prompt: "Select remote".into(),
                     ..Default::default()
                 },
             )?;
@@ -98,7 +98,7 @@ impl OpTrait for FetchPushRemote {
                     let push_remote_name = app.prompt(
                         term,
                         &PromptParams {
-                            prompt: "Set pushRemote then fetch",
+                            prompt: "Set pushRemote then fetch".into(),
                             ..Default::default()
                         },
                     )?;
@@ -130,7 +130,7 @@ impl OpTrait for FetchUpstream {
                         let upstream_name = app.prompt(
                             term,
                             &PromptParams {
-                                prompt: "Set upstream then fetch",
+                                prompt: "Set upstream then fetch".into(),
                                 ..Default::default()
                             },
                         )?;

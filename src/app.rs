@@ -43,11 +43,19 @@ use crate::rebase_todo::RebaseTodo;
 use crate::screen;
 use crate::screen::Screen;
 use crate::screen::pager::Paged;
-use crate::term::Term;
+use crate::term::{Busy, Term};
 use crate::text_input;
 use crate::ui;
 
 use super::Res;
+
+/// The spinner saying what the action running is busy with (see [`Term::busy`]), and what it says,
+/// so that it can be started again.
+struct Busying {
+    spinner: Busy,
+    what: String,
+    style: crate::style::Style,
+}
 
 pub(crate) struct State {
     pub repo: Rc<Repository>,
@@ -61,6 +69,9 @@ pub(crate) struct State {
     pub screens: Vec<Screen>,
     pub pending_menu: Option<PendingMenu>,
     pending_cmd: Option<PendingCmd>,
+    /// The spinner saying what the action running is busy with, which a question it asks stops
+    /// until it is answered.
+    busy: Option<Busying>,
     enable_async_cmds: bool,
     pub debug: bool,
     pub current_cmd_log: CmdLog,
@@ -91,7 +102,7 @@ pub(crate) struct State {
     pub(crate) terminal_width: Option<(u16, Instant)>,
     file_watcher: Option<FileWatcher>,
     inhibit_close_menu: bool,
-    pub github: Rc<dyn crate::github::GitHub>,
+    pub github: Rc<dyn crate::review::github::GitHub>,
 }
 
 pub struct App {
@@ -166,6 +177,9 @@ impl App {
                 let todo = RebaseTodo::read(&repo, file)?;
                 vec![rebase_todo_screen(&config, &repo, params.clone(), todo)?]
             }
+            Some(cli::Commands::Review { .. }) => {
+                unreachable!("gitu::run runs the review command without the TUI")
+            }
             None => vec![screen::status::create(
                 Arc::clone(&config),
                 Rc::clone(&repo),
@@ -177,9 +191,9 @@ impl App {
             .inspect_err(|e| log::warn!("Couldn't initialize clipboard: {e}"))
             .ok();
         let read_only = config.general.read_only.is_on(&repo);
-        let prompt = prompt::Prompt::with_history(repo.path().join("gitu"), read_only);
+        let prompt = prompt::Prompt::with_history(repo.path().join("delta"), read_only);
 
-        let github = Rc::new(crate::github::Gh {
+        let github = Rc::new(crate::review::github::Gh {
             workdir: repo.workdir().unwrap_or(repo.path()).to_path_buf(),
         });
 
@@ -199,6 +213,7 @@ impl App {
                 },
                 screens,
                 pending_cmd: None,
+                busy: None,
                 pending_menu: None,
                 current_cmd_log: CmdLog::new(),
                 prompt,
@@ -274,20 +289,44 @@ impl App {
 
         self.rerender_at_terminal_width(term)?;
 
+        let watcher_errors = self
+            .state
+            .file_watcher
+            .as_ref()
+            .map(FileWatcher::take_errors)
+            .unwrap_or_default();
+        for error in watcher_errors {
+            self.display_error(error);
+        }
         if let Some(file_watcher) = &mut self.state.file_watcher
             && file_watcher.pending_updates()
         {
+            let busy = term.busy(
+                &Op::Refresh.description(),
+                crate::style::Style::from(&self.state.config.style.info_msg),
+            );
+            self.reread_review_threads()?;
             self.update_screens()?;
+            if busy.finish() {
+                self.stage_redraw();
+            }
         }
 
         let finished = self.finish_screens();
         self.handle_result(finished)?;
 
-        let handle_pending_cmd_result = self.handle_pending_cmd();
+        let handle_pending_cmd_result = self.handle_pending_cmd(term);
         self.handle_result(handle_pending_cmd_result)?;
 
         // Its spinner turns.
         if self.state.pending_cmd.is_some() {
+            self.stage_redraw();
+        }
+
+        // A thread an agent is working on pulses: its PR is drawn again on each tick, until none
+        // is.
+        if self.screen().pr.as_ref().is_some_and(|pr| pr.pulsing.get()) {
+            self.screen_mut().redecorate();
             self.stage_redraw();
         }
 
@@ -361,6 +400,26 @@ impl App {
             screen.resize(width, height)?;
         }
         self.rerender_screens()
+    }
+
+    /// Read each PR screen's review threads from the local store again, as an
+    /// agent may have written to it. This reads no more than the store: unlike
+    /// `g r`, it neither fetches from GitHub nor reads Viewed.
+    fn reread_review_threads(&mut self) -> Res<()> {
+        for screen in &self.state.screens {
+            if let Some(pr) = &screen.pr {
+                if pr.backend.as_local().is_none() {
+                    return Err(Error::LocalPr(
+                        "Couldn't read review threads: the PR on screen is not a local PR"
+                            .to_owned(),
+                    ));
+                }
+                // A local PR's threads, pending review and summary are read from the store, and
+                // its branch may have moved.
+                pr.repin()?;
+            }
+        }
+        Ok(())
     }
 
     pub fn update_screens(&mut self) -> Res<()> {
@@ -476,8 +535,8 @@ impl App {
                     self.handle_picker_input(key)?;
                 } else if self.state.prompt.state.focused {
                     self.state.prompt.handle_key(key);
-                } else if crate::ops::pr::draft_has_focus(self) {
-                    let result = crate::ops::pr::handle_draft_key(self, term, key);
+                } else if crate::ops::pr::editor_has_focus(self) {
+                    let result = crate::ops::pr::handle_editor_key(self, term, key);
                     self.handle_result(result)?;
                 } else {
                     self.handle_key_input(term, key)?;
@@ -487,8 +546,8 @@ impl App {
                 Ok(())
             }
             Event::Paste(text) => {
-                if crate::ops::pr::draft_has_focus(self) {
-                    crate::ops::pr::paste_into_draft(self, &text);
+                if crate::ops::pr::editor_has_focus(self) {
+                    crate::ops::pr::paste_into_editor(self, &text);
                     self.stage_redraw();
                 }
                 Ok(())
@@ -636,6 +695,22 @@ impl App {
         Ok(true)
     }
 
+    /// Say the action under way is busy with `what` from now, rather than with its op's
+    /// description, once it has said what it is doing more exactly.
+    pub(crate) fn busy_with(&mut self, term: &mut Term, what: String) {
+        let Some(busying) = self.state.busy.take() else {
+            return;
+        };
+        if busying.spinner.finish() {
+            self.stage_redraw();
+        }
+        self.state.busy = Some(Busying {
+            spinner: term.busy(&what, busying.style),
+            what,
+            style: busying.style,
+        });
+    }
+
     pub(crate) fn handle_op(&mut self, op: Op, term: &mut Term) -> Res<()> {
         if self.state.read_only && op.writes() {
             return Ok(());
@@ -644,7 +719,19 @@ impl App {
         let implementation = op.clone().implementation();
 
         if let Some(mut action) = implementation.get_action(&item_data) {
+            let what = op.doing().into_owned();
+            let style = crate::style::Style::from(&self.state.config.style.info_msg);
+            self.state.busy = Some(Busying {
+                spinner: term.busy(&what, style),
+                what,
+                style,
+            });
             let result = Rc::get_mut(&mut action).unwrap()(self, term);
+            if let Some(busying) = self.state.busy.take()
+                && busying.spinner.finish()
+            {
+                self.stage_redraw();
+            }
             self.handle_result(result)?;
             if !self.state.inhibit_close_menu {
                 self.close_menu();
@@ -734,7 +821,7 @@ impl App {
     pub fn run_cmd(&mut self, term: &mut Term, input: &[u8], cmd: Command) -> Res<()> {
         self.run_cmd_async(term, input, cmd)?;
         self.await_pending_cmd_drawing(term)?;
-        self.handle_pending_cmd()?;
+        self.handle_pending_cmd(term)?;
         Ok(())
     }
 
@@ -742,7 +829,19 @@ impl App {
     /// Will return `Ok(())` if one is already running.
     pub fn run_cmd_async(&mut self, term: &mut Term, input: &[u8], cmd: Command) -> Res<()> {
         let shown = crate::cmd_log::command_args(&cmd);
-        self.run_cmd_async_shown(term, input, cmd, shown)
+        self.run_cmd_async_shown(term, input, cmd, shown, None)
+    }
+
+    /// Run `cmd` as [`Self::run_cmd_async`] does, and do `then` once it has finished, if it
+    /// succeeded.
+    pub(crate) fn run_cmd_async_then(
+        &mut self,
+        term: &mut Term,
+        cmd: Command,
+        then: AfterCmd,
+    ) -> Res<()> {
+        let shown = crate::cmd_log::command_args(&cmd);
+        self.run_cmd_async_shown(term, &[], cmd, shown, Some(then))
     }
 
     /// Run `command` with `sh -c` and `env` set, as [`Self::run_cmd_async`]
@@ -755,7 +854,7 @@ impl App {
     ) -> Res<()> {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", command]).envs(env);
-        self.run_cmd_async_shown(term, &[], cmd, command.to_owned().into())
+        self.run_cmd_async_shown(term, &[], cmd, command.to_owned().into(), None)
     }
 
     fn run_cmd_async_shown(
@@ -764,6 +863,7 @@ impl App {
         input: &[u8],
         mut cmd: Command,
         shown: Cow<'static, str>,
+        then: Option<AfterCmd>,
     ) -> Res<()> {
         cmd.env("CLICOLOR_FORCE", "1"); // No guarantee, but modern tools seem to implement this
 
@@ -793,6 +893,7 @@ impl App {
 
         self.state.pending_cmd = Some(PendingCmd {
             child,
+            then,
             log_entry,
             stdin,
             stdout,
@@ -833,7 +934,7 @@ impl App {
     }
 
     /// Handles any pending_cmd in State without blocking. Returns `true` if a cmd was handled.
-    fn handle_pending_cmd(&mut self) -> Res<()> {
+    fn handle_pending_cmd(&mut self, term: &mut Term) -> Res<()> {
         let Some(PendingCmd { ref mut child, .. }) = self.state.pending_cmd else {
             return Ok(());
         };
@@ -844,10 +945,16 @@ impl App {
 
         log::debug!("pending cmd finished with {status:?}");
 
-        let pending = self.state.pending_cmd.take().unwrap();
+        let mut pending = self.state.pending_cmd.take().unwrap();
+        let then = pending.then.take();
         let result = write_child_output_to_log(pending, status);
         self.update_screens()?;
         result?;
+        if let Some(then) = then
+            && status.success()
+        {
+            then(self, term)?;
+        }
 
         Ok(())
     }
@@ -931,16 +1038,45 @@ impl App {
         self.screen().get_selected_item().data.rev()
     }
 
+    /// Ask the user something, while the action that asks waits for the answer: the spinner saying
+    /// what it is busy with stops while they answer, and, once they have, the question goes at
+    /// once, and the spinner starts again, as the action goes on and may block again.
+    fn asking<T>(
+        &mut self,
+        term: &mut Term,
+        ask: impl FnOnce(&mut Self, &mut Term) -> Res<T>,
+    ) -> Res<T> {
+        let paused = self.state.busy.take().map(|busying| {
+            busying.spinner.finish();
+            (busying.what, busying.style)
+        });
+        let answer = ask(self, term);
+        // An action not answered, as when the question is cancelled, ends at once.
+        if let (Some((what, style)), Ok(_)) = (paused, &answer) {
+            self.redraw_now(term)?;
+            self.state.busy = Some(Busying {
+                spinner: term.busy(&what, style),
+                what,
+                style,
+            });
+        }
+        answer
+    }
+
     pub(crate) fn prompt(&mut self, term: &mut Term, params: &PromptParams) -> Res<String> {
+        self.asking(term, |app, term| app.ask_prompt(term, params))
+    }
+
+    fn ask_prompt(&mut self, term: &mut Term, params: &PromptParams) -> Res<String> {
         let default = (params.create_default_value)(self);
 
         // A prompt with nothing to say says nothing: the key that opened it
         // already said what is being answered. Prefilled, the default is the
         // answer being edited rather than the one an empty answer falls back
         // to — it is on the line, so naming it again says nothing either.
-        let prompt_text = match (params.prompt, &default) {
+        let prompt_text = match (params.prompt.as_ref(), &default) {
             ("", _) => Cow::Borrowed(""),
-            (prompt, _) if params.bare => Cow::Borrowed(prompt),
+            (_, _) if params.bare => params.prompt.clone(),
             (prompt, Some(default)) if !params.prefill => format!("{prompt} ({default}):").into(),
             (prompt, _) => format!("{prompt}:").into(),
         };
@@ -960,7 +1096,7 @@ impl App {
             self.state.prompt.state.value = default;
             self.state.prompt.state.move_to(usize::MAX);
         }
-        self.state.prompt.start_history(params.history)?;
+        self.state.prompt.start_history(params.history.as_ref())?;
 
         let result = self.handle_prompt(term, params);
 
@@ -976,11 +1112,21 @@ impl App {
         loop {
             let event = term.read_event()?;
             let was = self.state.prompt.state.value.clone();
-            self.handle_event(term, event)?;
+            let used = match (&event, &params.on_key) {
+                (Event::Key(key), Some(on_key)) if key.kind == event::KeyEventKind::Press => {
+                    on_key(self, *key)
+                }
+                _ => KeyUse::Typed,
+            };
+            match used {
+                KeyUse::Typed => self.handle_event(term, event)?,
+                KeyUse::Taken => {}
+                KeyUse::Answers => self.state.prompt.state.status = text_input::Status::Done,
+            }
 
             if self.state.prompt.state.status == text_input::Status::Done {
                 let value = get_prompt_result(params, self)?;
-                if let Some(kind) = params.history {
+                if let Some(kind) = &params.history {
                     self.state.prompt.remember(kind, &value)?;
                 }
                 return Ok(value);
@@ -998,10 +1144,15 @@ impl App {
         }
     }
 
-    pub fn confirm(&mut self, term: &mut Term, prompt: &'static str) -> Res<()> {
+    pub fn confirm(&mut self, term: &mut Term, prompt: impl Into<Cow<'static, str>>) -> Res<()> {
+        let prompt = prompt.into();
+        self.asking(term, |app, term| app.ask_confirm(term, prompt))
+    }
+
+    fn ask_confirm(&mut self, term: &mut Term, prompt: Cow<'static, str>) -> Res<()> {
         self.hide_menu();
         self.state.prompt.set(prompt::PromptData {
-            prompt_text: prompt.into(),
+            prompt_text: prompt,
             bare: false,
         });
 
@@ -1077,12 +1228,12 @@ impl App {
         term: &mut Term,
         picker_state: PickerState,
     ) -> Res<Option<Picked>> {
-        self.state.picker = Some(picker_state);
-        let result = self.handle_picker(term, &mut |_, _| Ok(()));
-
-        self.state.picker = None;
-
-        result
+        self.asking(term, |app, term| {
+            app.state.picker = Some(picker_state);
+            let result = app.handle_picker(term, &mut |_, _| Ok(()));
+            app.state.picker = None;
+            result
+        })
     }
 
     /// [`App::pick`], calling `preview` with each item the cursor stops on.
@@ -1092,15 +1243,36 @@ impl App {
         picker_state: PickerState,
         preview: &mut dyn FnMut(&mut App, &PickerData) -> Res<()>,
     ) -> Res<Option<PickerData>> {
-        self.state.picker = Some(picker_state);
-        let result = self.handle_picker(term, preview);
-
-        self.state.picker = None;
+        let result = self.asking(term, |app, term| {
+            app.state.picker = Some(picker_state);
+            let result = app.handle_picker(term, preview);
+            app.state.picker = None;
+            result
+        });
 
         Ok(result?.map(|picked| match picked {
             Picked::Item(data) => data,
             Picked::KeySet(..) => unreachable!("only a picker assigning keys sets them"),
         }))
+    }
+
+    /// Run `picker_state`, a picker whose caller wants all of the items it lists, or what was
+    /// typed, rather than one item: the picker as it ended.
+    pub(crate) fn pick_listed(
+        &mut self,
+        term: &mut Term,
+        picker_state: PickerState,
+    ) -> Res<PickerState> {
+        self.asking(term, |app, term| {
+            app.state.picker = Some(picker_state);
+            let result = app.handle_picker(term, &mut |_, _| Ok(()));
+            let picker = app
+                .state
+                .picker
+                .take()
+                .expect("the picker is open until it ends");
+            result.map(|_| picker)
+        })
     }
 
     /// Choose a commit by moving around a log view: the screen is pushed with
@@ -1123,7 +1295,7 @@ impl App {
             Rc::clone(&self.state.repo),
             params,
             COMMIT_PICK_LIMIT,
-            None,
+            vec![],
             None,
         )?);
         self.screen_mut().menu = Some(Menu::CommitPicker);
@@ -1183,7 +1355,7 @@ impl App {
                         return Ok(selected().map(|data| Picked::KeySet(key, data)));
                     }
                     // User cancelled - this is not an error
-                    PickerStatus::Cancelled => return Ok(None),
+                    PickerStatus::Cancelled | PickerStatus::Switched => return Ok(None),
                     PickerStatus::Active => (),
                 }
             }
@@ -1245,18 +1417,18 @@ impl App {
         }
 
         let key_combo = vec![(key.modifiers, key.code)];
-        let closes = self
-            .state
-            .picker
-            .as_ref()
-            .and_then(PickerState::closing_op)
-            .is_some_and(|op| {
+        let bound_to = |op: Option<&Op>| {
+            op.is_some_and(|op| {
                 self.state
                     .config
                     .bindings
                     .list(&Menu::Root)
                     .any(|binding| &binding.op == op && binding.keys == key_combo)
-            });
+            })
+        };
+        let picker = self.state.picker.as_ref();
+        let closes = bound_to(picker.and_then(PickerState::closing_op));
+        let switches = bound_to(picker.and_then(PickerState::switching_op));
 
         if let Some(ref mut picker) = self.state.picker {
             let bindings = &self.state.config.picker_bindings;
@@ -1299,6 +1471,8 @@ impl App {
                 } else if let Some(c) = typed {
                     picker.set_key(c);
                 }
+            } else if switches {
+                picker.switch();
             } else {
                 // Text input - delegate to text state
                 picker.input_state.handle_key_event(key);
@@ -1391,8 +1565,13 @@ pub(crate) fn root_menu(config: &Config) -> Option<Menu> {
 
 /// A command started by [`App::run_cmd_async`], with the threads writing its
 /// input and reading its output.
+/// What to do once a command has finished, if it succeeded.
+pub(crate) type AfterCmd = Box<dyn FnOnce(&mut App, &mut Term) -> Res<()>>;
+
 struct PendingCmd {
     child: Child,
+    /// What to do once it has finished, if it succeeded.
+    then: Option<AfterCmd>,
     log_entry: Arc<RwLock<CmdLogEntry>>,
     stdin: JoinHandle<std::io::Result<()>>,
     stdout: JoinHandle<std::io::Result<Vec<u8>>>,
@@ -1448,7 +1627,7 @@ type DefaultFn = Box<dyn Fn(&App) -> Option<String>>;
 type EditFn = Box<dyn Fn(&mut App, &str)>;
 
 pub(crate) struct PromptParams {
-    pub prompt: &'static str,
+    pub prompt: Cow<'static, str>,
     pub create_default_value: DefaultFn,
     pub hide_menu: bool,
     /// Put the default value in the prompt for the user to edit, rather than
@@ -1460,18 +1639,33 @@ pub(crate) struct PromptParams {
     pub bare: bool,
     /// Called with the answer each time it is edited, before it is given.
     pub on_edit: Option<EditFn>,
+    /// Called with each key before it edits the line, to take it for something else.
+    pub on_key: Option<KeyFn>,
 }
+
+/// What a prompt's [`PromptParams::on_key`] did with a key.
+pub(crate) enum KeyUse {
+    /// Nothing: the key edits the line, as it would have.
+    Typed,
+    /// Used it: the line is not edited.
+    Taken,
+    /// Used it to give the answer, as enter does.
+    Answers,
+}
+
+pub(crate) type KeyFn = Box<dyn Fn(&mut App, event::KeyEvent) -> KeyUse>;
 
 impl Default for PromptParams {
     fn default() -> Self {
         Self {
-            prompt: "",
+            prompt: "".into(),
             create_default_value: Box::new(|_| None),
             hide_menu: true,
             prefill: false,
             history: None,
             bare: false,
             on_edit: None,
+            on_key: None,
         }
     }
 }

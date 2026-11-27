@@ -318,3 +318,41 @@ fn status_with_a_renderer_that_fails_still_starts() {
     assert!(buffer.contains("firstfile"), "{buffer}");
     assert!(buffer.contains("add firstfile"), "{buffer}");
 }
+
+/// A branch diverged from its upstream says where they part, whether that commit is on the
+/// remote's default branch, and how many of the upstream's commits make the same changes as the
+/// branch's, as when it was rewritten after it was pushed.
+#[test]
+fn a_branch_diverged_from_its_upstream_says_where_they_part() {
+    let mut ctx = setup_clone!();
+    let parted = run(&ctx.dir, &["git", "rev-parse", "--short=7", "HEAD"]);
+    commit(&ctx.dir, "pushed.txt", "pushed\n");
+    run(&ctx.dir, &["git", "push", "-q", "origin", "main"]);
+    run(&ctx.dir, &["git", "reset", "-q", "--hard", "HEAD~1"]);
+    fs::write(ctx.dir.join("pushed.txt"), "pushed\n").unwrap();
+    run(&ctx.dir, &["git", "add", "pushed.txt"]);
+    run(
+        &ctx.dir,
+        &["git", "commit", "-q", "-m", "pushed, rewritten"],
+    );
+    let mut app = ctx.init_app();
+
+    ctx.update(&mut app, keys(""));
+
+    let screen = super::pr::screen_text(&ctx);
+    assert!(
+        screen.contains(&format!(
+            "Your branch and origin/main are the same until commit {}, which is on main",
+            parted.trim()
+        )),
+        "{screen}"
+    );
+    assert!(
+        screen.contains(
+            "after that point, yours has 1 commit and origin/main has 1, 1 of which make the \
+             same changes as some of yours. This is consistent with your branch having been \
+             rebased."
+        ),
+        "{screen}"
+    );
+}

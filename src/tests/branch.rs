@@ -134,3 +134,33 @@ fn spinoff_existing_branch() {
 fn branch_menu() {
     snapshot!(setup_picker(setup_clone!()), "b");
 }
+
+/// The item a picker has selected is highlighted across the whole row, its matched letters too.
+#[test]
+fn the_selected_item_is_highlighted_across_its_row() {
+    use crate::style::Modifier;
+    let mut ctx = setup_picker(setup_clone!());
+    let mut app = ctx.init_app();
+
+    ctx.update(&mut app, keys("bbfeat"));
+
+    let crate::term::TermBackend::Test { buffer, .. } = &ctx.term else {
+        unreachable!();
+    };
+    let rows: Vec<_> = buffer.cells.chunks(buffer.width as usize).collect();
+    let row = rows
+        .iter()
+        .find(|row| {
+            let text: String = row.iter().map(|cell| cell.symbol.as_str()).collect();
+            text.starts_with("▌feature")
+        })
+        .unwrap_or_else(|| panic!("no selected item:\n{}", ctx.redact_buffer()));
+    let last = row.last().unwrap();
+    assert!(last.modifier.contains(Modifier::REVERSED), "the row's end");
+    let matched = &row[1];
+    assert_eq!(matched.symbol, "f");
+    assert!(
+        matched.modifier.contains(Modifier::REVERSED),
+        "a matched letter"
+    );
+}

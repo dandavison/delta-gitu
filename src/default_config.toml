@@ -12,16 +12,25 @@
 # be set there, since `hunk-header-style` is delta's.
 
 [general]
+# Show the list of keys at all times, rather than when ? is pressed.
 always_show_help.enabled = false
+# Ask before quitting from the first screen.
 confirm_quit.enabled = false
 # Sets initially collapsed sections in the editor. e.g.:
 # collapsed_sections = ["untracked", "recent_commits", "branch_status"]
 collapsed_sections = []
+# Draw the screen again when a file in the repository changes, as when
+# something outside gitu changes it.
 refresh_on_file_change.enabled = true
+# How many stashes the status view lists.
 stash_list_limit = 10
+# How many recent commits the status view lists.
 recent_commits_limit = 10
+# How many columns the log gives a commit's author.
 log_author_width = 15
+# Take mouse clicks and scrolling.
 mouse_support = false
+# How many lines a turn of the mouse wheel scrolls.
 mouse_scroll_lines = 3
 
 # The most input Gitu will read, whether piped to it as a pager or produced by
@@ -82,6 +91,7 @@ diff_renderer.feature_keys = { side-by-side = "S", line-numbers = "L", difftasti
 # sets `dark` or `light`, as delta defines one. `renderer_themes` writes your
 # choice to git config, as `diff-renderer-theme`, not here.
 # diff_renderer.theme = "my-theme"
+
 # delta's builtin features to offer as themes too, after those in git config,
 # e.g. ["diff-so-fancy"].
 diff_renderer.builtin_themes = []
@@ -125,11 +135,16 @@ read_only = "auto"
 # diff`, `git show`, `git log -p`, and a commit opened from the log.
 start_folded = false
 
+# Turn on features still being built: code review, and messages to agents.
+experimental = false
+
 # Shell commands, by name, that a key from `diff_renderer.feature_keys` runs,
 # as `renderer_features` lists them. `{commit}`, `{file}` and `{branch}` are
 # filled in, quoted for the shell, from what is under the cursor, and
 # `{command}` with the git command the screen is showing, as `:` shows it; a
-# command using one that is not there is not run. `COLUMNS` and
+# command using one that is not there is not run. `{input}` is what is typed
+# at a prompt that the key opens, labelled with the command's name and with a
+# history of its own; esc, or enter with nothing typed, cancels the command. `COLUMNS` and
 # `DELTA_FEATURES` are set as gitu sets them for the delta it draws with, so
 # that `{command} --color=always | delta` draws as delta draws the screen, but
 # without what gitu adds: folds, counted stat rows, hidden files. It runs in
@@ -139,6 +154,7 @@ start_folded = false
 # In git config:
 #   [delta]
 #       command = open-pr gh pr view --web {commit}
+#       command = tell-agent tmux send-keys -t agent {input} Enter
 commands = {}
 
 # git commands, by name, that a key from `diff_renderer.feature_keys` opens as
@@ -146,10 +162,12 @@ commands = {}
 # back. Filled in as commands are, but not run by a shell: a view is a `git
 # diff`, `git show` or `git log`, run again after each change as `:` runs an
 # edited command. `{command}` is a word of its own, standing for the words of
-# the git command shown, so that a view can change it. In git config:
+# the git command shown, so that a view can change it. `{input}` is one word,
+# however many words are typed. In git config:
 #   [delta]
 #       view = diff-since git diff {commit}...
 #       view = word-diff {command} --word-diff
+#       view = pickaxe git log -S {input}
 views = {}
 
 # An editor that alt+enter opens a file, hunk or line in, besides the one enter
@@ -157,6 +175,12 @@ views = {}
 # the file in a window of its own, such as a GUI editor: it runs as a command
 # from `commands` does, with gitu staying on screen. e.g.:
 #   alt_editor = "code --goto"
+
+# A shell command that `@` sends a message to an agent with, in place of leaving
+# it for `delta tui review listen`. It runs in the repository's root, with the
+# message on stdin as `listen` would print it, and `{branch}` filled in with the
+# PR's branch. If it fails, the message is not sent. e.g.:
+#   send_message_command = "jq -Rs . | temporal activity start --task-queue delta/{branch} --type AgentMessage --activity-id delta-$(uuidgen) --start-to-close-timeout 1h --input-file /dev/stdin"
 
 # When to prompt for discard confirmation. Options:
 # "line"  - always prompt even for individual lines (default),
@@ -179,38 +203,65 @@ confirm_discard = "line"
 # section_header = { fg = "#808080" }
 # section_header = { bg = "light green", mods = "UNDERLINED|ITALIC" }
 
+# The line between the screen and what is drawn under it: a menu, a prompt, or
+# the log of commands run.
 separator = { mods = "DIM" }
 
+# A message saying what was done.
 info_msg = { fg = "green", mods = "BOLD" }
+# A message saying what went wrong.
 error_msg = { fg = "red", mods = "BOLD" }
+# A git command, in the log of commands run.
 command = { fg = "blue", mods = "BOLD" }
 
+# A menu's headings.
 menu.heading = { fg = "blue", mods = "BOLD" }
+# A key, in a menu or the list of keys.
 menu.key = { fg = "magenta" }
+# An argument a menu has on, such as --interactive.
 menu.active_arg = { fg = "light red", mods = "BOLD" }
+# An argument a menu has off.
 menu.inactive_arg = {}
 
+# What a prompt asks for.
 prompt = { fg = "cyan", mods = "DIM" }
 
+# A section's heading in the status view, such as Unstaged changes.
 section_header = { fg = "yellow" }
+# A file's name over its diff, where gitu draws it rather than the renderer.
 file_header = { fg = "magenta" }
+# A hunk's header, where gitu draws it rather than the renderer. It can't be set
+# in git config, where hunk-header-style is delta's.
 hunk_header = { fg = "blue" }
 
+# The line atop a PR's screen that says what the PR is.
+pr_summary = { fg = "yellow" }
 
+# What a list you pick from by typing asks for, such as a branch.
 picker.prompt = { fg = "cyan" }
+# How many items a picker has, and how many match what is typed.
 picker.info = { mods = "DIM" }
-picker.selection_line = { mods = "BOLD" }
+# The item a picker has selected, across its row.
+picker.selection_line = { mods = "BOLD|REVERSED" }
+# The letters of an item that match what is typed.
 picker.matched = { fg = "yellow", mods = "BOLD" }
 
+# Text that matches a search (/).
 search_match = { mods = "REVERSED" }
 
+# The bar at the left of the line the cursor is on. Its symbol can't be set in
+# git config.
 cursor = { symbol = "▌", fg = "blue" }
+# The bar at the left of the other lines selected. Its symbol can't be set in
+# git config.
 selection_bar = { symbol = "▌", fg = "blue", mods = "DIM" }
+# The line the cursor is on.
 selection_line = { mods = "BOLD" }
-# You may want to set `selection_area.bg` to a nice background color.
-# Looks horrible with regular terminal colors, so is therefore not set.
+# The other lines selected. You may want to give it a background color: it has
+# none by default, as one looks bad in a terminal's regular colors.
 selection_area = {}
 
+# A commit's hash.
 hash = { fg = "yellow" }
 
 # What the interactive rebase will do with each commit, where that isn't just
@@ -221,13 +272,20 @@ rebase_todo.squash = { fg = "cyan", mods = "BOLD" }
 rebase_todo.fixup = { fg = "yellow", mods = "BOLD" }
 rebase_todo.drop = { fg = "red", mods = "BOLD" }
 
+# A branch's name.
 branch = { fg = "green" }
+# A remote branch's name.
 remote = { fg = "red" }
+# A tag's name.
 tag = { fg = "yellow" }
+# A commit's author, in the log.
 author = { fg = "magenta" }
+# How long ago a commit was made, in the log.
 age = { mods = "DIM" }
 
+# The line numbers of a blame.
 blame.line_num = { mods = "DIM" }
+# The lines of code of a blame.
 blame.code_line = { mods = "DIM" }
 
 [bindings]
@@ -253,9 +311,11 @@ root.wider_diff_context = ["+"]
 root.narrower_diff_context = ["-"]
 # Edit the git command the view is the output of, and ask it again.
 root.edit_git_command = [":"]
-# Drop the file whose header is under the cursor from the view, or say which
-# files to show at all: `src !*_test.go` limits the view to src and hides its
-# tests.
+# Drop the file whose header is under the cursor from the view, or pick the
+# files to show: `&` lists the files the view's command covers, typing narrows
+# the list by fuzzy matching, and enter shows the files listed, or all of them
+# with nothing typed. `&` again asks for patterns instead: `src !*_test.go`
+# limits the view to src and hides its tests.
 root.hide_file = ["d"]
 root.file_patterns = ["&"]
 # As in less, j, k and the arrow keys move a line at a time, through a diff's
@@ -301,6 +361,14 @@ root.blame = ["B"]
 root.toggle_viewed = ["x"]
 root.show_on_github = ["o"]
 root.write_comment = ["i"]
+root.edit_comment = ["e"]
+root.toggle_local_only = ["p"]
+# Leave a message for an agent running `delta tui review listen`, about the
+# thread under the cursor, or else the whole PR.
+root.message_agent = ["@"]
+# Open the file under the cursor whole, as committed, at the cursor's line, or
+# else pick one, to comment on its lines for an agent to answer.
+root.open_file = ["."]
 # Enable or disable a renderer feature (side-by-side, line numbers, ...) in place.
 # In the list, space enables or disables the selected feature and keeps the list
 # open, enter does so and closes it, a letter sets its key, and this key closes
@@ -408,10 +476,13 @@ push_menu.push_to_upstream = ["u"]
 push_menu.push_to_elsewhere = ["e"]
 push_menu.quit = ["q", "esc", "left"]
 
-# Check out a GitHub PR with gh and review its diff.
+# Check out a GitHub PR with gh and review its diff, or review the current
+# branch as a local PR.
 root.pr_menu = ["O"]
 pr_menu.pr_current = ["O"]
 pr_menu.pr_other = ["o"]
+pr_menu.pr_sync = ["s"]
+pr_menu.pr_threads = ["t"]
 pr_menu.quit = ["q", "esc", "left"]
 
 root.rebase_menu = ["r"]

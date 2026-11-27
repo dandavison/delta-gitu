@@ -13,12 +13,14 @@ use std::fs;
 
 #[macro_use]
 pub(crate) mod helpers;
+mod agent_instructions;
 mod alt_editor;
 mod arg;
 mod back;
 mod bindings;
 mod blame;
 mod branch;
+mod busy;
 mod cherry_pick;
 mod command;
 mod commit;
@@ -28,10 +30,14 @@ mod discard;
 mod editor;
 #[cfg(unix)]
 mod editor_failure;
+mod experimental;
 mod fetch;
 mod file_names;
+mod file_view;
 mod file_watcher;
 mod keys;
+mod lifecycle;
+mod local_pr;
 mod log;
 mod merge;
 mod pager;
@@ -42,6 +48,7 @@ mod pull;
 mod push;
 mod quit;
 mod read_only;
+mod real_github;
 mod rebase;
 mod remote;
 mod reset;
@@ -50,6 +57,7 @@ mod reverse;
 mod right;
 mod search;
 mod show;
+mod show_config;
 mod stage;
 mod stash;
 mod status;
@@ -843,11 +851,11 @@ fn outside_a_repository_says_where_to_run() {
 
     assert_eq!(
         error.to_string(),
-        "Not in a git repository: run delta --tui inside one"
+        "Not in a git repository: run delta tui inside one"
     );
 }
 
-/// With its output not a terminal (`delta --tui > file`), there is nowhere to
+/// With its output not a terminal (`delta tui > file`), there is nowhere to
 /// draw, and gitu says what to use instead.
 #[test]
 fn output_that_is_not_a_terminal_says_what_to_use() {
@@ -855,7 +863,7 @@ fn output_that_is_not_a_terminal_says_what_to_use() {
 
     assert_eq!(
         error.to_string(),
-        "delta --tui needs a terminal to draw in. To write a diff to a file or a pipe, use delta without --tui"
+        "delta tui needs a terminal to draw in. To write a diff to a file or a pipe, use delta, not delta tui"
     );
     assert!(crate::needs_terminal(true).is_ok());
 }

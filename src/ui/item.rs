@@ -37,6 +37,8 @@ pub(crate) fn layout_item<'a>(
         ItemData::Raw(content) => {
             layout_span(layout, (content.as_str().into(), base));
         }
+        // The PR's screen gives its summary as rendered, so it is drawn above.
+        ItemData::PrSummary => {}
         ItemData::AllUnstaged(count) => {
             layout_span(
                 layout,
@@ -198,6 +200,7 @@ pub(crate) fn layout_item<'a>(
                 SectionHeader::CherryPick(head) => format!("Cherry-picking {head}").into(),
                 SectionHeader::Stashes => "Stashes".into(),
                 SectionHeader::RecentCommits => "Recent commits".into(),
+                SectionHeader::Pr(summary) => summary.clone().into(),
                 SectionHeader::StashRef(stash_ref) => stash_ref.as_str().into(),
                 SectionHeader::StagedChanges(count) => format!("Staged changes ({count})").into(),
                 SectionHeader::UnstagedChanges(count) => {
@@ -213,13 +216,15 @@ pub(crate) fn layout_item<'a>(
                 (content, base.patch(Style::from(&style.section_header))),
             );
         }
-        ItemData::BranchStatus(upstream, ahead, behind) => {
+        ItemData::BranchStatus(upstream, ahead, behind, parted) => {
             let content = if *ahead == 0 && *behind == 0 {
                 format!("Your branch is up to date with '{upstream}'.")
             } else if *ahead > 0 && *behind == 0 {
                 format!("Your branch is ahead of '{upstream}' by {ahead} commit(s).")
             } else if *ahead == 0 && *behind > 0 {
                 format!("Your branch is behind '{upstream}' by {behind} commit(s).")
+            } else if let Some(parted) = parted {
+                format!("{parted}.")
             } else {
                 format!(
                     "Your branch and '{upstream}' have diverged, and have {ahead} and {behind} different commits each, respectively."
@@ -234,7 +239,7 @@ pub(crate) fn layout_item<'a>(
         // Drawn from their `rendered` rows, which they always have.
         ItemData::ReviewThread { .. }
         | ItemData::ReviewComment { .. }
-        | ItemData::ReviewDraft { .. } => {}
+        | ItemData::CommentEditor { .. } => {}
         ItemData::BlameHeader {
             short_hash,
             summary,

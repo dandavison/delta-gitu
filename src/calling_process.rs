@@ -97,6 +97,21 @@ impl GitCommand {
             })
     }
 
+    /// Replace the argument `from`, after the subcommand, with `to`, returning whether there was
+    /// one.
+    pub(crate) fn replace_arg(&mut self, from: &str, to: &str) -> bool {
+        match self.argv[self.subcommand + 1..]
+            .iter_mut()
+            .find(|arg| *arg == from)
+        {
+            Some(arg) => {
+                *arg = to.to_owned();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The same command run in `prefix` (see [`Self::prefix`]).
     pub(crate) fn run_in(self, prefix: String) -> Self {
         Self { prefix, ..self }
@@ -264,6 +279,18 @@ impl GitCommand {
         }
     }
 
+    /// The command asking for the names of the files it covers, each followed by a NUL, whatever
+    /// paths it limits itself to. A log names a file once for each commit that changes it.
+    pub(crate) fn listing_files(&self) -> Command {
+        let all = self.asking_for(&[]);
+        let mut command = Command::new(&all.argv[0]);
+        command.args(&all.argv[1..=all.subcommand]);
+        command.arg("--no-ext-diff");
+        command.args(all.arguments());
+        command.args(["--name-only", "--format=", "-z"]);
+        command
+    }
+
     fn pathspecs(&self) -> impl Iterator<Item = &str> {
         self.arguments().skip_while(|arg| *arg != "--").skip(1)
     }
@@ -338,6 +365,16 @@ pub(crate) fn excluding(path: &str) -> String {
     }
 
     format!("!{path}")
+}
+
+/// The pattern that matches one file and nothing else. A path that would read as a wildcard,
+/// an exclusion or a pathspec has to say it is meant literally.
+pub(crate) fn including(path: &str) -> String {
+    if path.contains(['*', '?', '[', '\\']) || path.starts_with(['!', ':']) {
+        return format!(":(top,literal){path}");
+    }
+
+    path.to_owned()
 }
 
 /// `word` as it has to be written to survive being read back, and to mean the

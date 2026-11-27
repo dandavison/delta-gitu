@@ -85,8 +85,10 @@ pub enum Error {
     /// gh failed, or what it printed could not be read: what went wrong.
     Gh(String),
     PrCheckoutDirty,
-    /// No remote is the repository a PR is on, `{owner}/{repo}`.
-    NoRemoteForPr(String),
+    /// A local PR could not be opened, read or written: what went wrong.
+    LocalPr(String),
+    /// The branch has no PR to review: why, as that it is the base branch.
+    NoPrToReview(String),
 }
 
 impl std::error::Error for Error {}
@@ -107,7 +109,7 @@ impl Display for Error {
             }
             Error::OpenRepo(e) => match e.code() {
                 git2::ErrorCode::NotFound => {
-                    f.write_str("Not in a git repository: run delta --tui inside one")
+                    f.write_str("Not in a git repository: run delta tui inside one")
                 }
                 _ => f.write_fmt(format_args!("Couldn't open repo: {e:?}")),
             },
@@ -239,16 +241,15 @@ impl Display for Error {
             )),
             Error::GitRefusedTheCommand(stderr) => f.write_str(stderr),
             Error::NotATerminal => f.write_str(
-                "delta --tui needs a terminal to draw in. \
-                 To write a diff to a file or a pipe, use delta without --tui",
+                "delta tui needs a terminal to draw in. \
+                 To write a diff to a file or a pipe, use delta, not delta tui",
             ),
             Error::Gh(message) => f.write_str(message),
             Error::PrCheckoutDirty => {
                 f.write_str("Cannot check out PR: working tree has uncommitted changes")
             }
-            Error::NoRemoteForPr(repo) => {
-                write!(f, "Cannot fetch the PR's base: no remote is {repo}")
-            }
+            Error::LocalPr(message) => f.write_str(message),
+            Error::NoPrToReview(why) => write!(f, "No PR to review: {why}"),
         }
     }
 }

@@ -110,13 +110,16 @@ pub struct GeneralConfig {
     /// `git log -p`, and a commit opened from the log.
     #[serde(default)]
     pub start_folded: bool,
+    /// Whether features still being built are on: code review, and messages to agents.
+    #[serde(default)]
+    pub experimental: bool,
     /// Whether gitu leaves the repository and git config as it finds them.
     #[serde(default)]
     pub read_only: ReadOnly,
     /// Shell commands, by name, run by the keys `diff_renderer.feature_keys`
     /// gives them, with `{commit}`, `{file}` and `{branch}` filled in from what
-    /// is under the cursor, and `{command}` from the git command the screen is
-    /// showing.
+    /// is under the cursor, `{command}` from the git command the screen is
+    /// showing, and `{input}` from a prompt.
     #[serde(default)]
     pub commands: BTreeMap<String, String>,
     /// git commands, by name, opened as a screen by the keys
@@ -125,6 +128,11 @@ pub struct GeneralConfig {
     pub views: BTreeMap<String, String>,
     #[serde(default)]
     pub alt_editor: Option<String>,
+    /// A shell command that `@` sends a message to an agent with, in place of leaving it for
+    /// `delta tui review listen`: the message is on its stdin, as `listen` would print it, and
+    /// `{branch}` is filled in with the PR's branch.
+    #[serde(default)]
+    pub send_message_command: Option<String>,
 }
 
 /// Whether gitu runs commands that change the repository (stage, commit,
@@ -426,6 +434,8 @@ pub struct StyleConfig {
     pub file_header: StyleConfigEntry,
     pub hunk_header: StyleConfigEntry,
 
+    pub pr_summary: StyleConfigEntry,
+
     #[serde(default)]
     pub picker: PickerStyleConfig,
 
@@ -645,7 +655,7 @@ impl Config {
             return Err(Error::Config(Box::new(figment::Error::from(
                 "git config's [delta-tui] sections are no longer read: their settings go in \
                  [delta] or a [delta \"feature\"] section. \
-                 `delta --tui --migrate-old-config` prints them as they go in [delta]. \
+                 `delta tui --migrate-old-config` prints them as they go in [delta]. \
                  See https://dandavison.github.io/delta/tui.html"
                     .to_owned(),
             ))));
@@ -687,10 +697,13 @@ fn build(file: Figment, git: Figment) -> Res<Config> {
     if let Some(feature_keys) = users_feature_keys(&git)?.or(users_feature_keys(&file)?) {
         general.diff_renderer.feature_keys = feature_keys;
     }
-    let bindings = Bindings::try_from(bindings_config.menus)?
-        .set_by_user(&default_bindings.menus, |path| {
-            users(&format!("bindings.{path}"))
-        });
+    let mut menus = bindings_config.menus;
+    if !general.experimental {
+        unbind_experimental(&mut menus);
+    }
+    let bindings = Bindings::try_from(menus)?.set_by_user(&default_bindings.menus, |path| {
+        users(&format!("bindings.{path}"))
+    });
     let picker_bindings = PickerBindings::try_from(bindings_config.picker)?;
     check_feature_keys(&general.diff_renderer.feature_keys, &bindings)?;
 
@@ -744,8 +757,52 @@ pub fn config_path() -> PathBuf {
 #[cfg(test)]
 pub(crate) const TEST_SEARCH_HIGHLIGHT_BG: Color = Color::LightYellow;
 
+/// What is said of a command of an experimental feature, while they are off.
+pub(crate) const NOT_EXPERIMENTAL: &str =
+    "This is experimental: set experimental = true in git config's [delta] section to use it";
+
+/// The operations of experimental features (see [`GeneralConfig::experimental`]): code review,
+/// and messages to agents. `.`, opening a file whole, is not one, though only with them are its
+/// lines commented on.
+const EXPERIMENTAL_OPS: [Op; 7] = [
+    Op::OpenMenu(Menu::Pr),
+    Op::ToggleViewed,
+    Op::ShowOnGithub,
+    Op::WriteComment,
+    Op::EditComment,
+    Op::ToggleLocalOnly,
+    Op::MessageAgent,
+];
+
+/// The settings of experimental features, by their names in git config.
+pub(crate) const EXPERIMENTAL_SETTINGS: [&str; 3] =
+    ["experimental", "send-message-command", "pr-summary-style"];
+
+/// Whether `op`, in `menu`, is an experimental feature's (see [`EXPERIMENTAL_OPS`]): the PR menu's
+/// are too.
+pub(crate) fn is_experimental(menu: &str, op: &str) -> bool {
+    // As git config writes them too, with dashes.
+    let (menu, op) = (menu.replace('-', "_"), op.replace('-', "_"));
+    menu == Menu::Pr.as_ref() || EXPERIMENTAL_OPS.iter().any(|o| o.config_name() == op)
+}
+
+/// `menus` without the bindings of experimental features.
+fn unbind_experimental(menus: &mut BTreeMap<Menu, BTreeMap<Op, Vec<String>>>) {
+    menus.retain(|menu, _| *menu != Menu::Pr);
+    for ops in menus.values_mut() {
+        ops.retain(|op, _| !EXPERIMENTAL_OPS.contains(op));
+    }
+}
+
+/// The tests' config, with experimental features on.
 #[cfg(test)]
 pub(crate) fn init_test_config() -> Res<Config> {
+    init_test_config_with(true)
+}
+
+/// The tests' config, with experimental features on or off.
+#[cfg(test)]
+pub(crate) fn init_test_config_with(experimental: bool) -> Res<Config> {
     let FigmentConfig {
         mut general,
         mut style,
@@ -756,6 +813,7 @@ pub(crate) fn init_test_config() -> Res<Config> {
         .map_err(Box::new)
         .map_err(Error::Config)?;
 
+    general.experimental = experimental;
     general.always_show_help.enabled = false;
     general.refresh_on_file_change.enabled = false;
     general.status_cursor_on_changes = false;
@@ -767,10 +825,14 @@ pub(crate) fn init_test_config() -> Res<Config> {
         mods: None,
     };
 
+    let mut menus = bindings_config.menus;
+    if !experimental {
+        unbind_experimental(&mut menus);
+    }
     Ok(Config {
         general,
         style,
-        bindings: Bindings::try_from(bindings_config.menus).unwrap(),
+        bindings: Bindings::try_from(menus).unwrap(),
         picker_bindings: PickerBindings::try_from(bindings_config.picker).unwrap(),
         file: Figment::new(),
     })
@@ -1190,9 +1252,6 @@ mod tests {
         let error = config_error("[delta-tui]\n\tstart-folded = true\n");
         assert!(error.contains("[delta-tui]"), "{error}");
         assert!(error.contains("[delta]"), "{error}");
-        assert!(
-            error.contains("delta --tui --migrate-old-config"),
-            "{error}"
-        );
+        assert!(error.contains("delta tui --migrate-old-config"), "{error}");
     }
 }

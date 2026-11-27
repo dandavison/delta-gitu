@@ -80,11 +80,11 @@ fn set_push_remote_basic() {
 fn get_upstream_basic() {
     let ctx = repo_setup_clone!();
     let repo = ctx.local_repo;
-    let upstream = get_upstream(&repo).unwrap().unwrap();
-    assert_eq!(upstream.name().unwrap().unwrap(), "origin/main");
+    let upstream = get_upstream_shortname(&repo).unwrap();
+    assert_eq!(upstream.as_deref(), Some("origin/main"));
 
     run(&ctx.dir, &["git", "branch", "--unset-upstream"]);
-    let upstream = get_upstream(&repo).unwrap();
+    let upstream = get_upstream_shortname(&repo).unwrap();
     assert!(upstream.is_none());
 }
 
@@ -122,4 +122,19 @@ fn get_push_remote_with_default() {
 
     let push_remote = get_push_remote(&repo).unwrap();
     assert_eq!(push_remote.unwrap(), "origin");
+}
+
+/// A branch whose remote branch is gone, as once it is deleted on the remote, still has the
+/// upstream git config gives it.
+#[test]
+fn get_upstream_components_of_a_branch_whose_remote_branch_is_gone() {
+    let ctx = repo_setup_clone!();
+    let repo = ctx.local_repo;
+    run(&ctx.dir, &["git", "checkout", "-b", "feature"]);
+    run(&ctx.dir, &["git", "push", "-u", "origin", "feature"]);
+    run(&ctx.dir, &["git", "push", "origin", "--delete", "feature"]);
+
+    let (remote, branch) = get_upstream_components(&repo).unwrap().unwrap();
+    assert_eq!(remote, "origin");
+    assert_eq!(branch, "feature");
 }

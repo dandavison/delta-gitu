@@ -3,9 +3,14 @@
 use super::*;
 
 /// `ctx`'s config resolved from git config holding `gitconfig`, as delta would resolve it.
-fn with_delta_config(mut ctx: TestContext, gitconfig: &str) -> TestContext {
+pub(super) fn with_delta_config(mut ctx: TestContext, gitconfig: &str) -> TestContext {
     let path = ctx.dir.join(".git").join("delta.gitconfig");
-    fs::write(&path, gitconfig).unwrap();
+    // Experimental features on, as in the tests' own config.
+    fs::write(
+        &path,
+        format!("[delta]\n\texperimental = true\n{gitconfig}"),
+    )
+    .unwrap();
     crate::config::told_about(ctx.config(), path);
     let dir = ctx.dir.clone();
     let resolved = ctx.config().resolved(&dir, None).unwrap();
@@ -14,9 +19,9 @@ fn with_delta_config(mut ctx: TestContext, gitconfig: &str) -> TestContext {
     ctx
 }
 
-/// `[delta "cmds"]` defines the command `hello`, run by `t`, and `e` turns `cmds` on and off.
+/// `[delta "cmds"]` defines the command `hello`, run by `t`, and `w` turns `cmds` on and off.
 const CMDS: &str = "[delta]\n\
-                    \tfeature-key = cmds e\n\
+                    \tfeature-key = cmds w\n\
                     \tfeature-key = hello t\n\
                     [delta \"cmds\"]\n\
                     \tcommand = hello touch hello-ran\n";
@@ -32,7 +37,7 @@ fn a_command_in_a_feature_runs_once_the_features_key_turns_it_on() {
         "ran while cmds was off"
     );
 
-    ctx.update(&mut app, keys("et"));
+    ctx.update(&mut app, keys("wt"));
     assert!(
         ctx.dir.join("hello-ran").exists(),
         "{}",
@@ -48,7 +53,7 @@ fn a_command_in_a_feature_does_not_run_once_the_feature_is_turned_off() {
     );
     let mut app = ctx.init_app();
 
-    ctx.update(&mut app, keys("et"));
+    ctx.update(&mut app, keys("wt"));
 
     assert!(
         !ctx.dir.join("hello-ran").exists(),

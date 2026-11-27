@@ -78,6 +78,9 @@ pub enum PickerStatus {
     Cancelled,
     /// User gave the selected item this key
     KeySet(char),
+    /// User pressed the key of the op that switches away from the picker (see
+    /// [`PickerState::switched_by`]).
+    Switched,
 }
 
 /// State of the picker component
@@ -111,6 +114,9 @@ pub struct PickerState {
     /// The op whose top-level keys close the picker where nothing is typed, as
     /// `picker.quit` does: the op that opened it.
     closed_by: Option<Op>,
+    /// The op whose top-level keys end the picker as [`PickerStatus::Switched`], where text is
+    /// typed: the op that opened it, for a picker that has another way of asking.
+    switched_by: Option<Op>,
 }
 
 /// A picker's items laid out in columns side by side, each under a heading.
@@ -155,6 +161,7 @@ impl PickerState {
             one_row: None,
             grid: None,
             closed_by: None,
+            switched_by: None,
         };
         state.update_filter();
         state
@@ -183,6 +190,17 @@ impl PickerState {
 
     pub(crate) fn closing_op(&self) -> Option<&Op> {
         self.closed_by.as_ref()
+    }
+
+    /// End the picker as [`PickerStatus::Switched`] with the top-level keys of `op`, the op that
+    /// opened it, rather than type them.
+    pub(crate) fn switched_by(mut self, op: Op) -> Self {
+        self.switched_by = Some(op);
+        self
+    }
+
+    pub(crate) fn switching_op(&self) -> Option<&Op> {
+        self.switched_by.as_ref()
     }
 
     /// Show the items in columns side by side, each under its heading in
@@ -356,8 +374,7 @@ impl PickerState {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, item)| {
-                    self.matcher
-                        .fuzzy_match(&item.display, &pattern)
+                    self.score(&item.display, &pattern)
                         .map(|score| MatchResult { index: i, score })
                 })
                 .collect();
@@ -525,10 +542,23 @@ impl PickerState {
             return None;
         }
 
-        self.items
-            .get(item_index)
-            .and_then(|item| self.matcher.fuzzy_indices(&item.display, pattern))
-            .map(|(_, indices)| indices)
+        let item = self.items.get(item_index)?;
+        let mut indices = vec![];
+        for word in pattern.split_whitespace() {
+            indices.extend(self.matcher.fuzzy_indices(&item.display, word)?.1);
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        Some(indices)
+    }
+
+    /// How well `display` matches `pattern`, if it does: as fzf matches, each of the pattern's
+    /// words fuzzily, in any order, adding up their scores.
+    fn score(&self, display: &str, pattern: &str) -> Option<i64> {
+        pattern
+            .split_whitespace()
+            .map(|word| self.matcher.fuzzy_match(display, word))
+            .sum()
     }
 
     /// Get current status
@@ -542,6 +572,10 @@ impl PickerState {
     }
 
     /// Mark picker as cancelled (user cancelled)
+    pub(crate) fn switch(&mut self) {
+        self.status = PickerStatus::Switched;
+    }
+
     pub fn cancel(&mut self) {
         self.status = PickerStatus::Cancelled;
     }
@@ -649,6 +683,74 @@ mod tests {
                 .iter()
                 .any(|(_, item)| item.display == "bugfix/123")
         );
+    }
+
+    /// `state` with `text` typed into it.
+    fn typed(mut state: PickerState, text: &str) -> PickerState {
+        for c in text.chars() {
+            state
+                .input_state
+                .handle_key_event(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+        }
+        state.update_filter();
+        state
+    }
+
+    /// The pattern is edited with readline's keys, as a prompt's line is.
+    #[test]
+    fn the_pattern_is_edited_with_readlines_keys() {
+        let mut state = typed(
+            PickerState::new("Open file", vec![], false),
+            "chasm lib act",
+        );
+        let mut key = |code: KeyCode, modifiers: KeyModifiers| {
+            state
+                .input_state
+                .handle_key_event(KeyEvent::new(code, modifiers));
+            state.pattern().to_owned()
+        };
+        assert_eq!(key(KeyCode::Backspace, KeyModifiers::ALT), "chasm lib ");
+        key(KeyCode::Left, KeyModifiers::ALT);
+        key(KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(key(KeyCode::Char('d'), KeyModifiers::ALT), " lib ");
+        key(KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(key(KeyCode::Char('w'), KeyModifiers::CONTROL), "  ");
+        assert_eq!(key(KeyCode::Char('y'), KeyModifiers::CONTROL), " lib ");
+        key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(key(KeyCode::Char('k'), KeyModifiers::CONTROL), "");
+        key(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert_eq!(key(KeyCode::Char('!'), KeyModifiers::NONE), " lib !");
+    }
+
+    /// A pattern of several words matches an item every one of them matches, in any order, as
+    /// fzf's does, and each word's letters are highlighted.
+    #[test]
+    fn a_pattern_of_several_words_matches_items_each_word_matches() {
+        let items: Vec<PickerItem> = [
+            "chasm/lib/activity.go",
+            "chasm/lib/workflow.go",
+            "service/history/activity.go",
+        ]
+        .into_iter()
+        .map(|path| PickerItem::new(path, PickerData::Item(path.to_owned())))
+        .collect();
+
+        let matched = |pattern: &str| -> Vec<String> {
+            typed(PickerState::new("Open file", items.clone(), false), pattern)
+                .filtered_items()
+                .map(|(_, item)| item.display.to_string())
+                .collect()
+        };
+        assert_eq!(matched("cha lib act"), ["chasm/lib/activity.go"]);
+        // Its letters are in "service/history/activity.go" too, but scattered.
+        assert_eq!(matched("act cha")[0], "chasm/lib/activity.go");
+
+        let state = typed(PickerState::new("Open file", items, false), "cha act");
+        let highlighted = state.match_indices(0).unwrap();
+        assert!(highlighted.contains(&0), "{highlighted:?}");
+        assert!(highlighted.contains(&10), "{highlighted:?}");
     }
 
     #[test]

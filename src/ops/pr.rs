@@ -5,26 +5,36 @@
 use super::{Action, OpTrait};
 use crate::{
     Res,
-    app::{App, PromptParams, State},
+    app::{App, KeyUse, PromptParams, State},
     error::Error,
     git::{self, diff::Diff},
-    github::{self, Draft, DraftTarget, Review, Side, ViewedState},
     item_data::ItemData,
+    items::Item,
+    picker::{PickerData, PickerItem, PickerState},
+    prompt::HistoryKind,
+    review::{
+        self, Backend, CommentEditor, EditorTarget, OpenPr, Side, ViewedState,
+        local::{self, LocalBackend, NOT_DRAFT, Purpose},
+        remote::Consent,
+    },
     screen,
     style::Style,
     term::Term,
     text_area::{Outcome, TextArea},
 };
 use crossterm::event::KeyEvent;
-use git2::Oid;
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::Arc};
 
 const NO_REVIEW: &str = "No PR here: O opens one";
+const NOT_ON_GITHUB: &str = "This PR's comments are not on GitHub";
+const PR_NOT_ON_GITHUB: &str = "This PR is not on GitHub";
 
+/// Open the current branch's PR: its local PR, linked to its GitHub PR if it has one (see
+/// [`LocalBackend::new`]). Nothing is checked out.
 pub(crate) struct PrCurrent;
 impl OpTrait for PrCurrent {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
-        Some(Rc::new(|app, term| open_pr(app, term, None)))
+        Some(Rc::new(|app, term| open_current(app, term, None)))
     }
 
     fn display(&self, _state: &State) -> String {
@@ -39,7 +49,7 @@ impl OpTrait for PrOther {
             let selector = app.prompt(
                 term,
                 &PromptParams {
-                    prompt: "PR number or URL",
+                    prompt: "PR number or URL".into(),
                     ..Default::default()
                 },
             )?;
@@ -52,10 +62,8 @@ impl OpTrait for PrOther {
     }
 }
 
-/// Check out the PR `selector` refers to, or with none the current branch's,
-/// and open its diff as GitHub shows it: from where the PR branched from its
-/// base. Uncommitted changes stop it, rather than being carried onto the PR's
-/// branch.
+/// Check out the GitHub PR `selector` refers to, and open it as `O O` opens the current branch's.
+/// Uncommitted changes stop it, rather than being carried onto the PR's branch.
 fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
     let workdir = app.state.repo.workdir().ok_or(Error::NoRepoWorkdir)?;
     let uncommitted = git::status(workdir)?
@@ -69,61 +77,482 @@ fn open_pr(app: &mut App, term: &mut Term, selector: Option<&str>) -> Res<()> {
     let github = Rc::clone(&app.state.github);
     let pr = github.pr(selector)?;
     app.run_cmd(term, &[], github.checkout(&pr))?;
-    let has_base =
-        Oid::from_str(&pr.base_oid).is_ok_and(|oid| app.state.repo.find_commit(oid).is_ok());
-    if !has_base {
-        app.run_cmd(term, &[], github.fetch_base(&pr)?)?;
-    }
-    let review = Rc::new(Review {
-        viewed: RefCell::new(github.viewed(&pr)?),
-        threads: RefCell::new(github.threads(&pr)?),
-        options: RefCell::new(None),
-        draft: RefCell::new(None),
-        pr,
-    });
+    open_current(app, term, Some(pr.number))
+}
 
-    let (threads_review, repo) = (Rc::clone(&review), Rc::clone(&app.state.repo));
+/// Open the current branch's PR, which must be linked to the GitHub PR `expected` if given: its
+/// reviews are fetched from GitHub if it is linked, and a PR not checked against GitHub says so.
+pub(crate) fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>) -> Res<()> {
+    let local =
+        LocalBackend::for_current_branch(Rc::clone(&app.state.repo), Rc::clone(&app.state.github))?;
+    // A PR not checked against GitHub, as gh couldn't say what it is, says so instead.
+    let checked = match local.unchecked() {
+        Some(_) => Default::default(),
+        None => local
+            .compare_with_github(local.linked_pr().as_ref(), Purpose::Review)
+            .map_err(local::opening)?,
+    };
+    if let Some(warning) = checked.warning {
+        app.confirm(term, format!("{warning} Open anyway? [y/n]"))?;
+    }
+    let note = checked.note;
+    if let Some(expected) = expected
+        && local.linked_number() != Some(expected)
+    {
+        return Err(Error::Gh(format!(
+            "Couldn't open PR #{expected}: the branch checked out for it has {}",
+            match local.linked_number() {
+                Some(number) => format!("GitHub's PR #{number}"),
+                None => "no GitHub PR".to_owned(),
+            }
+        )));
+    }
+    confirm_authors(app, term, &local)?;
+    // GitHub was asked for the PR just now: only its reviews are to be fetched.
+    local.fetch_linked()?;
+    let unchecked = local.unchecked().map(str::to_owned);
+    show_pr(app, term, Rc::new(local))?;
+    if let Some(unchecked) = unchecked {
+        app.display_error(unchecked);
+    }
+    if let Some(note) = note {
+        app.display_info(note);
+    }
+    Ok(())
+}
+
+/// Ask the user to go on if the PR's commits are by more than one author, as they would be if
+/// its base were wrong.
+fn confirm_authors(app: &mut App, term: &mut Term, local: &LocalBackend) -> Res<()> {
+    let authors = local.commit_authors()?;
+    if authors.len() > 1 {
+        app.confirm(
+            term,
+            format!(
+                "The PR's commits are by {} authors: {}. Open it? [y/n]",
+                authors.len(),
+                authors.join(", ")
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// Sync the current branch's PR with GitHub (see [`review::post::sync`]): add every draft comment
+/// to the user's pending review there, and fetch. With no PR on GitHub, it asks before creating
+/// one, once the branch is where GitHub has it.
+pub(crate) struct PrSync;
+impl OpTrait for PrSync {
+    fn get_action(&self, _target: &ItemData) -> Option<Action> {
+        Some(Rc::new(|app, term| {
+            // The PR on screen, if it is a local PR's, which may be into another base than the
+            // default.
+            let on_screen = app.screen().pr.clone();
+            let for_current_branch;
+            let local = match on_screen.as_ref().and_then(|pr| pr.backend.as_local()) {
+                Some(local) => local,
+                None => {
+                    for_current_branch = LocalBackend::for_current_branch(
+                        Rc::clone(&app.state.repo),
+                        Rc::clone(&app.state.github),
+                    )?;
+                    &for_current_branch
+                }
+            };
+            // Creating a PR makes the branch visible to everyone who can see the repository. What
+            // would stop it is said before asking.
+            let create_pr = app.state.github.pr_for_branch(local.head())?.is_none()
+                && !local.to_post()?.is_empty();
+            if create_pr {
+                local
+                    .compare_with_github(None, Purpose::Post)
+                    .map_err(|e| Error::Gh(format!("Couldn't create a PR: {e}")))?;
+                app.confirm(term, "No PR on GitHub: create one? [y/n]")?;
+            }
+            let github = Rc::clone(&app.state.github);
+            let synced = review::post::sync(local, github, create_pr);
+            // What sync did is shown, as drafts it moved, even when it posted nothing.
+            reread_pr(app)?;
+            app.update_screens()?;
+            app.display_info(synced?.summary());
+            Ok(())
+        }))
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "sync with GitHub".into()
+    }
+}
+
+/// Show the threads of the PR on screen, or else of the current branch's, which is opened, in a
+/// view of their own, each as on the PR's screen, narrowed as words are typed to those that match
+/// them, and go to the one chosen in the PR's diff.
+pub(crate) struct PrThreads;
+impl OpTrait for PrThreads {
+    fn get_action(&self, _target: &ItemData) -> Option<Action> {
+        Some(Rc::new(show_threads))
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "threads".into()
+    }
+}
+
+/// Whether `data` is a thread's first row, where the thread view's cursor stops.
+fn is_thread(data: &ItemData) -> bool {
+    matches!(data, ItemData::ReviewThread { .. })
+}
+
+/// The thread view (see [`PrThreads`]). While words are typed, up and down (or ctrl+p and ctrl+n)
+/// move between threads, alt+up and alt+down step through what was typed before, as up and down do
+/// in the other prompts, enter or right goes to the thread under the cursor, and esc clears what was
+/// typed, or, with nothing typed, closes the view.
+fn show_threads(app: &mut App, term: &mut Term) -> Res<()> {
+    // With no PR on screen, the current branch's is opened, as `O O` opens it.
+    if app.screen().pr.is_none() {
+        open_current(app, term, None)?;
+    }
+    let pr = app.screen().pr.clone().expect("the PR just opened");
+    let pattern = Rc::new(std::cell::RefCell::new(String::new()));
+    let (view_pr, view_pattern, repo) = (
+        Rc::clone(&pr),
+        Rc::clone(&pattern),
+        Rc::clone(&app.state.repo),
+    );
+    let size = term.size().map_err(Error::Term)?;
+    let screen = screen::Screen::new(
+        Arc::clone(&app.state.config),
+        app.render_params(size),
+        Box::new(move |params| {
+            let config = &params.config;
+            let dir = repo.workdir().unwrap_or(repo.path());
+            let options = comment_options(&view_pr, config, dir, &params.features);
+            Ok(screen::review::thread_view(
+                &view_pr,
+                &repo,
+                params.width(),
+                &options,
+                Style::from(&config.style.pr_summary),
+                &view_pattern.borrow(),
+            ))
+        }),
+    )?;
+    app.state.screens.push(screen);
+    app.screen_mut().select_revealing(is_thread);
+
+    let narrow = |app: &mut App, pattern: &std::cell::RefCell<String>, value: &str| {
+        *pattern.borrow_mut() = value.to_owned();
+        let refreshed = app.screen_mut().refresh();
+        app.screen_mut().select_revealing(is_thread);
+        if let Err(e) = refreshed {
+            app.display_error(e.to_string());
+        }
+    };
+    let (edited, cleared) = (Rc::clone(&pattern), Rc::clone(&pattern));
+    let answer = app.prompt(
+        term,
+        &PromptParams {
+            prompt: "Threads".into(),
+            history: Some(HistoryKind::ThreadFilter),
+            on_edit: Some(Box::new(move |app, value| narrow(app, &edited, value))),
+            on_key: Some(Box::new(move |app, key| {
+                use crossterm::event::{KeyCode, KeyModifiers};
+                match (key.code, key.modifiers) {
+                    (KeyCode::Up | KeyCode::Down, KeyModifiers::ALT) => {
+                        let plain = crossterm::event::KeyEvent::new(key.code, KeyModifiers::NONE);
+                        app.state.prompt.handle_key(plain);
+                        KeyUse::Taken
+                    }
+                    (KeyCode::Down, KeyModifiers::NONE)
+                    | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                        app.screen_mut().select_adjacent_matching(is_thread, false);
+                        KeyUse::Taken
+                    }
+                    (KeyCode::Up, KeyModifiers::NONE)
+                    | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                        app.screen_mut().select_adjacent_matching(is_thread, true);
+                        KeyUse::Taken
+                    }
+                    (KeyCode::Right, _) => KeyUse::Answers,
+                    (KeyCode::Esc, _) if !app.state.prompt.state.value.is_empty() => {
+                        app.state.prompt.state.value.clear();
+                        app.state.prompt.state.move_to(0);
+                        narrow(app, &cleared, "");
+                        KeyUse::Taken
+                    }
+                    _ => KeyUse::Typed,
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let chosen = match app.screen().selected_target() {
+        ItemData::ReviewThread { thread_id, .. } | ItemData::ReviewComment { thread_id, .. } => {
+            Some(thread_id)
+        }
+        _ => None,
+    };
+    app.state.screens.pop();
+    match answer {
+        Ok(_) => {}
+        Err(Error::PromptAborted) => return Ok(()),
+        Err(e) => return Err(e),
+    }
+    let Some(chosen) = chosen else {
+        app.display_error("No thread matches");
+        return Ok(());
+    };
+    let found = app.screen_mut().select_revealing(
+        |data| matches!(data, ItemData::ReviewThread { thread_id, .. } if *thread_id == chosen),
+    );
+    if !found {
+        return Err(Error::LocalPr(format!(
+            "Couldn't find thread {chosen} on the PR's screen"
+        )));
+    }
+    Ok(())
+}
+
+/// Open a screen with the diff of the PR `backend` is for, with its checkboxes and threads.
+fn show_pr(app: &mut App, term: &mut Term, backend: Rc<dyn Backend>) -> Res<()> {
+    let pr = Rc::new(OpenPr::new(backend)?);
+
+    let (threads_pr, repo) = (Rc::clone(&pr), Rc::clone(&app.state.repo));
     let (width, height) = term.size().map_err(Error::Term)?;
     let mut screen = screen::pager::live_decorated(
         Arc::clone(&app.state.config),
         Rc::clone(&app.state.repo),
-        app.render_params((width.saturating_sub(github::FILE_PREFIX_WIDTH), height)),
-        vec![
-            "git".into(),
-            "diff".into(),
-            format!("{}...HEAD", review.pr.base_oid),
-        ],
+        app.render_params((width.saturating_sub(review::FILE_PREFIX_WIDTH), height)),
+        vec!["git".into(), "diff".into(), pr.diff_range()],
         Rc::new(move |params, items| {
             let config = &params.config;
             let dir = repo.workdir().unwrap_or(repo.path());
-            let options = comment_options(&threads_review, config, dir, &params.features);
+            let options = comment_options(&threads_pr, config, dir, &params.features);
             let layout = screen::review::Layout {
                 width: params.width(),
-                side_by_side: options.side_by_side,
             };
             let error_style = Style::from(&config.style.error_msg);
+            let summary_style = Style::from(&config.style.pr_summary);
             screen::review::with_threads(
                 items,
-                &threads_review,
-                &repo,
+                &threads_pr,
                 layout,
                 &options,
+                summary_style,
                 error_style,
             )
         }),
     )?;
-    screen.review = Some(review);
+    *pr.git.borrow_mut() = screen.git_command.clone();
+    screen.pr = Some(pr);
     app.state.screens.push(screen);
     Ok(())
 }
 
-/// Read the checkboxes and review threads of the PR on screen from GitHub
-/// again, as they may have changed in the browser.
-pub(crate) fn reread_review(app: &mut App) -> Res<()> {
-    if let Some(review) = app.screen().review.clone() {
-        *review.viewed.borrow_mut() = app.state.github.viewed(&review.pr)?;
-        *review.threads.borrow_mut() = app.state.github.threads(&review.pr)?;
-        *review.options.borrow_mut() = None;
+/// Open the file under the cursor whole, as committed, at the cursor's line, to comment on its
+/// lines for an agent to answer (see [`LocalBackend::for_files`]); or, where no file is under the
+/// cursor, or in the file view, a file picked from those committed.
+pub(crate) struct OpenFile;
+impl OpTrait for OpenFile {
+    fn get_action(&self, target: &ItemData) -> Option<Action> {
+        let under_cursor = file_of(target).map(|(diff, file_i)| {
+            let line = line_of(target).map(|(_, line)| line);
+            (review::file_path(diff, file_i), line)
+        });
+        Some(Rc::new(move |app, term| {
+            let (path, line) = match (&under_cursor, app.screen().file.is_some()) {
+                (Some(under_cursor), false) => under_cursor.clone(),
+                _ => match pick_file(app, term)? {
+                    Some(path) => (path, None),
+                    None => return Ok(()),
+                },
+            };
+            open_file(app, term, path, line)
+        }))
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Open a file".into()
+    }
+}
+
+/// A file picked from those in HEAD's commit, or `None` if the picker is cancelled.
+fn pick_file(app: &mut App, term: &mut Term) -> Res<Option<String>> {
+    let error = |e: git2::Error| Error::LocalPr(format!("Couldn't list the files committed: {e}"));
+    let repo = Rc::clone(&app.state.repo);
+    let tree = repo
+        .head()
+        .and_then(|head| head.peel_to_tree())
+        .map_err(error)?;
+    let mut paths = vec![];
+    tree.walk(git2::TreeWalkMode::PreOrder, |dir, entry| {
+        if entry.kind() == Some(git2::ObjectType::Blob)
+            && let Some(name) = entry.name()
+        {
+            paths.push(format!("{dir}{name}"));
+        }
+        git2::TreeWalkResult::Ok
+    })
+    .map_err(error)?;
+    let items = paths
+        .into_iter()
+        .map(|path| PickerItem::new(path.clone(), PickerData::Item(path)))
+        .collect();
+    match app.pick(term, PickerState::new("Open file", items, false))? {
+        Some(PickerData::Item(path)) => Ok(Some(path)),
+        Some(PickerData::CustomInput(_)) => unreachable!("the picker takes no custom input"),
+        None => Ok(None),
+    }
+}
+
+/// Open the file view: the file at `path` whole, as in the branch's last commit, at `line`, with
+/// the threads of the branch's files review under their lines.
+fn open_file(app: &mut App, term: &mut Term, path: String, line: Option<u32>) -> Res<()> {
+    if !app.state.config.general.experimental {
+        return open_file_alone(app, term, path, line);
+    }
+    let repo = Rc::clone(&app.state.repo);
+    let backend = LocalBackend::for_files(Rc::clone(&repo), Rc::clone(&app.state.github), None)?;
+    let pr = Rc::new(OpenPr::new(Rc::new(backend))?);
+    // The commit the file is read in is the one its threads are placed in.
+    let pinned = Rc::clone(&pr);
+    let commit: Rc<dyn Fn() -> Res<git2::Oid>> = Rc::new(move || {
+        pinned
+            .version
+            .get()
+            .map(|version| version.head)
+            .ok_or_else(|| Error::LocalPr("The branch has no commit to open the file in".into()))
+    });
+    let (threads_pr, shown) = (Rc::clone(&pr), path.clone());
+    let (width, height) = term.size().map_err(Error::Term)?;
+    let mut screen = screen::pager::whole(
+        Arc::clone(&app.state.config),
+        Rc::clone(&repo),
+        app.render_params((width.saturating_sub(review::FILE_PREFIX_WIDTH), height)),
+        path.clone(),
+        commit,
+        Rc::new(move |params, items| {
+            let config = &params.config;
+            let dir = repo.workdir().unwrap_or(repo.path());
+            let options = comment_options(&threads_pr, config, dir, &params.features);
+            let layout = screen::review::Layout {
+                width: params.width(),
+            };
+            let error_style = Style::from(&config.style.error_msg);
+            let summary_style = Style::from(&config.style.pr_summary);
+            let mut rows = uncommitted_note(&repo, &shown, error_style);
+            rows.extend(items);
+            screen::review::with_threads(
+                rows,
+                &threads_pr,
+                layout,
+                &options,
+                summary_style,
+                error_style,
+            )
+        }),
+    )?;
+    screen.pr = Some(pr);
+    screen.file = Some(path);
+    app.state.screens.push(screen);
+    if let Some(line) = line {
+        app.screen_mut()
+            .select_matching(|data| new_line_of(data) == Some(line));
+    }
+    Ok(())
+}
+
+/// The file view without comments, as experimental features are off: the file at `path` whole,
+/// as in HEAD's commit, at `line`.
+fn open_file_alone(app: &mut App, term: &mut Term, path: String, line: Option<u32>) -> Res<()> {
+    let repo = Rc::clone(&app.state.repo);
+    let head = Rc::clone(&repo);
+    let commit: Rc<dyn Fn() -> Res<git2::Oid>> = Rc::new(move || {
+        head.head()
+            .and_then(|head| head.peel_to_commit())
+            .map(|commit| commit.id())
+            .map_err(|e| Error::LocalPr(format!("Couldn't read HEAD's commit: {e}")))
+    });
+    let shown = path.clone();
+    let (width, height) = term.size().map_err(Error::Term)?;
+    let mut screen = screen::pager::whole(
+        Arc::clone(&app.state.config),
+        Rc::clone(&repo),
+        app.render_params((width, height)),
+        path.clone(),
+        commit,
+        Rc::new(move |params, items| {
+            let error_style = Style::from(&params.config.style.error_msg);
+            let mut rows = uncommitted_note(&repo, &shown, error_style);
+            rows.extend(items);
+            rows
+        }),
+    )?;
+    screen.file = Some(path);
+    app.state.screens.push(screen);
+    if let Some(line) = line {
+        app.screen_mut()
+            .select_matching(|data| new_line_of(data) == Some(line));
+    }
+    Ok(())
+}
+
+/// A row saying that the file at `path` has changes not committed, which the file view doesn't
+/// show, if it has.
+fn uncommitted_note(repo: &git2::Repository, path: &str, style: Style) -> Vec<Item> {
+    let changed = repo
+        .status_file(std::path::Path::new(path))
+        .is_ok_and(|status| status != git2::Status::CURRENT && status != git2::Status::IGNORED);
+    if !changed {
+        return vec![];
+    }
+    vec![Item {
+        unselectable: true,
+        rendered: Some(Rc::new(vec![(
+            format!("{path} has changes not committed, which aren't shown"),
+            style,
+        )])),
+        ..Default::default()
+    }]
+}
+
+/// The new side's number of the line `data` is, if it is a line of a diff.
+fn new_line_of(data: &ItemData) -> Option<u32> {
+    match line_of(data)? {
+        (Side::New, line) => Some(line),
+        (Side::Old, _) => None,
+    }
+}
+
+/// Read the checkboxes and review threads of the PR on screen from its backend
+/// again, as they may have changed elsewhere, such as in the browser.
+/// Once a push is done, ask GitHub again for the PR on screen, if there is one, as GitHub may
+/// have it at the commits pushed: see [`LocalBackend::relink_after_push`].
+pub(crate) fn after_push(app: &mut App, term: &mut Term) -> Res<()> {
+    let Some(pr) = app.screen().pr.clone() else {
+        return Ok(());
+    };
+    let Some(local) = pr.backend.as_local() else {
+        return Ok(());
+    };
+    let style = Style::from(&app.state.config.style.info_msg);
+    let busy = term.busy("Fetching PR", style);
+    let relinked = local.relink_after_push();
+    if busy.finish() {
+        app.stage_redraw();
+    }
+    relinked?;
+    *pr.viewed.borrow_mut() = pr.backend.viewed()?;
+    pr.repin()?;
+    app.update_screens()
+}
+
+pub(crate) fn reread_pr(app: &mut App) -> Res<()> {
+    if let Some(pr) = app.screen().pr.clone() {
+        pr.backend.refresh()?;
+        *pr.viewed.borrow_mut() = pr.backend.viewed()?;
+        pr.repin()?;
+        *pr.options.borrow_mut() = None;
     }
     Ok(())
 }
@@ -133,13 +562,13 @@ pub(crate) fn reread_review(app: &mut App) -> Res<()> {
 /// it is asked once for each set of features in force, and again after the review is read
 /// again, rather than each time the rows are built.
 fn comment_options(
-    review: &Review,
+    pr: &OpenPr,
     config: &crate::config::Config,
     dir: &std::path::Path,
     features: &[String],
 ) -> Rc<screen::review::CommentOptions> {
     let overlay = crate::diff_renderer::feature_overlay(features);
-    if let Some((asked_with, options)) = &*review.options.borrow()
+    if let Some((asked_with, options)) = &*pr.options.borrow()
         && *asked_with == overlay
     {
         return Rc::clone(options);
@@ -149,12 +578,11 @@ fn comment_options(
         overlay.as_deref(),
         &screen::review::OPTION_NAMES,
     );
-    let enabled = config.general.diff_renderer.enabled_features.get(dir);
-    let options = Rc::new(screen::review::CommentOptions {
-        side_by_side: super::editor::is_enabled_in(features, "side-by-side", &enabled),
-        ..screen::review::CommentOptions::of(&values, config.general.diff_renderer.color_mode)
-    });
-    *review.options.borrow_mut() = Some((overlay, Rc::clone(&options)));
+    let options = Rc::new(screen::review::CommentOptions::of(
+        &values,
+        config.general.diff_renderer.color_mode,
+    ));
+    *pr.options.borrow_mut() = Some((overlay, Rc::clone(&options)));
     options
 }
 
@@ -162,20 +590,20 @@ pub(crate) struct ToggleViewed;
 impl OpTrait for ToggleViewed {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
         let (diff, file_i) = file_of(target)?;
-        let path = github::file_path(diff, file_i);
+        let path = review::file_path(diff, file_i);
         Some(Rc::new(move |app, _term| {
-            let Some(review) = app.screen().review.clone() else {
+            let Some(pr) = app.screen().pr.clone() else {
                 app.display_error(NO_REVIEW);
                 return Ok(());
             };
-            let viewed = review.viewed.borrow().get(&path) != Some(&ViewedState::Viewed);
-            app.state.github.set_viewed(&review.pr, &path, viewed)?;
+            let viewed = pr.viewed.borrow().get(&path) != Some(&ViewedState::Viewed);
+            pr.backend.set_viewed(&path, viewed)?;
             let state = if viewed {
                 ViewedState::Viewed
             } else {
                 ViewedState::Unviewed
             };
-            review.viewed.borrow_mut().insert(path.clone(), state);
+            pr.viewed.borrow_mut().insert(path.clone(), state);
             Ok(())
         }))
     }
@@ -189,24 +617,38 @@ impl OpTrait for ToggleViewed {
     }
 }
 
-pub(crate) struct ShowOnGithub;
-impl OpTrait for ShowOnGithub {
+/// Move a local comment to local-only, which sync never posts, or back to the draft review.
+pub(crate) struct ToggleLocalOnly;
+impl OpTrait for ToggleLocalOnly {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
-        if let ItemData::ReviewThread { url, .. } | ItemData::ReviewComment { url, .. } = target {
-            let url = url.clone();
-            return Some(Rc::new(move |app, _term| app.state.github.open(&url)));
-        }
-        let (diff, file_i) = file_of(target)?;
-        let path = github::file_path(diff, file_i);
-        let line = line_of(target);
+        let (thread_id, comment_id) = comment_of(target)?;
         Some(Rc::new(move |app, _term| {
-            let Some(review) = app.screen().review.clone() else {
+            let Some(pr) = app.screen().pr.clone() else {
                 app.display_error(NO_REVIEW);
                 return Ok(());
             };
-            app.state
-                .github
-                .open(&github::file_url(&review.pr, &path, line))
+            let Some(local) = pr.backend.as_local() else {
+                app.display_error("Only a local PR's comments can be local-only");
+                return Ok(());
+            };
+            let Some(comment) = pr.comment(&thread_id, &comment_id) else {
+                app.display_error("The comment has been deleted");
+                return Ok(());
+            };
+            if !comment.draft && !comment.local_only {
+                app.display_error("Only a local comment can be moved: this one is on GitHub");
+                return Ok(());
+            }
+            let to_local = !comment.local_only;
+            local.move_comment(&comment_id, to_local)?;
+            pr.reread_threads()?;
+            app.screen_mut().redecorate();
+            app.display_info(if to_local {
+                "Moved the comment to local-only: sync won't post it"
+            } else {
+                "Moved the comment to your draft review: sync will post it"
+            });
+            Ok(())
         }))
     }
 
@@ -215,7 +657,124 @@ impl OpTrait for ShowOnGithub {
     }
 
     fn display(&self, _state: &State) -> String {
-        "Show on GitHub".into()
+        "Toggle local-only".into()
+    }
+}
+
+/// Send an agent a message about the thread under the cursor, or else the whole PR: with
+/// `send-message-command`, or else by leaving it for `delta tui review listen`.
+pub(crate) struct MessageAgent;
+impl OpTrait for MessageAgent {
+    fn get_action(&self, target: &ItemData) -> Option<Action> {
+        let thread = comment_of(target).map(|(thread_id, _)| thread_id);
+        // On the rows `i` comments from: a comment, the PR's summary, or a diff.
+        if thread.is_none() && !matches!(target, ItemData::PrSummary) && file_of(target).is_none() {
+            return None;
+        }
+        Some(Rc::new(move |app, term| {
+            let Some(pr) = app.screen().pr.clone() else {
+                app.display_error(NO_REVIEW);
+                return Ok(());
+            };
+            let Some(local) = pr.backend.as_local() else {
+                app.display_error("Only a local PR can message an agent");
+                return Ok(());
+            };
+            let Some(version) = pr.version.get() else {
+                app.display_error(
+                    "Couldn't send: the diff is not the PR's, as its command was changed with :",
+                );
+                return Ok(());
+            };
+            let default = match thread {
+                Some(_) => "Please respond to this thread",
+                None => "Please respond to the comments",
+            };
+            let body = match app.prompt(
+                term,
+                &PromptParams {
+                    prompt: "Send message".into(),
+                    create_default_value: Box::new(move |_| Some(default.to_owned())),
+                    history: Some(HistoryKind::AgentMessage),
+                    ..Default::default()
+                },
+            ) {
+                Ok(body) => body,
+                Err(Error::PromptAborted) => return Ok(()),
+                Err(e) => return Err(e),
+            };
+            local.send_message(
+                &body,
+                thread.as_deref(),
+                &version,
+                app.state.config.general.send_message_command.as_deref(),
+            )?;
+            app.display_info("Message sent");
+            Ok(())
+        }))
+    }
+
+    fn is_target_op(&self) -> bool {
+        true
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Send message".into()
+    }
+}
+
+pub(crate) struct ShowOnGithub;
+impl OpTrait for ShowOnGithub {
+    fn get_action(&self, target: &ItemData) -> Option<Action> {
+        if let ItemData::PrSummary = target {
+            return Some(Rc::new(|app, _term| {
+                let Some(pr) = app.screen().pr.clone() else {
+                    app.display_error(NO_REVIEW);
+                    return Ok(());
+                };
+                match pr.backend.url() {
+                    Some(url) => app.state.github.open(&url),
+                    None => {
+                        app.display_error(PR_NOT_ON_GITHUB);
+                        Ok(())
+                    }
+                }
+            }));
+        }
+        if let ItemData::ReviewThread { url, .. } | ItemData::ReviewComment { url, .. } = target {
+            let url = url.clone();
+            return Some(Rc::new(move |app, _term| match &url {
+                Some(url) => app.state.github.open(url),
+                None => {
+                    app.display_error(NOT_ON_GITHUB);
+                    Ok(())
+                }
+            }));
+        }
+        let (diff, file_i) = file_of(target)?;
+        let path = review::file_path(diff, file_i);
+        let line = line_of(target);
+        Some(Rc::new(move |app, _term| {
+            let Some(pr) = app.screen().pr.clone() else {
+                app.display_error(NO_REVIEW);
+                return Ok(());
+            };
+            match pr.backend.file_url(&path, line) {
+                Some(url) => app.state.github.open(&url),
+                None => {
+                    app.display_error(NOT_ON_GITHUB);
+                    Ok(())
+                }
+            }
+        }))
+    }
+
+    fn is_target_op(&self) -> bool {
+        true
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Open in GitHub".into()
     }
 }
 
@@ -249,8 +808,19 @@ fn line_of(target: &ItemData) -> Option<(Side, u32)> {
             file_i,
             hunk_i,
             line_i,
+            line_indices,
             ..
-        } => (diff, *file_i, *hunk_i, *line_i),
+        } => {
+            // A side-by-side row of a removed line and an added line is the added line's.
+            let content = diff.hunk_content(*file_i, *hunk_i);
+            let added = line_indices.iter().copied().find(|&i| {
+                content
+                    .lines()
+                    .nth(i)
+                    .is_some_and(|line| line.starts_with('+'))
+            });
+            (diff, *file_i, *hunk_i, added.unwrap_or(*line_i))
+        }
         _ => return None,
     };
     let removed = diff
@@ -271,55 +841,58 @@ fn line_of(target: &ItemData) -> Option<(Side, u32)> {
     })
 }
 
-/// Write a comment in a box in the diff: on a thread, a reply to it; on a diff line, a new comment
-/// on it. On the box, or anywhere while it holds text, go back to it, rather than lose what was
-/// written.
+/// Write a comment in a box in the diff: on a thread, a reply in it, whoever wrote its comments;
+/// on a diff line, a new comment on it. On the box, or anywhere while it holds text, go back to it,
+/// rather than lose what was written. `e` edits a comment (see [`EditComment`]).
 pub(crate) struct WriteComment;
 impl OpTrait for WriteComment {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
         let new_target = match target {
             ItemData::ReviewThread { thread_id, .. }
-            | ItemData::ReviewComment { thread_id, .. } => Some(DraftTarget::Reply {
+            | ItemData::ReviewComment { thread_id, .. } => Some(EditorTarget::Reply {
                 thread_id: thread_id.clone(),
             }),
-            ItemData::ReviewDraft { .. } => None,
+            ItemData::CommentEditor { .. } => None,
+            // The PR's summary has no line to comment on, but from it `i` goes back to a box
+            // being written, as from a file's row.
+            ItemData::PrSummary => None,
             // A file's row has no line to comment on, but from it, as from any row of a diff,
             // `i` goes back to a box being written.
             _ => {
                 let (diff, file_i) = file_of(target)?;
-                line_of(target).map(|line| DraftTarget::Line {
-                    path: github::file_path(diff, file_i),
+                line_of(target).map(|line| EditorTarget::Line {
+                    path: review::file_path(diff, file_i),
                     line,
                 })
             }
         };
         Some(Rc::new(move |app, _term| {
-            let Some(review) = app.screen().review.clone() else {
+            let Some(pr) = app.screen().pr.clone() else {
                 app.display_error(NO_REVIEW);
                 return Ok(());
             };
             {
-                let mut draft = review.draft.borrow_mut();
+                let mut editor = pr.editor.borrow_mut();
                 // A box with nothing written in it, elsewhere, gives way to the new one.
-                let replaced = match (&*draft, &new_target) {
-                    (Some(draft), Some(target)) => {
-                        draft.text.value().is_empty() && draft.target != *target
+                let replaced = match (&*editor, &new_target) {
+                    (Some(editor), Some(target)) => {
+                        editor.text.value().is_empty() && editor.target != *target
                     }
                     (None, Some(_)) => true,
                     (_, None) => false,
                 };
-                match (&mut *draft, new_target.clone()) {
+                match (&mut *editor, new_target.clone()) {
                     (_, Some(target)) if replaced => {
-                        *draft = Some(Draft {
+                        *editor = Some(CommentEditor {
                             target,
                             text: TextArea::default(),
                             focused: true,
                             width: 0,
                         });
                     }
-                    (Some(draft), _) => draft.focused = true,
+                    (Some(editor), _) => editor.focused = true,
                     (None, _) => {
-                        drop(draft);
+                        drop(editor);
                         app.display_error(
                             "Nothing to comment on here: i comments on a diff line, or replies to a thread",
                         );
@@ -327,7 +900,7 @@ impl OpTrait for WriteComment {
                     }
                 }
             }
-            show_draft(app);
+            show_editor(app);
             Ok(())
         }))
     }
@@ -341,37 +914,154 @@ impl OpTrait for WriteComment {
     }
 }
 
-/// Whether keys go to a comment box on the screen.
-pub(crate) fn draft_has_focus(app: &App) -> bool {
-    app.screen().review.as_ref().is_some_and(|review| {
-        review
-            .draft
-            .borrow()
-            .as_ref()
-            .is_some_and(|draft| draft.focused)
+/// Edit, in a box in the diff, the comment under the cursor, if it is one the user can change:
+/// theirs in a draft review, or their own on GitHub. While a box holds text, go back to it, rather
+/// than lose what was written.
+pub(crate) struct EditComment;
+impl OpTrait for EditComment {
+    fn get_action(&self, target: &ItemData) -> Option<Action> {
+        let (thread_id, comment_id) = comment_of(target)?;
+        Some(Rc::new(move |app, _term| {
+            let Some(pr) = app.screen().pr.clone() else {
+                app.display_error(NO_REVIEW);
+                return Ok(());
+            };
+            let writing = pr
+                .editor
+                .borrow()
+                .as_ref()
+                .is_some_and(|editor| !editor.text.value().is_empty());
+            if writing {
+                if let Some(editor) = pr.editor.borrow_mut().as_mut() {
+                    editor.focused = true;
+                }
+                show_editor(app);
+                return Ok(());
+            }
+            let Some(comment) = pr.comment(&thread_id, &comment_id) else {
+                app.display_error("The comment has been deleted");
+                return Ok(());
+            };
+            if !comment.editable {
+                app.display_error("Only your own comments can be edited");
+                return Ok(());
+            }
+            let mut text = TextArea::default();
+            text.insert_str(&comment.body);
+            *pr.editor.borrow_mut() = Some(CommentEditor {
+                target: EditorTarget::Edit {
+                    thread_id: thread_id.clone(),
+                    comment_id: comment_id.clone(),
+                },
+                text,
+                focused: true,
+                width: 0,
+            });
+            show_editor(app);
+            Ok(())
+        }))
+    }
+
+    fn is_target_op(&self) -> bool {
+        true
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Edit your comment".into()
+    }
+}
+
+/// What to ask before changing a comment others can see.
+const PUBLIC_EDIT: &str = "This comment is public on GitHub: change it there? [y/n]";
+const PUBLIC_DELETE: &str = "This comment is public on GitHub: delete it there? [y/n]";
+
+/// Delete a comment, once the user confirms: one in a submitted review, which others can see, as
+/// such.
+pub(crate) fn delete_comment(thread_id: String, comment_id: String) -> Action {
+    Rc::new(move |app, term| {
+        let Some(pr) = app.screen().pr.clone() else {
+            app.display_error(NO_REVIEW);
+            return Ok(());
+        };
+        if !pr
+            .comment(&thread_id, &comment_id)
+            .is_some_and(|c| c.deletable)
+        {
+            app.display_error(NOT_DRAFT);
+            return Ok(());
+        }
+        let public = pr
+            .comment(&thread_id, &comment_id)
+            .is_some_and(|c| c.submitted);
+        let consent = if public {
+            app.confirm(term, PUBLIC_DELETE)?;
+            Consent::Publish
+        } else {
+            app.confirm(term, "Really delete the comment? [y/n]")?;
+            Consent::Private
+        };
+        let message = pr
+            .backend
+            .delete_comment(&thread_id, &comment_id, consent)?;
+        pr.reread_threads()?;
+        app.screen_mut().redecorate();
+        app.display_info(message);
+        Ok(())
     })
 }
 
-/// Edit the comment box that has focus as `key` says, or leave it.
-pub(crate) fn handle_draft_key(app: &mut App, _term: &mut Term, key: KeyEvent) -> Res<()> {
-    let Some(review) = app.screen().review.clone() else {
+/// The thread and comment a comment's row is of.
+pub(crate) fn comment_of(target: &ItemData) -> Option<(String, String)> {
+    match target {
+        ItemData::ReviewThread {
+            thread_id,
+            comment_id,
+            ..
+        }
+        | ItemData::ReviewComment {
+            thread_id,
+            comment_id,
+            ..
+        } => Some((thread_id.clone(), comment_id.clone())),
+        _ => None,
+    }
+}
+
+/// Whether keys go to a comment box on the screen.
+pub(crate) fn editor_has_focus(app: &App) -> bool {
+    app.screen().pr.as_ref().is_some_and(|pr| {
+        pr.editor
+            .borrow()
+            .as_ref()
+            .is_some_and(|editor| editor.focused)
+    })
+}
+
+/// Edit the comment box that has focus as `key` says, or leave it: a box with nothing written in
+/// it goes when left.
+pub(crate) fn handle_editor_key(app: &mut App, term: &mut Term, key: KeyEvent) -> Res<()> {
+    let Some(pr) = app.screen().pr.clone() else {
         return Ok(());
     };
     let outcome = {
-        let mut draft = review.draft.borrow_mut();
-        let Some(draft) = draft.as_mut() else {
+        let mut slot = pr.editor.borrow_mut();
+        let Some(editor) = slot.as_mut() else {
             return Ok(());
         };
-        let width = draft.width;
-        let outcome = draft.text.handle_key(key, width);
+        let width = editor.width;
+        let outcome = editor.text.handle_key(key, width);
         if outcome == Outcome::Leave {
-            draft.focused = false;
+            if editor.text.value().is_empty() {
+                *slot = None;
+            } else {
+                editor.focused = false;
+            }
         }
         outcome
     };
     match outcome {
-        Outcome::Edited | Outcome::Moved | Outcome::Leave => show_draft(app),
-        Outcome::Submit => post_draft(app)?,
+        Outcome::Edited | Outcome::Moved | Outcome::Leave => show_editor(app),
+        Outcome::Submit => post_comment(app, term)?,
         Outcome::Ignored => {}
     }
     Ok(())
@@ -381,15 +1071,15 @@ pub(crate) fn handle_draft_key(app: &mut App, _term: &mut Term, key: KeyEvent) -
 /// again to show it, with the box gone. A new comment is not posted while HEAD is not the PR's
 /// head on GitHub, which its line is numbered against. What was written is kept if it is not
 /// posted.
-fn post_draft(app: &mut App) -> Res<()> {
-    let Some(review) = app.screen().review.clone() else {
+fn post_comment(app: &mut App, term: &mut Term) -> Res<()> {
+    let Some(pr) = app.screen().pr.clone() else {
         return Ok(());
     };
-    let Some((target, body)) = review
-        .draft
+    let Some((target, body)) = pr
+        .editor
         .borrow()
         .as_ref()
-        .map(|draft| (draft.target.clone(), draft.text.value().to_owned()))
+        .map(|editor| (editor.target.clone(), editor.text.value().to_owned()))
     else {
         return Ok(());
     };
@@ -397,49 +1087,66 @@ fn post_draft(app: &mut App) -> Res<()> {
         app.display_error("Nothing to post");
         return Ok(());
     }
-    let github = Rc::clone(&app.state.github);
-    match &target {
-        DraftTarget::Reply { thread_id } => github.reply(&review.pr, thread_id, &body)?,
-        DraftTarget::Line { path, line } => {
-            if !screen::review::at_pr_head(&app.state.repo, &review.pr.head_oid) {
+    let message = match &target {
+        EditorTarget::Reply { thread_id } => pr.backend.reply(thread_id, &body)?.to_owned(),
+        EditorTarget::Line { path, line } => {
+            if pr.backend.head_mismatch(&app.state.repo) {
                 app.display_error(
-                    "Cannot post: HEAD is not the PR's head on GitHub, so the comment's line may be wrong",
+                    "Cannot comment: HEAD is not the PR's head on GitHub, so the comment's line may be wrong",
                 );
                 return Ok(());
             }
-            github.comment(&review.pr, path, *line, &body)?;
+            pr.backend.comment(path, *line, &body)?
         }
-    }
-    *review.draft.borrow_mut() = None;
-    *review.threads.borrow_mut() = github.threads(&review.pr)?;
+        EditorTarget::Edit {
+            thread_id,
+            comment_id,
+        } => {
+            // A comment in a submitted review is public: changing it is asked first.
+            let consent = if pr
+                .comment(thread_id, comment_id)
+                .is_some_and(|c| c.submitted)
+            {
+                app.confirm(term, PUBLIC_EDIT)?;
+                Consent::Publish
+            } else {
+                Consent::Private
+            };
+            pr.backend
+                .edit_comment(thread_id, comment_id, &body, consent)?
+                .to_owned()
+        }
+    };
+    *pr.editor.borrow_mut() = None;
+    pr.reread_threads()?;
     app.screen_mut().redecorate();
-    app.display_info("Comment posted");
+    app.display_info(message);
     Ok(())
 }
 
 /// Insert a paste into the comment box that has focus.
-pub(crate) fn paste_into_draft(app: &mut App, text: &str) {
-    if let Some(review) = app.screen().review.clone()
-        && let Some(draft) = review.draft.borrow_mut().as_mut()
+pub(crate) fn paste_into_editor(app: &mut App, text: &str) {
+    if let Some(pr) = app.screen().pr.clone()
+        && let Some(editor) = pr.editor.borrow_mut().as_mut()
     {
-        draft.text.insert_str(text);
+        editor.text.insert_str(text);
     }
-    show_draft(app);
+    show_editor(app);
 }
 
 /// Draw the comment box again, with the screen's cursor on the row its text cursor is in while
 /// it has focus, so that it stays in view as it grows.
-fn show_draft(app: &mut App) {
+fn show_editor(app: &mut App) {
     let screen = app.screen_mut();
     screen.redecorate();
-    let Some(review) = screen.review.clone() else {
+    let Some(pr) = screen.pr.clone() else {
         return;
     };
-    let row = match review.draft.borrow().as_ref() {
-        Some(draft) if draft.focused => draft.text.cursor_at(draft.width).0,
+    let row = match pr.editor.borrow().as_ref() {
+        Some(editor) if editor.focused => editor.text.cursor_at(editor.width).0,
         _ => return,
     };
     screen.select_matching_in_view(
-        |data| matches!(data, ItemData::ReviewDraft { row: r } if *r == row),
+        |data| matches!(data, ItemData::CommentEditor { row: r } if *r == row),
     );
 }

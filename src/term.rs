@@ -14,11 +14,111 @@ use crossterm::{
 };
 use std::io::{self, Stdout, Write, stdout};
 use std::process::Stdio;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 pub type Term = TermBackend;
+
+/// How many times gitu has drawn a frame on the terminal or given it to another program, such as
+/// an editor. The busy spinner, which draws from a thread of its own, stops once this changes,
+/// and it is held while gitu draws, so that the spinner never draws in the middle of a frame. A
+/// test terminal counts its own (see [`TermBackend::turns`]).
+static TERMINAL_TURNS: LazyLock<Arc<Mutex<u64>>> = LazyLock::new(|| Arc::new(Mutex::new(0)));
+
+/// `turns`, a terminal's count of [`TERMINAL_TURNS`], counted and held while gitu uses the
+/// terminal.
+pub(crate) fn take_turn(turns: &Mutex<u64>) -> MutexGuard<'_, u64> {
+    let mut turns = turns.lock().unwrap_or_else(PoisonError::into_inner);
+    *turns += 1;
+    turns
+}
+
+/// How long gitu can be busy before it says what with.
+const BUSY_DELAY: Duration = Duration::from_millis(200);
+
+/// A spinner saying what gitu is busy with, drawn from a thread of its own, since gitu's own
+/// thread is busy and can't draw: on the terminal's last row, from [`BUSY_DELAY`] on, until gitu
+/// has finished, or uses the terminal itself, by drawing a frame or giving it to another program.
+pub(crate) struct Busy {
+    /// Dropped when gitu has finished, which wakes the thread at once.
+    finished: Option<Sender<()>>,
+    thread: Option<JoinHandle<bool>>,
+}
+
+impl Busy {
+    /// Stop the spinner, returning whether it said anything, so that the screen can be drawn
+    /// again over it.
+    pub(crate) fn finish(mut self) -> bool {
+        self.stop()
+    }
+
+    fn stop(&mut self) -> bool {
+        self.finished.take();
+        self.thread
+            .take()
+            .is_some_and(|thread| thread.join().unwrap_or(false))
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Whether `duration` passes before gitu has finished, as `finished` says.
+fn waited(finished: &Receiver<()>, duration: Duration) -> bool {
+    matches!(
+        finished.recv_timeout(duration),
+        Err(RecvTimeoutError::Timeout)
+    )
+}
+
+/// Draw a spinner and `what` on the terminal's last row, in `style`, from [`BUSY_DELAY`] on, until
+/// `finished` is set or gitu uses the terminal itself, as [`TERMINAL_TURNS`] counts. Returns
+/// whether it drew anything.
+fn spin(
+    finished: &Receiver<()>,
+    turns: &Mutex<u64>,
+    turns_at_start: u64,
+    what: &str,
+    style: Style,
+) -> bool {
+    let mut drew = false;
+    let mut wait = BUSY_DELAY;
+    while waited(finished, wait) {
+        let turns = turns.lock().unwrap_or_else(PoisonError::into_inner);
+        if *turns != turns_at_start {
+            break;
+        }
+        let Ok((columns, rows)) = crossterm::terminal::size() else {
+            break;
+        };
+        // Within the row, which a longer line would wrap and scroll.
+        let text: String = format!("{} {what}", crate::ui::cmd_log::spinner())
+            .chars()
+            .take(columns.saturating_sub(1) as usize)
+            .collect();
+        // Save the cursor, draw on the last row, and put the cursor back.
+        let row = format!("\x1b7\x1b[{rows};1H\x1b[2K{}\x1b8", styled(&text, &style));
+        let mut out = stdout();
+        if out
+            .write_all(row.as_bytes())
+            .and_then(|()| out.flush())
+            .is_err()
+        {
+            break;
+        }
+        drop(turns);
+        drew = true;
+        wait = crate::ui::cmd_log::SPINNER_STEP;
+    }
+    drew
+}
 
 pub fn backend() -> TermBackend {
     TermBackend::Crossterm(stdout())
@@ -81,6 +181,10 @@ pub struct TestBuffer {
     /// The text of each frame flushed, so that a test can see what was drawn while the TUI was
     /// busy, such as waiting for a command.
     pub frames: Vec<String>,
+    /// What the TUI said it was busy with, in place of the spinner a terminal shows.
+    pub busy: Arc<Mutex<Vec<String>>>,
+    /// This terminal's count of [`TERMINAL_TURNS`].
+    turns: Arc<Mutex<u64>>,
 }
 
 impl TestBuffer {
@@ -92,6 +196,8 @@ impl TestBuffer {
             cursor: (0, 0),
             link: None,
             frames: vec![],
+            busy: Arc::new(Mutex::new(vec![])),
+            turns: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -221,7 +327,7 @@ const ATTRS: &[(Modifier, Attribute)] = &[
     (Modifier::CROSSED_OUT, Attribute::CrossedOut),
 ];
 
-fn print_crossterm_span(text: &str, style: &Style, t: &mut Stdout) -> Result<(), io::Error> {
+fn print_crossterm_span(text: &str, style: &Style, t: &mut impl Write) -> Result<(), io::Error> {
     let fg = style.fg.unwrap_or(Color::Reset);
     let bg = style.bg.unwrap_or(Color::Reset);
 
@@ -236,6 +342,16 @@ fn print_crossterm_span(text: &str, style: &Style, t: &mut Stdout) -> Result<(),
     crossterm::queue!(t, SetColors(Colors::new(fg.into(), bg.into())))?;
     crossterm::queue!(t, Print(text))?;
     Ok(())
+}
+
+/// `text` with the escape sequences that draw it in `style` on a terminal, as the TUI draws it,
+/// and then reset.
+pub(crate) fn styled(text: &str, style: &Style) -> String {
+    let mut out = vec![];
+    print_crossterm_span(text, style, &mut out).expect("writing to memory doesn't fail");
+    crossterm::queue!(out, SetAttribute(Attribute::Reset), ResetColor)
+        .expect("writing to memory doesn't fail");
+    String::from_utf8(out).expect("text and escape sequences are UTF-8")
 }
 
 impl TermBackend {
@@ -268,6 +384,38 @@ impl TermBackend {
 }
 
 impl TermBackend {
+    /// Say what gitu is busy with, `what`, in `style`, if it still is after [`BUSY_DELAY`]: on a
+    /// terminal with a spinner (see [`Busy`]), and in a test, by noting it.
+    pub(crate) fn busy(&self, what: &str, style: Style) -> Busy {
+        let (finished, finished_w) = mpsc::channel();
+        let what = what.to_owned();
+        let turns = self.turns();
+        let turns_at_start = *turns.lock().unwrap_or_else(PoisonError::into_inner);
+        let thread = match self {
+            TermBackend::Crossterm(_) => {
+                thread::spawn(move || spin(&finished_w, &turns, turns_at_start, &what, style))
+            }
+            TermBackend::Test { buffer, .. } => {
+                let busy = Arc::clone(&buffer.busy);
+                thread::spawn(move || {
+                    // As the spinner would: unless gitu has used the terminal since.
+                    let said = waited(&finished_w, BUSY_DELAY)
+                        && *turns.lock().unwrap_or_else(PoisonError::into_inner) == turns_at_start;
+                    if said {
+                        busy.lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push(what);
+                    }
+                    said
+                })
+            }
+        };
+        Busy {
+            finished: Some(finished),
+            thread: Some(thread),
+        }
+    }
+
     pub fn setup_term(&mut self, config: &Config) -> io::Result<()> {
         match self {
             TermBackend::Crossterm(crossterm_backend) => {
@@ -286,7 +434,18 @@ impl TermBackend {
         self.flush()
     }
 
+    /// This terminal's count of [`TERMINAL_TURNS`].
+    pub(crate) fn turns(&self) -> Arc<Mutex<u64>> {
+        match self {
+            TermBackend::Crossterm(_) => Arc::clone(&TERMINAL_TURNS),
+            TermBackend::Test { buffer, .. } => Arc::clone(&buffer.turns),
+        }
+    }
+
     pub fn reset_term(&mut self, config: &Config) -> io::Result<()> {
+        // The terminal goes to another program, or back to the shell.
+        let turns = self.turns();
+        let _turn = take_turn(&turns);
         match self {
             TermBackend::Crossterm(crossterm_backend) => {
                 if config.general.mouse_support {
@@ -342,6 +501,9 @@ impl TermBackend {
         &mut self,
         config: &Config,
     ) -> Result<(), io::Error> {
+        // The terminal goes to another program.
+        let turns = self.turns();
+        let _turn = take_turn(&turns);
         match self {
             TermBackend::Crossterm(crossterm_backend) => {
                 if config.general.mouse_support {

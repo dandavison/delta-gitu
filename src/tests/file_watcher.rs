@@ -17,26 +17,37 @@ use crate::{
 /// Starts a watcher on `workdir`, discards events from setup, runs `cmd` in
 /// `workdir` and reports whether the watcher saw a change.
 fn watcher_sees(workdir: &Path, cmd: &[&str]) -> bool {
-    watcher_sees_effect_of(workdir, || {
+    !watcher_sees_effect_of(workdir, || {
         run(workdir, cmd);
     })
+    .is_empty()
 }
 
-fn watcher_sees_effect_of(workdir: &Path, action: impl FnOnce()) -> bool {
+/// The paths whose changes a watcher on `workdir` takes as reasons to refresh, once `action` has
+/// run: none if it sees no change.
+fn watcher_sees_effect_of(workdir: &Path, action: impl FnOnce()) -> Vec<std::path::PathBuf> {
     let watcher = FileWatcher::new(&git2::Repository::open(workdir).unwrap()).unwrap();
+    // It starts watching on a thread of its own, which has taken over half a second.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !watcher.is_watching() {
+        assert!(Instant::now() < deadline, "the watcher did not start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    // Events from setup can still arrive once it has started.
     thread::sleep(Duration::from_millis(500));
     watcher.pending_updates();
+    watcher.take_seen();
 
     action();
 
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if watcher.pending_updates() {
-            return true;
+            return watcher.take_seen();
         }
         thread::sleep(Duration::from_millis(50));
     }
-    false
+    vec![]
 }
 
 #[test]
@@ -82,9 +93,10 @@ fn reading_status_does_not_trigger_refresh() {
     thread::sleep(Duration::from_millis(1100));
     run(&ctx.dir, &["touch", "initial-file"]);
 
-    assert!(!watcher_sees_effect_of(&ctx.dir, || {
+    let seen = watcher_sees_effect_of(&ctx.dir, || {
         git::status(&ctx.dir).unwrap();
         git::diff_unstaged(&ctx.local_repo, None).unwrap();
         git::diff_staged(&ctx.local_repo, None).unwrap();
-    }));
+    });
+    assert!(seen.is_empty(), "the watcher saw changes to {seen:?}");
 }

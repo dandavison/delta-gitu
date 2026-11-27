@@ -106,7 +106,7 @@ fn blame_lines_are_drawn_by_the_renderer() {
     assert!(!screen.contains("modify file"), "{screen}");
 }
 
-/// Blaming a file git does not have at the commit (a typo in `delta --tui blame
+/// Blaming a file git does not have at the commit (a typo in `delta tui blame
 /// <file>`) says what git said, rather than showing an empty blame.
 #[test]
 fn blaming_a_file_git_does_not_have_says_why() {
