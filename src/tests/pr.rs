@@ -2651,15 +2651,15 @@ fn a_branch_ahead_of_its_pr_says_so_and_how_to_push() {
     assert!(screen.contains("git push origin feature"), "{screen}");
 }
 
-/// Up in the thread view's filter steps back through what was typed there before, as in the other
-/// prompts, and narrows the view to it.
+/// Alt+up in the thread view's filter steps back through what was typed there before, and narrows
+/// the view to it.
 #[test]
-fn up_in_the_thread_view_gives_the_filter_typed_before() {
+fn alt_up_in_the_thread_view_gives_the_filter_typed_before() {
     let mut ctx = setup_clone!();
     let mut app = with_two_threads(&mut ctx);
     ctx.update(&mut app, keys("Otold<enter>"));
 
-    ctx.update(&mut app, keys("Ot<up>"));
+    ctx.update(&mut app, keys("Ot<alt+up>"));
 
     assert_eq!(ctx.prompt_line(), "Threads: old|");
     let screen = ctx.redact_buffer();
@@ -2713,4 +2713,19 @@ fn o_t_with_no_pr_on_screen_opens_the_current_branchs() {
     let screen = ctx.redact_buffer();
     assert!(screen.contains("added: added.txt"), "{screen}");
     assert!(cursor_rows(&ctx).contains("on old"), "{screen}");
+}
+
+/// Down in the thread view moves to the next thread, which enter then goes to.
+#[test]
+fn down_in_the_thread_view_moves_to_the_next_thread() {
+    let mut ctx = setup_clone!();
+    let mut app = with_two_threads(&mut ctx);
+
+    ctx.update(&mut app, keys("Ot<down><enter>"));
+
+    assert!(
+        cursor_rows(&ctx).contains("on old"),
+        "{}",
+        ctx.redact_buffer()
+    );
 }
