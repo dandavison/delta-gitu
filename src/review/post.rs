@@ -3,7 +3,7 @@
 //! shared, and GitHub's reviews are copied into the local PR.
 
 use super::{
-    Place, Subject,
+    Backend, Place, Side, Subject,
     github::{GitHub, GitHubBackend, GitHubPr},
     local::{LocalBackend, Purpose},
     remote::{self, Change, Consent},
@@ -153,21 +153,37 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
     // to see where they are, and nothing is posted.
     let stale = local.stale_drafts()?;
     if !stale.is_empty() {
-        let to_file = local.move_drafts(&stale)?;
-        let drafts = if stale.len() == 1 {
-            "1 of your draft threads was".to_owned()
-        } else {
-            format!("{} of your draft threads were", stale.len())
-        };
-        let gone = match to_file {
-            0 => String::new(),
-            1 => ", and 1 whose line has gone is now on its file".to_owned(),
-            n => format!(", and {n} whose lines have gone are now on their files"),
+        local.move_drafts(&stale)?;
+        // Where each now is, as the PR's screen shows it.
+        let places: Vec<String> = local
+            .threads()?
+            .into_iter()
+            .filter(|thread| stale.contains(&thread.id))
+            .map(|thread| match thread.line {
+                Some((Side::New, line)) => format!("{}:{line}", thread.path),
+                Some((Side::Old, line)) => format!("{}:{line} (old side)", thread.path),
+                None => format!("{} (on the file, as its line has gone)", thread.path),
+            })
+            .collect();
+        let (drafts, moved, each, them) = match stale.len() {
+            1 => (
+                "1 of your draft threads was".to_owned(),
+                "It has moved with its line",
+                "it is",
+                "it",
+            ),
+            n => (
+                format!("{n} of your draft threads were"),
+                "They have moved with their lines",
+                "each is",
+                "them",
+            ),
         };
         return Err(Error::Gh(format!(
-            "Posted nothing: GitHub's PR #{} has changed since {drafts} written. They have moved \
-             with their lines{gone}: check them, then sync again",
-            pr.number
+            "Posted nothing: GitHub's PR #{} has changed since {drafts} written. {moved}, to {}. \
+             If {each} on the line you meant, sync again to post {them} there",
+            pr.number,
+            places.join(", ")
         )));
     }
     let to_post = local.to_post()?;
