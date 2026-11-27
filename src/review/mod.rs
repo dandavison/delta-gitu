@@ -54,7 +54,7 @@ pub(crate) trait Backend {
     /// Add `body` as a new review comment on `line` of the file at `path`, numbered as in the
     /// PR's head commit for the new side and its base for the old, returning what to tell the
     /// user.
-    fn comment(&self, path: &str, line: (Side, u32), body: &str) -> Res<&'static str>;
+    fn comment(&self, path: &str, line: (Side, u32), body: &str) -> Res<String>;
     /// Change what the comment `comment_id`, in the thread `thread_id`, says to `body`,
     /// returning what to tell the user. A local comment can be changed, and the user's own on
     /// GitHub, publicly only with `consent` (see [`remote::write`]).

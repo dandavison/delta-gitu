@@ -908,7 +908,7 @@ fn post_comment(app: &mut App, term: &mut Term) -> Res<()> {
         return Ok(());
     }
     let message = match &target {
-        EditorTarget::Reply { thread_id } => pr.backend.reply(thread_id, &body)?,
+        EditorTarget::Reply { thread_id } => pr.backend.reply(thread_id, &body)?.to_owned(),
         EditorTarget::Line { path, line } => {
             if pr.backend.head_mismatch(&app.state.repo) {
                 app.display_error(
@@ -934,6 +934,7 @@ fn post_comment(app: &mut App, term: &mut Term) -> Res<()> {
             };
             pr.backend
                 .edit_comment(thread_id, comment_id, &body, consent)?
+                .to_owned()
         }
     };
     *pr.editor.borrow_mut() = None;

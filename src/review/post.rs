@@ -67,6 +67,28 @@ fn refuse_blocked_replies(local: &LocalBackend) -> Res<()> {
     )))
 }
 
+/// Refuse to post while a draft thread is on a line outside GitHub's diff of the PR, where GitHub
+/// can't place it, as a thread can come to be when the code changes.
+fn refuse_unplaceable(local: &LocalBackend, to_post: &[super::local::PostComment]) -> Res<()> {
+    let mut unplaceable = vec![];
+    for comment in to_post {
+        if let Some(Place::Line(side, line)) = comment.starts
+            && !local.in_diff(&comment.path, (side, line))?
+        {
+            unplaceable.push(format!("{}:{line}", comment.path));
+        }
+    }
+    if unplaceable.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Gh(format!(
+        "Posted nothing: these draft threads are on lines outside GitHub's diff of the PR, which \
+         has 3 lines of context, so GitHub can't place them: {}. Make each local-only with p, or \
+         delete it, then sync again",
+        unplaceable.join(", ")
+    )))
+}
+
 /// Sync `local`'s PR with GitHub. Its draft comments, an agent's included, are posted into the
 /// user's pending review on GitHub, which is started if they have none, and then the PR's reviews
 /// are fetched; with no draft comments, they are only fetched.
@@ -92,6 +114,7 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
             )));
         }
         refuse_blocked_replies(local)?;
+        refuse_unplaceable(local, &to_post)?;
         if !create_pr {
             return Err(Error::Gh(format!(
                 "Couldn't post: {} has no GitHub PR, and creating one wasn't asked for",
@@ -151,6 +174,7 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
     if to_post.is_empty() {
         return Ok(Synced::Fetched { url: pr.url });
     }
+    refuse_unplaceable(local, &to_post)?;
     post(local, github, pr, to_post)
 }
 

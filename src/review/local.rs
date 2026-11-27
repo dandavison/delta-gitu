@@ -626,8 +626,8 @@ impl LocalBackend {
         })
     }
 
-    /// Whether `line` of the file at `path` is in the PR's diff, as `git diff` shows it, with 3
-    /// lines of context: only a line in the diff can be commented on, as on GitHub.
+    /// Whether `line` of the file at `path` is in the PR's diff as GitHub has it, with 3 lines of
+    /// context whatever git's `diff.context`: GitHub takes a comment only on a line in its diff.
     pub fn in_diff(&self, path: &str, (side, line): (Side, u32)) -> Res<bool> {
         if self.is_files() {
             let lines = self.file_lines(self.head_commit()?, path)?;
@@ -1234,6 +1234,20 @@ impl LocalBackend {
     pub fn move_comment(&self, comment_id: &str, local: bool) -> Res<()> {
         if !local && self.is_files() {
             return Err(Error::LocalPr(FILES_ARE_LOCAL_ONLY.to_owned()));
+        }
+        // A thread's first comment is posted on its line, which must be in GitHub's diff.
+        if !local
+            && let Some(thread) = self
+                .threads()?
+                .into_iter()
+                .find(|t| t.comments.first().is_some_and(|c| c.id == comment_id))
+            && let Some(line) = thread.line
+            && !self.in_diff(&thread.path, line)?
+        {
+            return Err(Error::LocalPr(format!(
+                "Not moved to the draft review: {}",
+                cant_place(&thread.path, line)
+            )));
         }
         let head = self.branch_commit(&self.head)?.to_string();
         let now = chrono::Local::now().fixed_offset();
@@ -2343,9 +2357,13 @@ impl Backend for LocalBackend {
         Ok(ADDED)
     }
 
-    fn comment(&self, path: &str, line: (Side, u32), body: &str) -> Res<&'static str> {
+    /// A comment that would go into the draft review by default, but is on a line GitHub can't
+    /// place it on, is local-only instead, and says why.
+    fn comment(&self, path: &str, line: (Side, u32), body: &str) -> Res<String> {
         let anchor = self.anchor(path, line)?;
-        self.add_comment(body, self.local.unwrap_or(false), |threads, comment| {
+        let unplaceable = self.local.is_none() && !self.in_diff(path, line)?;
+        let local = self.local.unwrap_or(unplaceable);
+        self.add_comment(body, local, |threads, comment| {
             threads.push(StoredThread {
                 id: new_id(),
                 anchor,
@@ -2356,7 +2374,10 @@ impl Backend for LocalBackend {
             });
             true
         })?;
-        Ok(ADDED)
+        Ok(match unplaceable {
+            true => format!("Comment added, local-only: {}", cant_place(path, line)),
+            false => ADDED.to_owned(),
+        })
     }
 
     /// A draft comment is edited locally; the user's own comment in a review copied from GitHub
@@ -2514,6 +2535,18 @@ fn answer_markdown(head: &str, base: &str, thread: Option<&str>) -> String {
          🤖 <your reply>\n\
          EOF\n\
          ```\n"
+    )
+}
+
+/// Why a comment on `line` of the file at `path` can't go on GitHub.
+pub(crate) fn cant_place(path: &str, (side, line): (Side, u32)) -> String {
+    let old = match side {
+        Side::New => "",
+        Side::Old => " (old side)",
+    };
+    format!(
+        "GitHub can't place a comment on {path}:{line}{old}, as it isn't in GitHub's diff of the \
+         PR, which has 3 lines of context"
     )
 }
 

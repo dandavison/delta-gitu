@@ -101,7 +101,7 @@ impl Backend for GitHubBackend {
         Err(written_locally())
     }
 
-    fn comment(&self, _path: &str, _line: (Side, u32), _body: &str) -> Res<&'static str> {
+    fn comment(&self, _path: &str, _line: (Side, u32), _body: &str) -> Res<String> {
         Err(written_locally())
     }
 
