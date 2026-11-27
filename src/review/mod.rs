@@ -19,7 +19,11 @@ use crate::screen::review::CommentOptions;
 use crate::text_area::TextArea;
 use crate::{Res, git::diff::Diff, gitu_diff::Status};
 use git2::Repository;
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 /// What to tell the user when the PR's `which` commit (`base` or `head`), `oid` of the branch
 /// `branch` on GitHub, isn't in the repository.
@@ -239,6 +243,8 @@ pub(crate) struct OpenPr {
     /// How the branch stands against GitHub's PR, when it isn't where GitHub has it, and what to
     /// do about it, as the row above the diff says it.
     pub out_of_step: RefCell<Option<String>>,
+    /// The ids of the threads on lines GitHub can't take a comment on.
+    pub unpushable: RefCell<HashSet<String>>,
     /// The PR in one line (see [`Backend::summary`]).
     pub summary: RefCell<Option<String>>,
     /// The options comments were last drawn with, and the features in force they were asked
@@ -291,6 +297,14 @@ pub(crate) enum EditorTarget {
 /// that much narrower, so that a row taking the whole width still fits beside it.
 pub(crate) const FILE_PREFIX_WIDTH: u16 = 4;
 
+/// The ids of `threads` on lines GitHub can't take a comment on, for a local PR.
+fn unpushable(backend: &dyn Backend, threads: &[Thread]) -> Res<HashSet<String>> {
+    match backend.as_local() {
+        Some(local) => local.unpushable(threads),
+        None => Ok(HashSet::new()),
+    }
+}
+
 /// How the branch of `backend`'s PR stands against GitHub's PR, when it isn't where GitHub has it:
 /// what is wrong, that links to GitHub may be on the wrong lines, and a command to fix it where
 /// one can do no harm.
@@ -320,9 +334,11 @@ impl OpenPr {
             .as_local()
             .map(local::LocalBackend::version)
             .transpose()?;
+        let threads = threads_in(backend.as_ref(), version)?;
         Ok(Self {
+            unpushable: RefCell::new(unpushable(backend.as_ref(), &threads)?),
             viewed: RefCell::new(backend.viewed()?),
-            threads: RefCell::new(threads_in(backend.as_ref(), version)?),
+            threads: RefCell::new(threads),
             version: std::cell::Cell::new(version),
             git: RefCell::new(None),
             working: RefCell::new(backend.working()?),
@@ -341,6 +357,7 @@ impl OpenPr {
     /// and the summary of the PR from the backend again.
     pub fn reread_threads(&self) -> Res<()> {
         *self.threads.borrow_mut() = threads_in(self.backend.as_ref(), self.version.get())?;
+        *self.unpushable.borrow_mut() = unpushable(self.backend.as_ref(), &self.threads.borrow())?;
         *self.working.borrow_mut() = self.backend.working()?;
         *self.pending_review.borrow_mut() = self.backend.pending_review()?;
         *self.out_of_step.borrow_mut() = out_of_step(self.backend.as_ref())?;

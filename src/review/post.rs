@@ -5,7 +5,7 @@
 use super::{
     Place, Subject,
     github::{GitHub, GitHubBackend, GitHubPr},
-    local::{LocalBackend, Purpose},
+    local::{LocalBackend, Purpose, UNPUSHABLE},
     remote::{self, Change, Consent},
 };
 use crate::{Res, error::Error};
@@ -22,9 +22,11 @@ pub(crate) enum Synced {
         threads: usize,
         replies: usize,
         moved: Moved,
+        /// How many draft threads it made local-only, as GitHub can't take them.
+        kept_local: usize,
     },
-    /// There were no draft comments, so it only fetched from the PR at `url`.
-    Fetched { url: String },
+    /// There were no draft comments to post, so it only fetched from the PR at `url`.
+    Fetched { url: String, kept_local: usize },
 }
 
 /// The draft threads sync moved with their lines, as they were written before the PR changed.
@@ -33,6 +35,15 @@ pub(crate) struct Moved {
     pub threads: usize,
     /// How many of them were moved onto their files, as their lines had gone.
     pub to_file: usize,
+}
+
+/// What to say of `kept` draft threads made local-only, as GitHub can't take them.
+fn kept_note(kept: usize) -> String {
+    match kept {
+        0 => String::new(),
+        1 => format!(" 1 thread kept local-only: {UNPUSHABLE} to be posted"),
+        n => format!(" {n} threads kept local-only: {UNPUSHABLE} to be posted"),
+    }
 }
 
 impl Synced {
@@ -46,6 +57,7 @@ impl Synced {
                 threads,
                 replies,
                 moved,
+                kept_local,
             } => {
                 let mut summary = format!("Posted {}", plural(*threads, "thread", "threads"));
                 if *replies > 0 {
@@ -77,10 +89,11 @@ impl Synced {
                     }
                     summary += ".";
                 }
-                summary + " Submit it there to make it visible"
+                summary + " Submit it there to make it visible." + &kept_note(*kept_local)
             }
-            Synced::Fetched { url } => {
-                format!("No draft comments to post: fetched the PR's reviews from {url}")
+            Synced::Fetched { url, kept_local } => {
+                format!("No draft comments to post: fetched the PR's reviews from {url}.")
+                    + &kept_note(*kept_local)
             }
         }
     }
@@ -97,28 +110,6 @@ fn refuse_blocked_replies(local: &LocalBackend) -> Res<()> {
         "Couldn't post: these draft replies are in threads whose first comment is local-only: \
          \"{}\". Move each thread's first comment to the draft review, or the reply to local-only",
         blocked.join("\", \"")
-    )))
-}
-
-/// Refuse to post while a draft thread is on a line outside GitHub's diff of the PR, where GitHub
-/// can't place it, as a thread can come to be when the code changes.
-fn refuse_unplaceable(local: &LocalBackend, to_post: &[super::local::PostComment]) -> Res<()> {
-    let mut unplaceable = vec![];
-    for comment in to_post {
-        if let Some(Place::Line(side, line)) = comment.starts
-            && !local.in_diff(&comment.path, (side, line))?
-        {
-            unplaceable.push(format!("{}:{line}", comment.path));
-        }
-    }
-    if unplaceable.is_empty() {
-        return Ok(());
-    }
-    Err(Error::Gh(format!(
-        "Posted nothing: these draft threads are on lines outside GitHub's diff of the PR, which \
-         has 3 lines of context, so GitHub can't place them: {}. Make each local-only with p, or \
-         delete it, then sync again",
-        unplaceable.join(", ")
     )))
 }
 
@@ -139,15 +130,16 @@ fn refuse_unplaceable(local: &LocalBackend, to_post: &[super::local::PostComment
 /// again. Each thread's first comment is posted before its replies.
 pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool) -> Res<Synced> {
     let Some(pr) = github.pr_for_branch(local.head())? else {
+        refuse_blocked_replies(local)?;
+        let kept_local = local.keep_unpushable_local(&local.to_post()?)?;
         let to_post = local.to_post()?;
         if to_post.is_empty() {
             return Err(Error::Gh(format!(
-                "Nothing to sync: there are no draft comments, and {} has no PR on GitHub",
+                "Nothing to sync: there are no draft comments{}, and {} has no PR on GitHub",
+                kept_note(kept_local),
                 local.head()
             )));
         }
-        refuse_blocked_replies(local)?;
-        refuse_unplaceable(local, &to_post)?;
         if !create_pr {
             return Err(Error::Gh(format!(
                 "Couldn't post: {} has no GitHub PR, and creating one wasn't asked for",
@@ -163,7 +155,7 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
             base: local.base(),
         };
         let pr = remote::write(github.as_ref(), change, Consent::Publish)?.pr()?;
-        return post(local, github, pr, to_post, Moved::default());
+        return post(local, github, pr, to_post, Moved::default(), kept_local);
     };
     local
         .compare_with_github(Some(&pr), Purpose::Post)
@@ -192,12 +184,15 @@ pub(crate) fn sync(local: &LocalBackend, github: Rc<dyn GitHub>, create_pr: bool
             false => local.move_drafts(&stale)?,
         },
     };
+    let kept_local = local.keep_unpushable_local(&local.to_post()?)?;
     let to_post = local.to_post()?;
     if to_post.is_empty() {
-        return Ok(Synced::Fetched { url: pr.url });
+        return Ok(Synced::Fetched {
+            url: pr.url,
+            kept_local,
+        });
     }
-    refuse_unplaceable(local, &to_post)?;
-    post(local, github, pr, to_post, moved)
+    post(local, github, pr, to_post, moved, kept_local)
 }
 
 /// Post `to_post` into the user's pending review on `pr`, which is started if they have none and
@@ -208,6 +203,7 @@ fn post(
     pr: GitHubPr,
     to_post: Vec<super::local::PostComment>,
     moved: Moved,
+    kept_local: usize,
 ) -> Res<Synced> {
     local.record_link(&pr)?;
     // Started only when a comment is to be added to it, as every one may be on GitHub already.
@@ -276,6 +272,7 @@ fn post(
         threads,
         replies,
         moved,
+        kept_local,
     })
 }
 

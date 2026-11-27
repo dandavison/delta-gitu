@@ -234,6 +234,7 @@ pub(crate) fn with_threads(
                         &thread,
                         depth,
                         on_line,
+                        pr.unpushable.borrow().contains(&thread.id),
                         panel,
                         options,
                         &decoration,
@@ -243,6 +244,7 @@ pub(crate) fn with_threads(
                     thread,
                     depth,
                     on_line,
+                    pr.unpushable.borrow().contains(&thread.id),
                     panel,
                     options,
                     &decoration(thread),
@@ -691,6 +693,7 @@ fn thread_rows(
     thread: &Thread,
     depth: usize,
     on_line: bool,
+    unpushable: bool,
     panel: Panel,
     options: &CommentOptions,
     decoration: &DecorationStyle,
@@ -728,7 +731,12 @@ fn thread_rows(
         } else if comment.draft {
             notes.push("draft".to_owned());
         }
-        if comment.local_only {
+        if comment.local_only && unpushable {
+            notes.push(format!(
+                "local-only, unpushable: {}",
+                review::local::UNPUSHABLE
+            ));
+        } else if comment.local_only {
             notes.push("local-only".to_owned());
         }
         let notes = (!notes.is_empty()).then(|| format!("({})", notes.join(", ")));
@@ -826,6 +834,7 @@ pub(crate) fn thread_view(
             thread,
             0,
             true,
+            pr.unpushable.borrow().contains(&thread.id),
             panel,
             options,
             &options.decoration,

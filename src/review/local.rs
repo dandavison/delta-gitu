@@ -708,6 +708,39 @@ impl LocalBackend {
         })
     }
 
+    /// The ids of `threads` on lines GitHub can't take a comment on (see [`UNPUSHABLE`]).
+    pub fn unpushable(&self, threads: &[Thread]) -> Res<HashSet<String>> {
+        let mut ids = HashSet::new();
+        if self.is_files() {
+            return Ok(ids);
+        }
+        for thread in threads {
+            if let Some(line) = thread.line
+                && !self.in_diff(&thread.path, line)?
+            {
+                ids.insert(thread.id.clone());
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Make the draft comments of `to_post` whose threads GitHub can't take, as their lines aren't
+    /// in its diff of the PR, local-only, and say how many threads they are in.
+    pub fn keep_unpushable_local(&self, to_post: &[PostComment]) -> Res<usize> {
+        let mut threads = HashSet::new();
+        for comment in to_post {
+            if let Some(Place::Line(side, line)) = comment.starts
+                && !self.in_diff(&comment.path, (side, line))?
+            {
+                threads.insert(comment.thread.clone());
+            }
+        }
+        for comment in to_post.iter().filter(|c| threads.contains(&c.thread)) {
+            self.move_comment(&comment.id, true)?;
+        }
+        Ok(threads.len())
+    }
+
     /// Whether `line` of the file at `path` is in the PR's diff as GitHub has it, with 3 lines of
     /// context whatever git's `diff.context`: GitHub takes a comment only on a line in its diff.
     pub fn in_diff(&self, path: &str, (side, line): (Side, u32)) -> Res<bool> {
@@ -1327,8 +1360,7 @@ impl LocalBackend {
             && !self.in_diff(&thread.path, line)?
         {
             return Err(Error::LocalPr(format!(
-                "Not moved to the draft review: {}",
-                cant_place(&thread.path, line)
+                "Not moved to the draft review: {UNPUSHABLE} to be posted"
             )));
         }
         let head = self.branch_commit(&self.head)?.to_string();
@@ -2456,7 +2488,7 @@ impl Backend for LocalBackend {
             true
         })?;
         Ok(match unplaceable {
-            true => format!("Comment added, local-only: {}", cant_place(path, line)),
+            true => format!("Comment added, local-only: {UNPUSHABLE} to be posted"),
             false => ADDED.to_owned(),
         })
     }
@@ -2617,17 +2649,9 @@ fn answer_markdown(head: &str, base: &str, thread: Option<&str>) -> String {
     )
 }
 
-/// Why a comment on `line` of the file at `path` can't go on GitHub.
-pub(crate) fn cant_place(path: &str, (side, line): (Side, u32)) -> String {
-    let old = match side {
-        Side::New => "",
-        Side::Old => " (old side)",
-    };
-    format!(
-        "GitHub can't place a comment on {path}:{line}{old}, as it isn't in GitHub's diff of the \
-         PR, which has 3 lines of context"
-    )
-}
+/// Why a comment can't be posted to GitHub, as GitHub takes a comment only on a line in its diff of
+/// the PR, which has 3 lines of context.
+pub(crate) const UNPUSHABLE: &str = "comments must be within 3 lines of a change";
 
 /// The commits a local PR's diff is of: its head branch's last commit, whose lines the new side's
 /// are, and where it branched from its base, whose lines the old side's are.
