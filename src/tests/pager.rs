@@ -2451,3 +2451,36 @@ fn a_file_with_a_non_ascii_name_shows_its_lines() {
     assert!(buffer.contains("hahaha"), "{buffer}");
     assert!(!buffer.contains("not a file in this diff"), "{buffer}");
 }
+
+/// Forty lines, `line 1` to `line 40`, with lines 10 and 30 as `changed 10` and `changed 30` when
+/// `changed`.
+fn forty_lines(changed: bool) -> String {
+    (1..=40)
+        .map(|i| match i {
+            10 | 30 if changed => format!("changed {i}\n"),
+            i => format!("line {i}\n"),
+        })
+        .collect()
+}
+
+/// `-` and `+` leave the cursor on the line it was on, though the hunks are cut differently: with
+/// wide context, the two changes are in one hunk, and with narrow, in two.
+#[test]
+fn changing_the_context_keeps_the_cursor_on_its_line() {
+    let mut ctx = setup_clone!();
+    commit(&ctx.dir, "file", &forty_lines(false));
+    fs::write(ctx.dir.join("file"), forty_lines(true)).unwrap();
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff", "-U16"]);
+    ctx.update(&mut app, keys("/changed 30<enter>"));
+    assert!(selected_rendered_row(&app).contains("changed 30"));
+
+    for key in ["-", "-", "+"] {
+        ctx.update(&mut app, keys(key));
+        assert!(
+            selected_rendered_row(&app).contains("changed 30"),
+            "after {key}: {}\n{}",
+            selected_rendered_row(&app),
+            ctx.redact_buffer()
+        );
+    }
+}
