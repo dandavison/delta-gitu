@@ -81,3 +81,17 @@ fn keys_given_on_the_command_line_are_drawn_as_typed() {
     assert_eq!(frames.len(), before + 2, "{frames:?}");
     assert_ne!(frames[before], frames[before + 1], "the log menu shows");
 }
+
+/// A slow sync says it is syncing, not what sync does.
+#[test]
+fn a_slow_sync_says_it_is_syncing() {
+    let mut ctx = setup_clone!();
+    let github = super::pr::setup(&ctx);
+    let mut app = super::pr::init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ion new<ctrl+s>"));
+    *github.delay.borrow_mut() = Duration::from_millis(500);
+
+    ctx.update(&mut app, keys("Os"));
+
+    assert_eq!(busy(&ctx), ["Syncing with GitHub"]);
+}

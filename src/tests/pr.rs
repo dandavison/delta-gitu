@@ -2824,3 +2824,33 @@ fn a_push_asks_github_for_the_prs_head_again() {
     let screen = screen_text(&ctx);
     assert!(!screen.contains("GitHub's PR #7 doesn't"), "{screen}");
 }
+
+/// A draft thread GitHub can't take, which a sync stopped while posting, as GitHub didn't add it,
+/// is kept local-only by the next sync, which isn't stopped by it.
+#[test]
+fn os_keeps_local_an_unpushable_draft_a_sync_stopped_posting() {
+    let mut ctx = setup_clone!();
+    let github = setup_wide_context(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/line-13<enter>ione<ctrl+s>"));
+    // On line 15, and posted part way.
+    let path = feature_review_file(&ctx);
+    let mut file: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    file["threads"][0]["anchor"]["line"] = 15.into();
+    file["threads"][0]["anchor"]["text"] = serde_json::json!(["line-15"]);
+    file["threads"][0]["comments"][0]["posting_since"] = "2026-11-27T09:00:00-05:00".into();
+    fs::write(&path, serde_json::to_string_pretty(&file).unwrap()).unwrap();
+    ctx.update(&mut app, keys("gr"));
+
+    ctx.update(&mut app, keys("Os"));
+
+    assert_eq!(*github.posted.borrow(), vec![]);
+    let screen = screen_text(&ctx);
+    assert!(screen.contains("1 thread kept local-only"), "{screen}");
+    let file: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let comment = &file["threads"][0]["comments"][0];
+    assert!(comment["review"].is_null(), "{file}");
+    assert!(comment["posting_since"].is_null(), "{file}");
+}
