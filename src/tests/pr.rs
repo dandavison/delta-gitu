@@ -2687,3 +2687,26 @@ fn esc_in_the_thread_view_clears_the_filter_then_closes_it() {
     let screen = ctx.redact_buffer();
     assert!(screen.contains("added: added.txt"), "{screen}");
 }
+
+/// A branch with commits GitHub's PR doesn't have is reviewed as it is, with a row saying how it
+/// stands against GitHub, as delta says elsewhere, and what to do about it.
+#[test]
+fn a_branch_ahead_of_its_pr_says_so_and_how_to_push() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    commit(&ctx.dir, "more.txt", "more\n");
+    let mut app = init_app(&mut ctx, &github);
+
+    ctx.update(&mut app, keys("OO"));
+
+    let screen = screen_text(&ctx);
+    assert!(
+        screen.contains("Your local branch feature has 1 commit that GitHub's PR #7 doesn't"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("links to GitHub may be on the wrong lines"),
+        "{screen}"
+    );
+    assert!(screen.contains("git push origin feature"), "{screen}");
+}
