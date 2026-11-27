@@ -1434,10 +1434,6 @@ impl LocalBackend {
     /// thread for a message about the whole PR, as in the commit it was sent at, then the command
     /// that answers it.
     pub fn message_markdown(&self, message: &Message) -> Res<String> {
-        let at = match &message.version {
-            Some(version) => format!(" at {}", &version.head.to_string()[..7]),
-            None => String::new(),
-        };
         let about = match &message.thread {
             Some(thread) => format!(", about thread {thread}"),
             None => String::new(),
@@ -1447,18 +1443,17 @@ impl LocalBackend {
             false => format!("{} into {}", message.head, message.base),
         };
         let mut out = format!(
-            "# Message from {} on {on}{at}{about}\n\n{}\n",
-            message.from, message.body
+            "# Message from {} on {on} at {}{about}\n\n{}\n",
+            message.from,
+            &message.version.head.to_string()[..7],
+            message.body
         );
-        let mut deleted = false;
-        if let Some(version) = &message.version {
-            let threads = self.markdown_in(version, message.thread.as_deref())?;
-            if threads.is_empty() && message.thread.is_some() {
-                out += "\nThe thread has been deleted since.\n";
-                deleted = true;
-            }
-            out += &threads;
+        let threads = self.markdown_in(&message.version, message.thread.as_deref())?;
+        let deleted = threads.is_empty() && message.thread.is_some();
+        if deleted {
+            out += "\nThe thread has been deleted since.\n";
         }
+        out += &threads;
         if !deleted {
             out += &answer_markdown(&message.head, &message.base, message.thread.as_deref());
         }
@@ -1505,7 +1500,7 @@ impl LocalBackend {
                     base: self.base.clone(),
                     body: body.to_owned(),
                     thread: thread.map(str::to_owned),
-                    version: Some(*version),
+                    version: *version,
                 };
                 self.run_send_message_command(command, &self.message_markdown(&message)?)?;
                 Some(now)
@@ -1517,8 +1512,8 @@ impl LocalBackend {
                 id,
                 body: body.to_owned(),
                 thread: thread.map(str::to_owned),
-                commit: Some(version.head.to_string()),
-                merge_base: Some(version.merge_base.to_string()),
+                commit: version.head.to_string(),
+                merge_base: version.merge_base.to_string(),
                 created_at: now,
                 delivered_at,
                 done_at: None,
@@ -2548,9 +2543,8 @@ pub(crate) struct Message {
     pub body: String,
     /// The thread the message is about, if it is about one rather than the whole PR.
     pub thread: Option<String>,
-    /// The commits the PR's diff was of when the message was sent; none for a message from
-    /// before messages recorded them.
-    pub version: Option<Version>,
+    /// The commits the PR's diff was of when the message was sent.
+    pub version: Version,
 }
 
 /// The version of [`PrFile`] that delta tui writes.
@@ -2564,11 +2558,8 @@ struct PrFile {
     base: String,
     /// Each reviewer's ticked files: by path, what the file was at the PR's head when ticked, as
     /// [`LocalBackend::files`] gives it.
-    #[serde(default)]
     viewed: BTreeMap<String, BTreeMap<String, String>>,
-    #[serde(default)]
     reviews: Vec<StoredReview>,
-    #[serde(default)]
     threads: Vec<StoredThread>,
     /// The GitHub PR the local PR is linked to, once it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2578,11 +2569,8 @@ struct PrFile {
 }
 
 impl StoredMessage {
-    /// The commits the PR's diff was of when it was sent, if it records them.
-    fn version(&self) -> Res<Option<Version>> {
-        let (Some(head), Some(merge_base)) = (&self.commit, &self.merge_base) else {
-            return Ok(None);
-        };
+    /// The commits the PR's diff was of when it was sent.
+    fn version(&self) -> Res<Version> {
         let oid = |id: &str| {
             Oid::from_str(id).map_err(|e| {
                 Error::LocalPr(format!(
@@ -2591,10 +2579,10 @@ impl StoredMessage {
                 ))
             })
         };
-        Ok(Some(Version {
-            head: oid(head)?,
-            merge_base: oid(merge_base)?,
-        }))
+        Ok(Version {
+            head: oid(&self.commit)?,
+            merge_base: oid(&self.merge_base)?,
+        })
     }
 }
 
@@ -2607,11 +2595,9 @@ struct StoredMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     thread: Option<String>,
     /// The commits the PR's diff was of when it was sent: its head's last commit, and where it
-    /// branched from its base. None in a message from before messages recorded them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    commit: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    merge_base: Option<String>,
+    /// branched from its base.
+    commit: String,
+    merge_base: String,
     created_at: chrono::DateTime<chrono::FixedOffset>,
     /// When `listen` printed it to an agent; none until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2640,7 +2626,6 @@ struct StoredReview {
     github: Option<String>,
     /// For a copy of a review on GitHub, whether the user wrote it, and so may edit and delete
     /// its comments there.
-    #[serde(default)]
     mine: bool,
     /// The commit the PR's head was at when the review was started.
     head: String,
@@ -2680,7 +2665,6 @@ struct StoredThread {
     id: String,
     anchor: Anchor,
     /// What the thread is on: its anchor's line, or its whole file.
-    #[serde(default)]
     subject: Subject,
     resolved: bool,
     /// The GitHub id of the thread's first comment, once it is on GitHub, which is how a fetch
