@@ -695,6 +695,22 @@ impl App {
         Ok(true)
     }
 
+    /// Say the action under way is busy with `what` from now, rather than with its op's
+    /// description, once it has said what it is doing more exactly.
+    pub(crate) fn busy_with(&mut self, term: &mut Term, what: String) {
+        let Some(busying) = self.state.busy.take() else {
+            return;
+        };
+        if busying.spinner.finish() {
+            self.stage_redraw();
+        }
+        self.state.busy = Some(Busying {
+            spinner: term.busy(&what, busying.style),
+            what,
+            style: busying.style,
+        });
+    }
+
     pub(crate) fn handle_op(&mut self, op: Op, term: &mut Term) -> Res<()> {
         if self.state.read_only && op.writes() {
             return Ok(());

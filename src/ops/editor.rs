@@ -271,8 +271,8 @@ pub(crate) struct StepDiffContext(pub(crate) bool);
 impl OpTrait for StepDiffContext {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
         let wider = self.0;
-        Some(Rc::new(move |app: &mut App, _term: &mut Term| {
-            let lines = match app.state.context.as_deref() {
+        Some(Rc::new(move |app: &mut App, term: &mut Term| {
+            let from = match app.state.context.as_deref() {
                 Some("-W") => {
                     app.display_error("The context is the whole function; U sets a number");
                     return Ok(());
@@ -286,16 +286,21 @@ impl OpTrait for StepDiffContext {
                     .and_then(|config| config.get_i32("diff.context"))
                     .map_or(3, |lines| lines.max(0) as u32),
             };
-            let lines = if wider {
-                (lines + 1).next_power_of_two()
-            } else if lines <= 1 {
+            let to = if wider {
+                (from + 1).next_power_of_two()
+            } else if from <= 1 {
                 0
             } else {
-                // The largest power of two below `lines`.
-                1 << (u32::BITS - 1 - (lines - 1).leading_zeros())
+                // The largest power of two below `from`.
+                1 << (u32::BITS - 1 - (from - 1).leading_zeros())
             };
-            app.state.context = Some(Rc::from(format!("-U{lines}").as_str()));
-            app.rerender_screens()
+            let doing = if wider { "Widening" } else { "Narrowing" };
+            let said = format!("{doing} context: {from} -> {to}");
+            app.busy_with(term, said.clone());
+            app.state.context = Some(Rc::from(format!("-U{to}").as_str()));
+            app.rerender_screens()?;
+            app.display_info(said);
+            Ok(())
         }))
     }
 
