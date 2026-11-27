@@ -2432,6 +2432,8 @@ fn a_comment_on_a_line_outside_githubs_diff_is_local_only() {
         screen.contains("local-only: comments must be within 3 lines of a change"),
         "{screen}"
     );
+    ctx.update(&mut app, keys("/hello<enter>"));
+    let screen = ctx.redact_buffer();
     assert!(screen.contains("(local-only, unpushable"), "{screen}");
     let file: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(feature_review_file(&ctx)).unwrap()).unwrap();
@@ -2513,6 +2515,8 @@ fn os_keeps_a_draft_thread_github_cant_take_local_only_and_posts_the_rest() {
     );
     let screen = screen_text(&ctx);
     assert!(screen.contains("1 thread kept local-only"), "{screen}");
+    ctx.update(&mut app, keys("/one<enter>"));
+    let screen = screen_text(&ctx);
     assert!(
         screen.contains("local-only, unpushable: comments must be within 3 lines of a change"),
         "{screen}"
