@@ -315,7 +315,7 @@ impl App {
         let finished = self.finish_screens();
         self.handle_result(finished)?;
 
-        let handle_pending_cmd_result = self.handle_pending_cmd();
+        let handle_pending_cmd_result = self.handle_pending_cmd(term);
         self.handle_result(handle_pending_cmd_result)?;
 
         // Its spinner turns.
@@ -821,7 +821,7 @@ impl App {
     pub fn run_cmd(&mut self, term: &mut Term, input: &[u8], cmd: Command) -> Res<()> {
         self.run_cmd_async(term, input, cmd)?;
         self.await_pending_cmd_drawing(term)?;
-        self.handle_pending_cmd()?;
+        self.handle_pending_cmd(term)?;
         Ok(())
     }
 
@@ -829,7 +829,19 @@ impl App {
     /// Will return `Ok(())` if one is already running.
     pub fn run_cmd_async(&mut self, term: &mut Term, input: &[u8], cmd: Command) -> Res<()> {
         let shown = crate::cmd_log::command_args(&cmd);
-        self.run_cmd_async_shown(term, input, cmd, shown)
+        self.run_cmd_async_shown(term, input, cmd, shown, None)
+    }
+
+    /// Run `cmd` as [`Self::run_cmd_async`] does, and do `then` once it has finished, if it
+    /// succeeded.
+    pub(crate) fn run_cmd_async_then(
+        &mut self,
+        term: &mut Term,
+        cmd: Command,
+        then: AfterCmd,
+    ) -> Res<()> {
+        let shown = crate::cmd_log::command_args(&cmd);
+        self.run_cmd_async_shown(term, &[], cmd, shown, Some(then))
     }
 
     /// Run `command` with `sh -c` and `env` set, as [`Self::run_cmd_async`]
@@ -842,7 +854,7 @@ impl App {
     ) -> Res<()> {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", command]).envs(env);
-        self.run_cmd_async_shown(term, &[], cmd, command.to_owned().into())
+        self.run_cmd_async_shown(term, &[], cmd, command.to_owned().into(), None)
     }
 
     fn run_cmd_async_shown(
@@ -851,6 +863,7 @@ impl App {
         input: &[u8],
         mut cmd: Command,
         shown: Cow<'static, str>,
+        then: Option<AfterCmd>,
     ) -> Res<()> {
         cmd.env("CLICOLOR_FORCE", "1"); // No guarantee, but modern tools seem to implement this
 
@@ -880,6 +893,7 @@ impl App {
 
         self.state.pending_cmd = Some(PendingCmd {
             child,
+            then,
             log_entry,
             stdin,
             stdout,
@@ -920,7 +934,7 @@ impl App {
     }
 
     /// Handles any pending_cmd in State without blocking. Returns `true` if a cmd was handled.
-    fn handle_pending_cmd(&mut self) -> Res<()> {
+    fn handle_pending_cmd(&mut self, term: &mut Term) -> Res<()> {
         let Some(PendingCmd { ref mut child, .. }) = self.state.pending_cmd else {
             return Ok(());
         };
@@ -931,10 +945,16 @@ impl App {
 
         log::debug!("pending cmd finished with {status:?}");
 
-        let pending = self.state.pending_cmd.take().unwrap();
+        let mut pending = self.state.pending_cmd.take().unwrap();
+        let then = pending.then.take();
         let result = write_child_output_to_log(pending, status);
         self.update_screens()?;
         result?;
+        if let Some(then) = then
+            && status.success()
+        {
+            then(self, term)?;
+        }
 
         Ok(())
     }
@@ -1545,8 +1565,13 @@ pub(crate) fn root_menu(config: &Config) -> Option<Menu> {
 
 /// A command started by [`App::run_cmd_async`], with the threads writing its
 /// input and reading its output.
+/// What to do once a command has finished, if it succeeded.
+pub(crate) type AfterCmd = Box<dyn FnOnce(&mut App, &mut Term) -> Res<()>>;
+
 struct PendingCmd {
     child: Child,
+    /// What to do once it has finished, if it succeeded.
+    then: Option<AfterCmd>,
     log_entry: Arc<RwLock<CmdLogEntry>>,
     stdin: JoinHandle<std::io::Result<()>>,
     stdout: JoinHandle<std::io::Result<Vec<u8>>>,

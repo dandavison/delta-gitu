@@ -89,7 +89,7 @@ pub(crate) fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>
     let checked = match local.unchecked() {
         Some(_) => Default::default(),
         None => local
-            .compare_with_github(local.linked_pr(), Purpose::Review)
+            .compare_with_github(local.linked_pr().as_ref(), Purpose::Review)
             .map_err(local::opening)?,
     };
     if let Some(warning) = checked.warning {
@@ -108,7 +108,8 @@ pub(crate) fn open_current(app: &mut App, term: &mut Term, expected: Option<u64>
         )));
     }
     confirm_authors(app, term, &local)?;
-    local.refresh()?;
+    // GitHub was asked for the PR just now: only its reviews are to be fetched.
+    local.fetch_linked()?;
     let unchecked = local.unchecked().map(str::to_owned);
     show_pr(app, term, Rc::new(local))?;
     if let Some(unchecked) = unchecked {
@@ -525,6 +526,27 @@ fn new_line_of(data: &ItemData) -> Option<u32> {
 
 /// Read the checkboxes and review threads of the PR on screen from its backend
 /// again, as they may have changed elsewhere, such as in the browser.
+/// Once a push is done, ask GitHub again for the PR on screen, if there is one, as GitHub may
+/// have it at the commits pushed: see [`LocalBackend::relink_after_push`].
+pub(crate) fn after_push(app: &mut App, term: &mut Term) -> Res<()> {
+    let Some(pr) = app.screen().pr.clone() else {
+        return Ok(());
+    };
+    let Some(local) = pr.backend.as_local() else {
+        return Ok(());
+    };
+    let style = Style::from(&app.state.config.style.info_msg);
+    let busy = term.busy("Asking GitHub for the PR", style);
+    let relinked = local.relink_after_push();
+    if busy.finish() {
+        app.stage_redraw();
+    }
+    relinked?;
+    *pr.viewed.borrow_mut() = pr.backend.viewed()?;
+    pr.repin()?;
+    app.update_screens()
+}
+
 pub(crate) fn reread_pr(app: &mut App) -> Res<()> {
     if let Some(pr) = app.screen().pr.clone() {
         pr.backend.refresh()?;

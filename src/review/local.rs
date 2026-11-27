@@ -14,6 +14,7 @@ use crate::{Res, error::Error};
 use git2::{Oid, Repository};
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
@@ -44,7 +45,7 @@ pub(crate) struct LocalBackend {
     /// The GitHub PR the local PR is linked to, if gh gave one for the branch: its reviews are
     /// fetched on `g r`, its Viewed checkboxes and pages are GitHub's, and its diff is from where
     /// it branched from its base on GitHub.
-    linked: Option<GitHubBackend>,
+    linked: RefCell<Option<GitHubBackend>>,
     /// Why the PR was not checked against GitHub, when gh couldn't say what the branch's GitHub
     /// PR is.
     unchecked: Option<String>,
@@ -91,7 +92,7 @@ impl LocalBackend {
             local: None,
             store,
             github: Rc::clone(&github),
-            linked: None,
+            linked: RefCell::new(None),
             unchecked,
         };
         pr.check_commits()?;
@@ -129,7 +130,7 @@ impl LocalBackend {
             agent: None,
             local: Some(true),
             github,
-            linked: None,
+            linked: RefCell::new(None),
             unchecked: None,
             repo,
         })
@@ -153,7 +154,7 @@ impl LocalBackend {
 
     /// The number of the GitHub PR the local PR is linked to, if it is.
     pub fn linked_number(&self) -> Option<u64> {
-        self.linked.as_ref().map(|linked| linked.pr.number)
+        self.linked().map(|linked| linked.pr.number)
     }
 
     /// Record that the local PR is linked to the GitHub PR `github_pr`, so that it stays that
@@ -224,7 +225,7 @@ impl LocalBackend {
     /// How the branch falls short of being where GitHub's PR has it, if it is linked to one and
     /// does, as delta says it wherever the branch falls short (see [`super::standing`]).
     pub fn out_of_step(&self) -> Res<Option<OutOfStep>> {
-        let Some(linked) = &self.linked else {
+        let Some(linked) = self.linked() else {
             return Ok(None);
         };
         let pr = &linked.pr;
@@ -244,8 +245,67 @@ impl LocalBackend {
     }
 
     /// The GitHub PR the local PR is linked to, if it is.
-    pub fn linked_pr(&self) -> Option<&GitHubPr> {
-        self.linked.as_ref().map(|linked| &linked.pr)
+    pub fn linked_pr(&self) -> Option<GitHubPr> {
+        self.linked().map(|linked| linked.pr)
+    }
+
+    /// Copy the reviews of the GitHub PR the local PR is linked to, if it is, as GitHub last said
+    /// the PR is, into the local PR.
+    pub fn fetch_linked(&self) -> Res<()> {
+        match self.linked() {
+            Some(linked) => self.fetch(&linked),
+            None => Ok(()),
+        }
+    }
+
+    /// The GitHub PR the local PR is linked to, if it is, as GitHub last said it is.
+    fn linked(&self) -> Option<GitHubBackend> {
+        self.linked.borrow().clone()
+    }
+
+    /// Ask GitHub again for the PR the local PR is linked to, as GitHub may have it at other
+    /// commits since, as after a push.
+    fn relink(&self) -> Res<()> {
+        let Some(linked) = self.linked() else {
+            return Ok(());
+        };
+        let number = linked.pr.number;
+        let pr = linked
+            .github
+            .pr_for_branch(&self.head)?
+            .filter(|pr| pr.number == number)
+            .ok_or_else(|| {
+                Error::Gh(format!(
+                    "GitHub no longer has PR #{number} open for {}",
+                    self.head
+                ))
+            })?;
+        *self.linked.borrow_mut() = Some(GitHubBackend {
+            github: linked.github,
+            pr,
+        });
+        Ok(())
+    }
+
+    /// Ask GitHub again for the PR the local PR is linked to, after a push: again every half
+    /// second, for at most 10 seconds, while GitHub has the branch at a commit the branch here
+    /// has since moved on from, as GitHub takes a push in a little after the push returns.
+    pub fn relink_after_push(&self) -> Res<()> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            self.relink()?;
+            let Some(linked) = self.linked() else {
+                return Ok(());
+            };
+            let head = self.head_commit()?;
+            let behind = self.commit_here(&linked.pr.head_oid).is_some_and(|theirs| {
+                theirs != head && self.repo.graph_descendant_of(head, theirs).unwrap_or(false)
+            });
+            if !behind || Instant::now() >= deadline {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
 
     /// Compare the branch, and its base, with GitHub: with GitHub's PR `pr`, or with the branch
@@ -569,7 +629,7 @@ impl LocalBackend {
     /// The commit the base is at: on GitHub, for a local PR linked to a GitHub PR, and otherwise
     /// locally.
     fn base_commit(&self) -> Res<Oid> {
-        let Some(linked) = &self.linked else {
+        let Some(linked) = self.linked() else {
             return ref_commit(&self.repo, &self.base_ref)?.ok_or_else(|| {
                 Error::LocalPr(format!("Couldn't find the PR's base, {}", self.base_ref))
             });
@@ -1158,7 +1218,7 @@ impl LocalBackend {
     /// GitHub has the PR is for [`LocalBackend::compare_with_github`] to say.
     pub fn with_linked_pr(self, github: GitHubBackend) -> Res<Self> {
         let linked = Self {
-            linked: Some(github),
+            linked: RefCell::new(Some(github)),
             ..self
         };
         Ok(linked)
@@ -1166,8 +1226,8 @@ impl LocalBackend {
 
     /// The branch's GitHub PR.
     fn github_pr(&self) -> Res<GitHubBackend> {
-        if let Some(linked) = &self.linked {
-            return Ok(linked.clone());
+        if let Some(linked) = self.linked() {
+            return Ok(linked);
         }
         let github = Rc::clone(&self.github);
         let pr = github
@@ -2256,7 +2316,7 @@ const FILES_ARE_LOCAL_ONLY: &str =
 
 impl Backend for LocalBackend {
     fn diff_range(&self) -> String {
-        match &self.linked {
+        match self.linked() {
             Some(linked) => format!("{}...refs/heads/{}", linked.pr.base_oid, self.head),
             None => format!("{}...refs/heads/{}", self.base_ref, self.head),
         }
@@ -2265,17 +2325,16 @@ impl Backend for LocalBackend {
     /// For a local PR linked to a GitHub PR, whether the branch is not at the GitHub PR's head,
     /// whose lines GitHub's comments are numbered against.
     fn head_mismatch(&self, _repo: &Repository) -> bool {
-        self.linked.as_ref().is_some_and(|linked| {
+        self.linked().is_some_and(|linked| {
             self.head_commit()
                 .is_ok_and(|head| head.to_string() != linked.pr.head_oid)
         })
     }
 
     fn refresh(&self) -> Res<()> {
-        match &self.linked {
-            Some(linked) => self.fetch(linked),
-            None => Ok(()),
-        }
+        // GitHub may have the PR at other commits since it was last asked.
+        self.relink()?;
+        self.fetch_linked()
     }
 
     fn as_local(&self) -> Option<&LocalBackend> {
@@ -2311,7 +2370,7 @@ impl Backend for LocalBackend {
     }
 
     fn viewed(&self) -> Res<HashMap<String, ViewedState>> {
-        if let Some(linked) = &self.linked {
+        if let Some(linked) = self.linked() {
             return linked.viewed();
         }
         let file = self.store.read()?;
@@ -2331,7 +2390,7 @@ impl Backend for LocalBackend {
     }
 
     fn set_viewed(&self, path: &str, viewed: bool) -> Res<()> {
-        if let Some(linked) = &self.linked {
+        if let Some(linked) = self.linked() {
             return linked.set_viewed(path, viewed);
         }
         let blob = self.files()?.remove(path).ok_or_else(|| {
@@ -2474,13 +2533,11 @@ impl Backend for LocalBackend {
     }
 
     fn file_url(&self, path: &str, line: Option<(Side, u32)>) -> Option<String> {
-        self.linked
-            .as_ref()
-            .and_then(|linked| linked.file_url(path, line))
+        self.linked().and_then(|linked| linked.file_url(path, line))
     }
 
     fn url(&self) -> Option<String> {
-        self.linked.as_ref().and_then(|linked| linked.url())
+        self.linked().and_then(|linked| linked.url())
     }
 }
 
