@@ -41,16 +41,19 @@ pub(crate) struct Moved {
 fn kept_note(kept: usize) -> String {
     match kept {
         0 => String::new(),
-        1 => format!(" 1 thread kept local-only: {UNPUSHABLE} to be posted"),
-        n => format!(" {n} threads kept local-only: {UNPUSHABLE} to be posted"),
+        1 => format!(" 1 thread kept local-only: {UNPUSHABLE}."),
+        n => format!(" {n} threads kept local-only: {UNPUSHABLE}."),
     }
+}
+
+/// `n` of `one`, or of `many` when `n` isn't 1.
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 impl Synced {
     /// What to tell the user.
     pub fn summary(&self) -> String {
-        let plural =
-            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         match self {
             Synced::Posted {
                 url,
@@ -59,40 +62,42 @@ impl Synced {
                 moved,
                 kept_local,
             } => {
-                let mut summary = format!("Posted {}", plural(*threads, "thread", "threads"));
-                if *replies > 0 {
-                    summary += &format!(" and {}", plural(*replies, "reply", "replies"));
-                }
-                summary += &format!(" to your pending review on {url}.");
+                let posted: Vec<String> = [
+                    (*threads, plural(*threads, "thread", "threads")),
+                    (*replies, plural(*replies, "reply", "replies")),
+                ]
+                .into_iter()
+                .filter(|(n, _)| *n > 0)
+                .map(|(_, said)| said)
+                .collect();
+                let mut summary = format!(
+                    "Posted {} to your pending review on {url}.",
+                    posted.join(" and ")
+                );
                 if moved.threads > 0 {
-                    let (written, line) = match moved.threads {
-                        1 => ("1 was", "its line"),
-                        n => (&*format!("{n} were"), "their lines"),
+                    let lines = if moved.threads == 1 {
+                        "its line"
+                    } else {
+                        "their lines"
                     };
-                    summary +=
-                        &format!(" {written} written before the PR changed, and moved with {line}");
+                    summary += &format!(
+                        " {} moved with {lines} after the PR changed",
+                        plural(moved.threads, "thread", "threads")
+                    );
                     if moved.to_file > 0 {
-                        summary += &format!(
-                            ", {} onto {} as {} gone",
-                            moved.to_file,
-                            if moved.to_file == 1 {
-                                "its file"
-                            } else {
-                                "their files"
-                            },
-                            if moved.to_file == 1 {
-                                "its line had"
-                            } else {
-                                "their lines had"
-                            },
-                        );
+                        let file = if moved.to_file == 1 {
+                            "its file"
+                        } else {
+                            "their files"
+                        };
+                        summary += &format!(", {} onto {file}", moved.to_file);
                     }
                     summary += ".";
                 }
-                summary + " Submit it there to make it visible." + &kept_note(*kept_local)
+                summary + &kept_note(*kept_local)
             }
             Synced::Fetched { url, kept_local } => {
-                format!("No draft comments to post: fetched the PR's reviews from {url}.")
+                format!("No draft comments to post. Fetched reviews from {url}.")
                     + &kept_note(*kept_local)
             }
         }

@@ -1355,7 +1355,7 @@ impl LocalBackend {
             && !self.in_diff(&thread.path, line)?
         {
             return Err(Error::LocalPr(format!(
-                "Not moved to the draft review: {UNPUSHABLE} to be posted"
+                "Not moved to the draft review: {UNPUSHABLE}"
             )));
         }
         let head = self.branch_commit(&self.head)?.to_string();
@@ -2483,7 +2483,7 @@ impl Backend for LocalBackend {
             true
         })?;
         Ok(match unplaceable {
-            true => format!("Comment added, local-only: {UNPUSHABLE} to be posted"),
+            true => format!("Comment added, local-only: {UNPUSHABLE}"),
             false => ADDED.to_owned(),
         })
     }
