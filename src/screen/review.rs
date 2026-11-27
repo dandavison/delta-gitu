@@ -787,6 +787,130 @@ fn thread_rows(
     items
 }
 
+/// The thread view: each of `pr`'s threads whose text has each of `pattern`'s words, ignoring case
+/// (see [`thread_text`]), under a row in `heading` saying where it is, with the line it is on, and
+/// drawn as on the PR's screen. With none matching, a row says so. Words are matched whole, not
+/// fuzzily as the picker matches: across all of a thread's comments, fuzzy matching finds the
+/// letters of almost any short word.
+pub(crate) fn thread_view(
+    pr: &OpenPr,
+    repo: &Repository,
+    width: usize,
+    options: &CommentOptions,
+    heading: Style,
+    pattern: &str,
+) -> Vec<Item> {
+    let pattern: Vec<String> = pattern.split_whitespace().map(str::to_lowercase).collect();
+    let panel = Panel { column: 0, width };
+    let mut items = vec![];
+    for thread in pr.threads.borrow().iter() {
+        let text = thread_text(thread).to_lowercase();
+        if !pattern.iter().all(|word| text.contains(word.as_str())) {
+            continue;
+        }
+        if !items.is_empty() {
+            items.push(Item {
+                unselectable: true,
+                rendered: Some(Rc::new(vec![])),
+                ..Default::default()
+            });
+        }
+        items.push(Item {
+            id: hash(("thread_view_place", &thread.id)),
+            unselectable: true,
+            rendered: Some(Rc::new(vec![(
+                place(thread, repo, pr.version.get()),
+                heading,
+            )])),
+            ..Default::default()
+        });
+        items.extend(thread_rows(
+            thread,
+            0,
+            true,
+            panel,
+            options,
+            &options.decoration,
+        ));
+    }
+    if items.is_empty() {
+        items.push(Item {
+            unselectable: true,
+            rendered: Some(Rc::new(vec![("No thread matches".to_owned(), heading)])),
+            ..Default::default()
+        });
+    }
+    items
+}
+
+/// What the thread view matches a thread by: its file, and each of its comments' author and text,
+/// and the states shown with them.
+fn thread_text(thread: &Thread) -> String {
+    let mut words = vec![thread.path.clone()];
+    match thread.line {
+        None if thread.subject == review::Subject::File => words.push("file".to_owned()),
+        None => words.push("outdated".to_owned()),
+        Some(_) => {}
+    }
+    if thread.resolved {
+        words.push("resolved".to_owned());
+    }
+    for comment in &thread.comments {
+        words.push(
+            comment
+                .agent
+                .clone()
+                .unwrap_or_else(|| comment.author.clone()),
+        );
+        if comment.pending {
+            words.push("pending".to_owned());
+        } else if comment.draft {
+            words.push("draft".to_owned());
+        }
+        if comment.local_only {
+            words.push("local-only".to_owned());
+        }
+        words.push(comment.body.clone());
+    }
+    words.join("\n")
+}
+
+/// Where `thread` is, as `path:line`, with the text of the line in `version`'s commits, when
+/// they say what it is.
+fn place(thread: &Thread, repo: &Repository, version: Option<review::local::Version>) -> String {
+    let Some((side, n)) = thread.line else {
+        let what = match thread.subject {
+            review::Subject::File => "file",
+            review::Subject::Line => "outdated",
+        };
+        return format!("{} ({what})", thread.path);
+    };
+    let old = match side {
+        Side::Old => " (old side)",
+        Side::New => "",
+    };
+    let commit = version.map(|version| match side {
+        Side::Old => version.merge_base,
+        Side::New => version.head,
+    });
+    let text = commit
+        .and_then(|commit| line_in(repo, commit, &thread.path, n))
+        .map(|text| format!("  {}", text.trim()))
+        .unwrap_or_default();
+    format!("{}:{n}{old}{text}", thread.path)
+}
+
+/// Line `n` of the file at `path` in `commit`, if it has one.
+fn line_in(repo: &Repository, commit: git2::Oid, path: &str, n: u32) -> Option<String> {
+    let tree = repo.find_commit(commit).ok()?.tree().ok()?;
+    let entry = tree.get_path(std::path::Path::new(path)).ok()?;
+    let blob = repo.find_blob(entry.id()).ok()?;
+    String::from_utf8_lossy(blob.content())
+        .lines()
+        .nth((n as usize).checked_sub(1)?)
+        .map(str::to_owned)
+}
+
 /// How long a thread takes to pulse to comment-pulse-style and back.
 const PULSE_PERIOD_SECONDS: f64 = 2.0;
 

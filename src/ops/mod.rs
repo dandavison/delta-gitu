@@ -99,6 +99,7 @@ pub(crate) enum Op {
     PrCurrent,
     PrOther,
     PrSync,
+    PrThreads,
     ToggleViewed,
     ToggleLocalOnly,
     ShowOnGithub,
@@ -247,6 +248,7 @@ impl Op {
             Op::PrCurrent => "Open the current branch's PR",
             Op::PrOther => "Check out a GitHub PR you choose by number or URL, and open it",
             Op::PrSync => "Sync the PR with GitHub: post your draft comments, and fetch its reviews",
+            Op::PrThreads => "Show the PR's threads, narrowed as you type, and go to one",
             Op::ToggleViewed => "Tick or untick the PR file's Viewed checkbox on GitHub",
             Op::ToggleLocalOnly => {
                 "Move the comment between your draft review, which sync posts, and local-only"
@@ -486,6 +488,7 @@ impl Op {
             Op::PrCurrent => Box::new(pr::PrCurrent),
             Op::PrOther => Box::new(pr::PrOther),
             Op::PrSync => Box::new(pr::PrSync),
+            Op::PrThreads => Box::new(pr::PrThreads),
             Op::ToggleViewed => Box::new(pr::ToggleViewed),
             Op::ToggleLocalOnly => Box::new(pr::ToggleLocalOnly),
             Op::ShowOnGithub => Box::new(pr::ShowOnGithub),

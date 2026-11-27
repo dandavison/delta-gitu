@@ -2564,3 +2564,126 @@ fn reopening_a_pr_github_disagrees_with_closes_it_saying_why() {
     assert!(screen.contains("GitHub's PR has 3 commits"), "{screen}");
     assert!(!screen.contains("added: added.txt"), "{screen}");
 }
+
+/// The rows the cursor is on, which are all of a thread's when it is on one.
+fn cursor_rows(ctx: &TestContext) -> String {
+    let screen = ctx.redact_buffer();
+    let rows: Vec<&str> = screen
+        .lines()
+        .filter(|line| line.starts_with('▌'))
+        .collect();
+    assert!(!rows.is_empty(), "no cursor:\n{screen}");
+    rows.join("\n")
+}
+
+/// The PR open, with a thread on `lines.txt`'s new line 2, `on new`, which has an agent's reply,
+/// `a reply about drafts`, and one on its old line 2, `on old`.
+fn with_two_threads(ctx: &mut TestContext) -> App {
+    let github = setup(ctx);
+    let mut app = init_app(ctx, &github);
+    ctx.update(
+        &mut app,
+        keys("OO/new<enter>ion new<ctrl+s>/old<enter>ion old<ctrl+s>"),
+    );
+    // `i` on my own comment edits it, so the reply is an agent's.
+    let file: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(ctx.dir.join(".git/delta/review/feature...main.json")).unwrap(),
+    )
+    .unwrap();
+    let thread = file["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["comments"][0]["body"] == "on new")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    super::local_pr::review_cli_with_input(
+        &ctx.dir,
+        &[
+            "reply", &thread, "--agent", "claude", "--head", "feature", "--base", "main",
+        ],
+        "a reply about drafts",
+    )
+    .unwrap();
+    ctx.update(&mut app, keys("gr"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("a reply about drafts"), "{screen}");
+    assert!(screen.contains("on old"), "{screen}");
+    app
+}
+
+/// `O t` shows the PR's threads, each under where it is, as on the PR's screen.
+#[test]
+fn o_t_shows_the_prs_threads() {
+    let mut ctx = setup_clone!();
+    let mut app = with_two_threads(&mut ctx);
+
+    ctx.update(&mut app, keys("Ot"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("lines.txt:2"), "{screen}");
+    assert!(screen.contains("on new"), "{screen}");
+    assert!(screen.contains("a reply about drafts"), "{screen}");
+    assert!(screen.contains("on old"), "{screen}");
+    // Not the diff.
+    assert!(!screen.contains("added: added.txt"), "{screen}");
+}
+
+/// Typing narrows the threads shown to those any of whose comments match each word.
+#[test]
+fn typing_in_the_thread_view_narrows_it() {
+    let mut ctx = setup_clone!();
+    let mut app = with_two_threads(&mut ctx);
+
+    ctx.update(&mut app, keys("Otdrafts"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("on new"), "{screen}");
+    assert!(!screen.contains("on old"), "{screen}");
+}
+
+/// `enter` on a thread goes to it in the PR's diff.
+#[test]
+fn enter_in_the_thread_view_goes_to_the_thread_in_the_diff() {
+    let mut ctx = setup_clone!();
+    let mut app = with_two_threads(&mut ctx);
+    ctx.update(&mut app, keys("gg"));
+
+    ctx.update(&mut app, keys("Otold<enter>"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("added: added.txt"), "{screen}");
+    assert!(cursor_rows(&ctx).contains("on old"), "{screen}");
+}
+
+/// `right` does as `enter` does, and the thread's file is unfolded to show it.
+#[test]
+fn right_in_the_thread_view_goes_to_the_thread_in_its_folded_file() {
+    let mut ctx = setup_clone!();
+    let mut app = with_two_threads(&mut ctx);
+    ctx.update(&mut app, keys("gg/lines.txt<enter><tab>gg"));
+    assert!(!ctx.redact_buffer().contains("on new"));
+
+    ctx.update(&mut app, keys("Otdrafts<right>"));
+
+    let screen = ctx.redact_buffer();
+    assert!(cursor_rows(&ctx).contains("on new"), "{screen}");
+}
+
+/// `esc` clears what was typed, and then closes the view, staying where the PR's screen was.
+#[test]
+fn esc_in_the_thread_view_clears_the_filter_then_closes_it() {
+    let mut ctx = setup_clone!();
+    let mut app = with_two_threads(&mut ctx);
+
+    ctx.update(&mut app, keys("Otdrafts<esc>"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("on old"), "{screen}");
+    assert!(!screen.contains("added: added.txt"), "{screen}");
+
+    ctx.update(&mut app, keys("<esc>"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("added: added.txt"), "{screen}");
+}

@@ -5,7 +5,7 @@
 use super::{Action, OpTrait};
 use crate::{
     Res,
-    app::{App, PromptParams, State},
+    app::{App, KeyUse, PromptParams, State},
     error::Error,
     git::{self, diff::Diff},
     item_data::ItemData,
@@ -216,6 +216,125 @@ impl OpTrait for PrSync {
     fn display(&self, _state: &State) -> String {
         "sync with GitHub".into()
     }
+}
+
+/// Show the threads of the PR on screen in a view of their own, each as on the PR's screen,
+/// narrowed as words are typed to those that match them, and go to the one chosen in the PR's
+/// diff.
+pub(crate) struct PrThreads;
+impl OpTrait for PrThreads {
+    fn get_action(&self, _target: &ItemData) -> Option<Action> {
+        Some(Rc::new(show_threads))
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "threads".into()
+    }
+}
+
+/// Whether `data` is a thread's first row, where the thread view's cursor stops.
+fn is_thread(data: &ItemData) -> bool {
+    matches!(data, ItemData::ReviewThread { .. })
+}
+
+/// The thread view (see [`PrThreads`]). While words are typed, up and down (or ctrl+p and ctrl+n)
+/// move between threads, enter or right goes to the one under the cursor, and esc clears what was
+/// typed, or, with nothing typed, closes the view.
+fn show_threads(app: &mut App, term: &mut Term) -> Res<()> {
+    let Some(pr) = app.screen().pr.clone() else {
+        app.display_error(NO_REVIEW);
+        return Ok(());
+    };
+    let pattern = Rc::new(std::cell::RefCell::new(String::new()));
+    let (view_pr, view_pattern, repo) = (
+        Rc::clone(&pr),
+        Rc::clone(&pattern),
+        Rc::clone(&app.state.repo),
+    );
+    let size = term.size().map_err(Error::Term)?;
+    let screen = screen::Screen::new(
+        Arc::clone(&app.state.config),
+        app.render_params(size),
+        Box::new(move |params| {
+            let config = &params.config;
+            let dir = repo.workdir().unwrap_or(repo.path());
+            let options = comment_options(&view_pr, config, dir, &params.features);
+            Ok(screen::review::thread_view(
+                &view_pr,
+                &repo,
+                params.width(),
+                &options,
+                Style::from(&config.style.pr_summary),
+                &view_pattern.borrow(),
+            ))
+        }),
+    )?;
+    app.state.screens.push(screen);
+    app.screen_mut().select_revealing(is_thread);
+
+    let narrow = |app: &mut App, pattern: &std::cell::RefCell<String>, value: &str| {
+        *pattern.borrow_mut() = value.to_owned();
+        let refreshed = app.screen_mut().refresh();
+        app.screen_mut().select_revealing(is_thread);
+        if let Err(e) = refreshed {
+            app.display_error(e.to_string());
+        }
+    };
+    let (edited, cleared) = (Rc::clone(&pattern), Rc::clone(&pattern));
+    let answer = app.prompt(
+        term,
+        &PromptParams {
+            prompt: "Threads".into(),
+            on_edit: Some(Box::new(move |app, value| narrow(app, &edited, value))),
+            on_key: Some(Box::new(move |app, key| {
+                use crossterm::event::{KeyCode, KeyModifiers};
+                match (key.code, key.modifiers) {
+                    (KeyCode::Down, _) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                        app.screen_mut().select_adjacent_matching(is_thread, false);
+                        KeyUse::Taken
+                    }
+                    (KeyCode::Up, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                        app.screen_mut().select_adjacent_matching(is_thread, true);
+                        KeyUse::Taken
+                    }
+                    (KeyCode::Right, _) => KeyUse::Answers,
+                    (KeyCode::Esc, _) if !app.state.prompt.state.value.is_empty() => {
+                        app.state.prompt.state.value.clear();
+                        app.state.prompt.state.move_to(0);
+                        narrow(app, &cleared, "");
+                        KeyUse::Taken
+                    }
+                    _ => KeyUse::Typed,
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    let chosen = match app.screen().selected_target() {
+        ItemData::ReviewThread { thread_id, .. } | ItemData::ReviewComment { thread_id, .. } => {
+            Some(thread_id)
+        }
+        _ => None,
+    };
+    app.state.screens.pop();
+    match answer {
+        Ok(_) => {}
+        Err(Error::PromptAborted) => return Ok(()),
+        Err(e) => return Err(e),
+    }
+    let Some(chosen) = chosen else {
+        app.display_error("No thread matches");
+        return Ok(());
+    };
+    let found = app.screen_mut().select_revealing(
+        |data| matches!(data, ItemData::ReviewThread { thread_id, .. } if *thread_id == chosen),
+    );
+    if !found {
+        return Err(Error::LocalPr(format!(
+            "Couldn't find thread {chosen} on the PR's screen"
+        )));
+    }
+    Ok(())
 }
 
 /// Open a screen with the diff of the PR `backend` is for, with its checkboxes and threads.

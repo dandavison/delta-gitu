@@ -481,6 +481,7 @@ root.pr_menu = ["O"]
 pr_menu.pr_current = ["O"]
 pr_menu.pr_other = ["o"]
 pr_menu.pr_sync = ["s"]
+pr_menu.pr_threads = ["t"]
 pr_menu.quit = ["q", "esc", "left"]
 
 root.rebase_menu = ["r"]

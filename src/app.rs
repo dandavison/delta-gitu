@@ -1108,7 +1108,17 @@ impl App {
         loop {
             let event = term.read_event()?;
             let was = self.state.prompt.state.value.clone();
-            self.handle_event(term, event)?;
+            let used = match (&event, &params.on_key) {
+                (Event::Key(key), Some(on_key)) if key.kind == event::KeyEventKind::Press => {
+                    on_key(self, *key)
+                }
+                _ => KeyUse::Typed,
+            };
+            match used {
+                KeyUse::Typed => self.handle_event(term, event)?,
+                KeyUse::Taken => {}
+                KeyUse::Answers => self.state.prompt.state.status = text_input::Status::Done,
+            }
 
             if self.state.prompt.state.status == text_input::Status::Done {
                 let value = get_prompt_result(params, self)?;
@@ -1620,7 +1630,21 @@ pub(crate) struct PromptParams {
     pub bare: bool,
     /// Called with the answer each time it is edited, before it is given.
     pub on_edit: Option<EditFn>,
+    /// Called with each key before it edits the line, to take it for something else.
+    pub on_key: Option<KeyFn>,
 }
+
+/// What a prompt's [`PromptParams::on_key`] did with a key.
+pub(crate) enum KeyUse {
+    /// Nothing: the key edits the line, as it would have.
+    Typed,
+    /// Used it: the line is not edited.
+    Taken,
+    /// Used it to give the answer, as enter does.
+    Answers,
+}
+
+pub(crate) type KeyFn = Box<dyn Fn(&mut App, event::KeyEvent) -> KeyUse>;
 
 impl Default for PromptParams {
     fn default() -> Self {
@@ -1632,6 +1656,7 @@ impl Default for PromptParams {
             history: None,
             bare: false,
             on_edit: None,
+            on_key: None,
         }
     }
 }

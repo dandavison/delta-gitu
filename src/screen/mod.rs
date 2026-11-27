@@ -1605,6 +1605,44 @@ impl Screen {
         true
     }
 
+    /// Put the cursor on the first selectable item `predicate` holds for, unfolding the sections
+    /// it is in, and center on it.
+    pub(crate) fn select_revealing<F: Fn(&ItemData) -> bool>(&mut self, predicate: F) -> bool {
+        let Some(item_i) = (0..self.items.len())
+            .find(|&i| !self.items[i].unselectable && predicate(&self.items[i].data))
+        else {
+            return false;
+        };
+        self.reveal(item_i);
+        self.cursor = item_i;
+        self.center_on_cursor();
+        self.scroll_fit_end();
+        self.scroll_fit_start();
+        true
+    }
+
+    /// Move the cursor to the next visible item after it that `predicate` holds for, if there is
+    /// one, or else the previous one before it, when `backward`.
+    pub(crate) fn select_adjacent_matching<F: Fn(&ItemData) -> bool>(
+        &mut self,
+        predicate: F,
+        backward: bool,
+    ) {
+        let found = match backward {
+            false => self
+                .visible_from(self.cursor + 1)
+                .find(|&i| !self.items[i].unselectable && predicate(&self.items[i].data)),
+            true => self
+                .visible_before(self.cursor)
+                .find(|&i| !self.items[i].unselectable && predicate(&self.items[i].data)),
+        };
+        if let Some(item_i) = found {
+            self.cursor = item_i;
+            self.scroll_fit_end();
+            self.scroll_fit_start();
+        }
+    }
+
     pub(crate) fn select_matching<F: Fn(&ItemData) -> bool>(&mut self, predicate: F) -> bool {
         let Some(item_i) = self.find_item(|item| !item.unselectable && predicate(&item.data))
         else {

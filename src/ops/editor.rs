@@ -179,6 +179,7 @@ impl OpTrait for ToggleArg {
                         history: None,
                         bare: false,
                         on_edit: None,
+                        on_key: None,
                     },
                 )?;
 
@@ -244,6 +245,7 @@ impl OpTrait for DiffContext {
                     history: None,
                     bare: false,
                     on_edit: None,
+                    on_key: None,
                 },
             )?;
 
