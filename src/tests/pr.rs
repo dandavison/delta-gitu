@@ -2729,3 +2729,32 @@ fn down_in_the_thread_view_moves_to_the_next_thread() {
         ctx.redact_buffer()
     );
 }
+
+/// Sync posts nothing when the PR has changed since a draft thread was written, and says where the
+/// thread has moved to and that syncing again posts it there.
+#[test]
+fn os_after_the_pr_changed_says_where_drafts_moved_and_to_sync_again() {
+    let mut ctx = setup_clone!();
+    let github = setup(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/new<enter>ion new<ctrl+s>"));
+    drop(app);
+    // The PR changes on GitHub, and the branch here has the change.
+    commit(&ctx.dir, "more.txt", "more\n");
+    let github = Rc::new(FakeGitHub {
+        head_oid: run(&ctx.dir, &["git", "rev-parse", "feature"])
+            .trim()
+            .to_owned(),
+        commits: RefCell::new(3),
+        ..Rc::into_inner(github).unwrap()
+    });
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO"));
+
+    ctx.update(&mut app, keys("Os"));
+
+    assert_eq!(*github.posted.borrow(), vec![]);
+    let screen = screen_text(&ctx);
+    assert!(screen.contains("lines.txt:2"), "{screen}");
+    assert!(screen.contains("sync again to post it there"), "{screen}");
+}
