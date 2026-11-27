@@ -48,7 +48,7 @@ fn dot_opens_a_file_whole_that_takes_no_comments() {
 
     let screen = ctx.redact_buffer();
     assert!(!screen.contains("New comment"), "{screen}");
-    assert!(!ctx.dir.join(".git/gitu/review").exists(), "{screen}");
+    assert!(!ctx.dir.join(".git/delta/review").exists(), "{screen}");
 }
 
 /// The status view shows no PR, though the branch has a local PR.

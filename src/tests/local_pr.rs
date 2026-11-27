@@ -145,7 +145,7 @@ fn ticks_are_shared_by_the_repositorys_worktrees() {
 
 /// Where the PR `feature` into `main` is recorded.
 fn review_file_path(ctx: &TestContext) -> std::path::PathBuf {
-    ctx.dir.join(".git/gitu/review/feature...main.json")
+    ctx.dir.join(".git/delta/review/feature...main.json")
 }
 
 /// The JSON file the PR `feature` into `main` is recorded in.
@@ -787,7 +787,7 @@ fn review_comment_on_a_line_not_in_the_diff_is_an_error() {
             "{error}"
         );
     }
-    let path = ctx.dir.join(".git/gitu/review/feature...main.json");
+    let path = ctx.dir.join(".git/delta/review/feature...main.json");
     assert!(!path.exists(), "nothing is recorded");
 }
 
@@ -2222,7 +2222,7 @@ fn oo_on_a_branch_with_no_commits_since_its_base_is_an_error() {
 
 /// Where the PR `feature` into `release` is recorded.
 fn release_file_path(ctx: &TestContext) -> std::path::PathBuf {
-    ctx.dir.join(".git/gitu/review/feature...release.json")
+    ctx.dir.join(".git/delta/review/feature...release.json")
 }
 
 /// A comment on `feature`, as the review command line writes it, into the base `base` if given.

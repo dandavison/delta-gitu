@@ -22,7 +22,7 @@ fn cursor_row(ctx: &TestContext) -> String {
 
 /// Where `feature`'s files review is recorded.
 fn files_review(ctx: &TestContext) -> serde_json::Value {
-    let path = ctx.dir.join(".git/gitu/review/feature...feature.json");
+    let path = ctx.dir.join(".git/delta/review/feature...feature.json");
     serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
 }
 
@@ -223,7 +223,7 @@ fn an_agent_answers_in_the_files_review_whatever_github_has() {
     run(&ctx.dir, &["git", "checkout", "main"]);
     let mut app = init_app(&mut ctx);
     ctx.update(&mut app, keys(".lines<enter>/old<enter>ifix this<ctrl+s>"));
-    let file = ctx.dir.join(".git/gitu/review/main...main.json");
+    let file = ctx.dir.join(".git/delta/review/main...main.json");
     let file: serde_json::Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
     let thread = file["threads"][0]["id"].as_str().unwrap().to_owned();
 
