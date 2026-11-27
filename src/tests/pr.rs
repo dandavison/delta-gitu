@@ -2379,3 +2379,128 @@ fn the_help_says_i_replies_on_someone_elses_comment() {
     assert!(pr.contains("Reply"), "{}", ctx.redact_buffer());
     assert!(!pr.contains("Edit comment"), "{}", ctx.redact_buffer());
 }
+
+/// `setup`, with `long.txt`, whose line 10 the PR changes, and git's `diff.context` set to 7, so
+/// that the PR's screen shows lines 3 to 17, though GitHub's diff, which has 3 lines of context,
+/// has only lines 7 to 13.
+fn setup_wide_context(ctx: &TestContext) -> Rc<FakeGitHub> {
+    let lines = |ten: &str| {
+        (1..=20)
+            .map(|i| match i {
+                10 => format!("{ten}\n"),
+                i => format!("line-{i:02}\n"),
+            })
+            .collect::<String>()
+    };
+    commit(&ctx.dir, "long.txt", &lines("line-10"));
+    run(&ctx.dir, &["git", "checkout", "-b", "feature"]);
+    commit(&ctx.dir, "long.txt", &lines("changed"));
+    // As many commits as FakeGitHub's PR has.
+    commit(&ctx.dir, "added.txt", "added\n");
+    run(&ctx.dir, &["git", "config", "diff.context", "7"]);
+    Rc::new(FakeGitHub::new(
+        run(&ctx.dir, &["git", "rev-parse", "main"]).trim(),
+        run(&ctx.dir, &["git", "rev-parse", "feature"]).trim(),
+    ))
+}
+
+/// The JSON file the PR `feature` into `main` is recorded in.
+fn feature_review_file(ctx: &TestContext) -> std::path::PathBuf {
+    ctx.dir.join(".git/delta/review/feature...main.json")
+}
+
+/// A new comment on a line the screen shows but GitHub's diff doesn't, where GitHub can't place
+/// it, is local-only, and says why.
+#[test]
+fn a_comment_on_a_line_outside_githubs_diff_is_local_only() {
+    let mut ctx = setup_clone!();
+    let github = setup_wide_context(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/line-15<enter>"));
+
+    ctx.update(&mut app, keys("ihello<ctrl+s>"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("local-only: GitHub can't place a comment on long.txt:15"),
+        "{screen}"
+    );
+    let file: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(feature_review_file(&ctx)).unwrap()).unwrap();
+    let comment = &file["threads"][0]["comments"][0];
+    assert_eq!(comment["body"], "hello", "{file}");
+    assert!(comment["review"].is_null(), "{file}");
+}
+
+/// A comment on a line in GitHub's diff, though not a changed one, goes into the draft review.
+#[test]
+fn a_comment_on_a_context_line_in_githubs_diff_is_a_draft() {
+    let mut ctx = setup_clone!();
+    let github = setup_wide_context(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(&mut app, keys("OO/line-13<enter>"));
+
+    ctx.update(&mut app, keys("ihello<ctrl+s>"));
+
+    let file: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(feature_review_file(&ctx)).unwrap()).unwrap();
+    assert!(
+        !file["threads"][0]["comments"][0]["review"].is_null(),
+        "{file}\n{}",
+        ctx.redact_buffer()
+    );
+}
+
+/// `p` doesn't move a comment GitHub can't place into the draft review, and says why.
+#[test]
+fn p_does_not_put_a_comment_github_cant_place_in_the_draft_review() {
+    let mut ctx = setup_clone!();
+    let github = setup_wide_context(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(
+        &mut app,
+        keys("OO/line-15<enter>ihello<ctrl+s>/hello<enter>"),
+    );
+
+    ctx.update(&mut app, keys("p"));
+
+    let screen = ctx.redact_buffer();
+    assert!(
+        screen.contains("GitHub can't place a comment on long.txt:15"),
+        "{screen}"
+    );
+    let file: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(feature_review_file(&ctx)).unwrap()).unwrap();
+    assert!(
+        file["threads"][0]["comments"][0]["review"].is_null(),
+        "{file}"
+    );
+}
+
+/// Sync posts nothing while a draft thread is on a line GitHub can't place, as one can come to be
+/// when the code changes, and says which.
+#[test]
+fn os_posts_nothing_while_a_draft_thread_is_outside_githubs_diff() {
+    let mut ctx = setup_clone!();
+    let github = setup_wide_context(&ctx);
+    let mut app = init_app(&mut ctx, &github);
+    ctx.update(
+        &mut app,
+        keys("OO/line-13<enter>ione<ctrl+s>/line-11<enter>itwo<ctrl+s>"),
+    );
+    // The first thread on line 15, where it would be had the code moved.
+    let path = feature_review_file(&ctx);
+    let mut file: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    file["threads"][0]["anchor"]["line"] = 15.into();
+    file["threads"][0]["anchor"]["text"] = serde_json::json!(["line-15"]);
+    fs::write(&path, serde_json::to_string_pretty(&file).unwrap()).unwrap();
+    ctx.update(&mut app, keys("gr"));
+
+    ctx.update(&mut app, keys("Os"));
+
+    assert_eq!(*github.posted.borrow(), vec![]);
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Posted nothing"), "{screen}");
+    assert!(screen.contains("long.txt:15"), "{screen}");
+}
