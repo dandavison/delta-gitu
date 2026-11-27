@@ -751,3 +751,18 @@ fn the_help_says_how_much_is_cut_when_it_does_not_fit() {
     let buffer = ctx.redact_buffer();
     assert!(buffer.contains(" more: make the window larger"), "{buffer}");
 }
+
+/// `-` and `+` say what the context goes from and to.
+#[test]
+fn plus_and_minus_say_how_the_context_changes() {
+    let mut ctx = setup_clone!();
+    let mut app = ctx.init_app();
+
+    ctx.update(&mut app, keys("-"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Narrowing context: 3 -> 2"), "{screen}");
+
+    ctx.update(&mut app, keys("+"));
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("Widening context: 2 -> 4"), "{screen}");
+}
