@@ -2707,7 +2707,9 @@ fn o_t_with_no_pr_on_screen_opens_the_current_branchs() {
     assert!(screen.contains("on old"), "{screen}");
     assert!(!screen.contains("added: added.txt"), "{screen}");
 
-    ctx.update(&mut app, keys("old<enter>"));
+    // Keys run out at the end of each update, which closes the view: it is opened again, from the
+    // status screen, and the thread chosen in one update.
+    ctx.update(&mut app, keys("qOtold<enter>"));
     let screen = ctx.redact_buffer();
     assert!(screen.contains("added: added.txt"), "{screen}");
     assert!(cursor_rows(&ctx).contains("on old"), "{screen}");
