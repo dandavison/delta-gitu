@@ -1964,23 +1964,56 @@ fn same_hunk(a: &ItemData, b: &ItemData) -> bool {
     }
 }
 
-/// Where a row sits in the patch, for the rows that sit anywhere in one: a
-/// file, a hunk within it, and for a content row the line within that. Two rows
-/// of one wrapped line share a position, which is right — they are one line.
-type DiffPosition = (usize, Option<usize>, Option<usize>);
+/// Where a row sits in the files a patch is of, for the rows that sit anywhere in one: its file,
+/// and, for a hunk's row or a content row, the place in the file of its line (a hunk's first),
+/// which no change of context moves, as it does a row's place in its hunk. Two rows of one wrapped
+/// line share a position, which is right: they are one line.
+type DiffPosition = (usize, Option<LinePlace>);
+
+/// Where a line of a hunk is in the file, as the new side's line number then the old side's,
+/// so that positions sort as the diff's rows do: a removed line has the new side's number of the
+/// line that follows it, and an added line the old side's.
+type LinePlace = (u32, u32);
 
 fn diff_position(data: &ItemData) -> Option<DiffPosition> {
     match data {
-        ItemData::Delta { file_i, .. } => Some((*file_i, None, None)),
-        ItemData::Hunk { file_i, hunk_i, .. } => Some((*file_i, Some(*hunk_i), None)),
+        ItemData::Delta { file_i, .. } => Some((*file_i, None)),
+        ItemData::Hunk {
+            diff,
+            file_i,
+            hunk_i,
+        } => Some((*file_i, Some(line_place(diff, *file_i, *hunk_i, 0)))),
         ItemData::HunkLine {
+            diff,
             file_i,
             hunk_i,
             line_i,
             ..
-        } => Some((*file_i, Some(*hunk_i), Some(*line_i))),
+        } => Some((*file_i, Some(line_place(diff, *file_i, *hunk_i, *line_i)))),
         _ => None,
     }
+}
+
+/// The place in the file (see [`LinePlace`]) of line `line_i` of hunk `hunk_i` of file `file_i`.
+fn line_place(
+    diff: &crate::git::diff::Diff,
+    file_i: usize,
+    hunk_i: usize,
+    line_i: usize,
+) -> LinePlace {
+    let header = &diff.file_diffs[file_i].hunks[hunk_i].header;
+    let (mut old, mut new) = (header.old_line_start, header.new_line_start);
+    for line in diff.hunk_content(file_i, hunk_i).lines().take(line_i) {
+        match line.chars().next() {
+            Some('-') => old += 1,
+            Some('+') => new += 1,
+            _ => {
+                old += 1;
+                new += 1;
+            }
+        }
+    }
+    (new, old)
 }
 
 struct ItemView {
