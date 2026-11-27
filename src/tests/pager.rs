@@ -477,11 +477,72 @@ fn the_files_to_show_can_be_said_by_pattern() {
     two_changed_files(&ctx);
 
     let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
-    ctx.update(&mut app, keys("&!*_test.rs<enter>"));
+    ctx.update(&mut app, keys("&&!*_test.rs<enter>"));
 
     let buffer = ctx.redact_buffer();
     assert!(buffer.contains("alpha"), "{buffer}");
     assert!(!buffer.contains("beta"), "{buffer}");
+}
+
+/// `&` picks files by fuzzy matching their names, and the view shows the files the picker lists.
+#[test]
+fn the_file_picker_limits_the_view_to_the_files_it_lists() {
+    let mut ctx = setup_clone!();
+    two_changed_files(&ctx);
+
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("&test<enter>"));
+
+    let buffer = ctx.redact_buffer();
+    assert!(buffer.contains("beta"), "{buffer}");
+    assert!(!buffer.contains("alpha"), "{buffer}");
+}
+
+/// With nothing typed, the picker lists every file, and the view shows them all.
+#[test]
+fn the_file_picker_with_nothing_typed_shows_every_file() {
+    let mut ctx = setup_clone!();
+    two_changed_files(&ctx);
+
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("&test<enter>&<enter>"));
+
+    let buffer = ctx.redact_buffer();
+    assert!(buffer.contains("alpha"), "{buffer}");
+    assert!(buffer.contains("beta"), "{buffer}");
+}
+
+/// The picker lists the files the command covers, those the view hides too.
+#[test]
+fn the_file_picker_lists_the_files_the_view_hides() {
+    let mut ctx = setup_clone!();
+    two_changed_files(&ctx);
+
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("kd&"));
+
+    let buffer = ctx.redact_buffer();
+    assert!(
+        buffer
+            .lines()
+            .any(|line| line.split_whitespace().any(|word| word == "a.rs")),
+        "{buffer}"
+    );
+}
+
+/// `&` again, in the picker, asks for patterns, starting from what was typed, or else from the
+/// view's patterns.
+#[test]
+fn a_second_ampersand_asks_for_patterns() {
+    let mut ctx = setup_clone!();
+    two_changed_files(&ctx);
+
+    let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
+    ctx.update(&mut app, keys("&src&"));
+    assert_eq!(ctx.prompt_line(), "File filters: src|");
+
+    ctx.update(&mut app, keys("<esc>kd&&"));
+    assert_eq!(ctx.prompt_line(), "File filters: !a.rs|");
 }
 
 /// Hiding a file is an edit of the command like any other, so it is there to
@@ -492,7 +553,7 @@ fn the_files_asked_for_come_back_for_editing() {
     two_changed_files(&ctx);
 
     let mut app = ctx.init_app_as_pager_of(&["git", "diff"]);
-    ctx.update(&mut app, keys("kd&"));
+    ctx.update(&mut app, keys("kd&&"));
     assert!(
         ctx.redact_buffer().contains("File filters: !a.rs"),
         "{}",
@@ -535,7 +596,7 @@ fn command_and_file_histories_persist_separately() {
     ctx.update(
         &mut app,
         keys(
-            "&!a_test.rs<enter>&<ctrl+u>!a.rs<enter>\
+            "&&!a_test.rs<enter>&&<ctrl+u>!a.rs<enter>\
              : HEAD<enter>:<ctrl+u>git diff --cached<enter>",
         ),
     );
@@ -545,7 +606,7 @@ fn command_and_file_histories_persist_separately() {
     ctx.update(&mut app, keys(":<up>"));
     assert_eq!(ctx.prompt_line(), "git diff --cached|");
 
-    ctx.update(&mut app, keys("&<up>"));
+    ctx.update(&mut app, keys("&&<up>"));
     assert_eq!(ctx.prompt_line(), "File filters: !a.rs|");
 
     ctx.update(&mut app, keys(":<up><up><down>"));

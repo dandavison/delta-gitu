@@ -3499,3 +3499,17 @@ fn a_failing_send_message_command_says_why_and_records_no_message() {
         "{file}"
     );
 }
+
+/// `&` picks the PR's files to show.
+#[test]
+fn the_file_picker_limits_a_prs_files() {
+    let mut ctx = setup_clone!();
+    setup(&mut ctx);
+    let mut app = init_app(&mut ctx);
+
+    ctx.update(&mut app, keys("OO&added<enter>"));
+
+    let screen = ctx.redact_buffer();
+    assert!(screen.contains("added.txt"), "{screen}");
+    assert!(!screen.contains("lines.txt"), "{screen}");
+}
