@@ -23,6 +23,8 @@ pub(crate) enum HistoryKind {
     Input(String),
     /// Messages to agents.
     AgentMessage,
+    /// What the thread view was narrowed to.
+    ThreadFilter,
 }
 
 pub(crate) struct Prompt {
@@ -179,6 +181,7 @@ fn history_path(dir: &Path, kind: &HistoryKind) -> PathBuf {
         HistoryKind::FilePatterns => dir.join("file-pattern-history"),
         HistoryKind::Search => dir.join("search-history"),
         HistoryKind::AgentMessage => dir.join("agent-message-history"),
+        HistoryKind::ThreadFilter => dir.join("thread-filter-history"),
         // A name is any string, so it is escaped to be one file name.
         HistoryKind::Input(name) => dir
             .join("input-history")

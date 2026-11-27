@@ -202,9 +202,10 @@ fn is_thread(data: &ItemData) -> bool {
     matches!(data, ItemData::ReviewThread { .. })
 }
 
-/// The thread view (see [`PrThreads`]). While words are typed, up and down (or ctrl+p and ctrl+n)
-/// move between threads, enter or right goes to the one under the cursor, and esc clears what was
-/// typed, or, with nothing typed, closes the view.
+/// The thread view (see [`PrThreads`]). While words are typed, ctrl+p and ctrl+n move between
+/// threads, up and down step through what was typed before, as in the other prompts, enter or right
+/// goes to the thread under the cursor, and esc clears what was typed, or, with nothing typed,
+/// closes the view.
 fn show_threads(app: &mut App, term: &mut Term) -> Res<()> {
     let Some(pr) = app.screen().pr.clone() else {
         app.display_error(NO_REVIEW);
@@ -250,15 +251,16 @@ fn show_threads(app: &mut App, term: &mut Term) -> Res<()> {
         term,
         &PromptParams {
             prompt: "Threads".into(),
+            history: Some(HistoryKind::ThreadFilter),
             on_edit: Some(Box::new(move |app, value| narrow(app, &edited, value))),
             on_key: Some(Box::new(move |app, key| {
                 use crossterm::event::{KeyCode, KeyModifiers};
                 match (key.code, key.modifiers) {
-                    (KeyCode::Down, _) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                    (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
                         app.screen_mut().select_adjacent_matching(is_thread, false);
                         KeyUse::Taken
                     }
-                    (KeyCode::Up, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                    (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
                         app.screen_mut().select_adjacent_matching(is_thread, true);
                         KeyUse::Taken
                     }
