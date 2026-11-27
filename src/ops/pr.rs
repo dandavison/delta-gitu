@@ -183,9 +183,9 @@ impl OpTrait for PrSync {
     }
 }
 
-/// Show the threads of the PR on screen in a view of their own, each as on the PR's screen,
-/// narrowed as words are typed to those that match them, and go to the one chosen in the PR's
-/// diff.
+/// Show the threads of the PR on screen, or else of the current branch's, which is opened, in a
+/// view of their own, each as on the PR's screen, narrowed as words are typed to those that match
+/// them, and go to the one chosen in the PR's diff.
 pub(crate) struct PrThreads;
 impl OpTrait for PrThreads {
     fn get_action(&self, _target: &ItemData) -> Option<Action> {
@@ -207,10 +207,11 @@ fn is_thread(data: &ItemData) -> bool {
 /// goes to the thread under the cursor, and esc clears what was typed, or, with nothing typed,
 /// closes the view.
 fn show_threads(app: &mut App, term: &mut Term) -> Res<()> {
-    let Some(pr) = app.screen().pr.clone() else {
-        app.display_error(NO_REVIEW);
-        return Ok(());
-    };
+    // With no PR on screen, the current branch's is opened, as `O O` opens it.
+    if app.screen().pr.is_none() {
+        open_current(app, term, None)?;
+    }
+    let pr = app.screen().pr.clone().expect("the PR just opened");
     let pattern = Rc::new(std::cell::RefCell::new(String::new()));
     let (view_pr, view_pattern, repo) = (
         Rc::clone(&pr),
