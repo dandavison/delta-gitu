@@ -88,6 +88,27 @@ fn review_commands_are_refused() {
     }
 }
 
+/// With `experimental = true` in git config, as delta passes the config before reading git
+/// config, `review` and the agents' flags run.
+#[test]
+fn review_commands_run_with_experimental_in_git_config() {
+    let mut ctx = setup_clone!();
+    let dir = temp_dir::TempDir::new().unwrap();
+    let git_path = dir.path().join("gitconfig");
+    std::fs::write(&git_path, "[delta]\n\texperimental = true\n").unwrap();
+    let mut config = crate::config::init_config_from(dir.path().join("config.toml")).unwrap();
+    crate::config::told_about(&mut config, git_path);
+    let config = std::sync::Arc::new(config);
+    for args in [
+        &["gitu", "--agent-instructions"][..],
+        &["gitu", "--pr-state-machine-diagram=d2"],
+    ] {
+        let args = crate::cli::Args::parse_from(args);
+        let result = crate::run(std::sync::Arc::clone(&config), &args, &mut ctx.term);
+        assert!(result.is_ok(), "{args:?}: {result:?}");
+    }
+}
+
 /// `--help` doesn't mention them.
 #[test]
 fn help_does_not_mention_review() {
