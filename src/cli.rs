@@ -26,7 +26,7 @@ pub struct Args {
     #[clap(long, action)]
     pub quit_if_one_screen: bool,
 
-    /// Enable logging to 'gitu.log'
+    /// Enable logging to 'delta-tui.log'
     #[clap(long, action)]
     pub log: bool,
 

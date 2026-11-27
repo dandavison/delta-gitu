@@ -1,6 +1,6 @@
 /target
 *.snap.new
-/gitu.log
+/delta-tui.log
 .direnv
 result
 /testfiles

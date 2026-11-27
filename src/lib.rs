@@ -56,7 +56,7 @@ use crate::capped_input::Capped;
 use crate::config::Config;
 use crate::screen::pager::Paged;
 
-pub const LOG_FILE_NAME: &str = "gitu.log";
+pub const LOG_FILE_NAME: &str = "delta-tui.log";
 
 //                                An overview of Gitu's ui and terminology:
 //
