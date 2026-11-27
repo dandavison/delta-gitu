@@ -764,11 +764,12 @@ pub(crate) const NOT_EXPERIMENTAL: &str =
 /// The operations of experimental features (see [`GeneralConfig::experimental`]): code review,
 /// and messages to agents. `.`, opening a file whole, is not one, though only with them are its
 /// lines commented on.
-const EXPERIMENTAL_OPS: [Op; 6] = [
+const EXPERIMENTAL_OPS: [Op; 7] = [
     Op::OpenMenu(Menu::Pr),
     Op::ToggleViewed,
     Op::ShowOnGithub,
     Op::WriteComment,
+    Op::EditComment,
     Op::ToggleLocalOnly,
     Op::MessageAgent,
 ];

@@ -841,10 +841,9 @@ fn line_of(target: &ItemData) -> Option<(Side, u32)> {
     })
 }
 
-/// Write a comment in a box in the diff: on a comment the user can change (theirs in a draft
-/// review, or their own on GitHub), an edit of it; on anyone else's, a reply in its thread; on a
-/// diff line, a new comment on it. On the box, or anywhere while it holds text, go back to it, rather than lose what was
-/// written.
+/// Write a comment in a box in the diff: on a thread, a reply in it, whoever wrote its comments;
+/// on a diff line, a new comment on it. On the box, or anywhere while it holds text, go back to it,
+/// rather than lose what was written. `e` edits a comment (see [`EditComment`]).
 pub(crate) struct WriteComment;
 impl OpTrait for WriteComment {
     fn get_action(&self, target: &ItemData) -> Option<Action> {
@@ -867,36 +866,11 @@ impl OpTrait for WriteComment {
                 })
             }
         };
-        let on_comment = comment_of(target);
         Some(Rc::new(move |app, _term| {
             let Some(pr) = app.screen().pr.clone() else {
                 app.display_error(NO_REVIEW);
                 return Ok(());
             };
-            // On a comment the user can change, with no box being written, edit the comment.
-            let writing = pr
-                .editor
-                .borrow()
-                .as_ref()
-                .is_some_and(|editor| !editor.text.value().is_empty());
-            if let Some((thread_id, comment_id)) = &on_comment
-                && !writing
-                && let Some(comment) = pr.comment(thread_id, comment_id).filter(|c| c.editable)
-            {
-                let mut text = TextArea::default();
-                text.insert_str(&comment.body);
-                *pr.editor.borrow_mut() = Some(CommentEditor {
-                    target: EditorTarget::Edit {
-                        thread_id: thread_id.clone(),
-                        comment_id: comment_id.clone(),
-                    },
-                    text,
-                    focused: true,
-                    width: 0,
-                });
-                show_editor(app);
-                return Ok(());
-            }
             {
                 let mut editor = pr.editor.borrow_mut();
                 // A box with nothing written in it, elsewhere, gives way to the new one.
@@ -937,6 +911,63 @@ impl OpTrait for WriteComment {
 
     fn display(&self, _state: &State) -> String {
         "Write a comment".into()
+    }
+}
+
+/// Edit, in a box in the diff, the comment under the cursor, if it is one the user can change:
+/// theirs in a draft review, or their own on GitHub. While a box holds text, go back to it, rather
+/// than lose what was written.
+pub(crate) struct EditComment;
+impl OpTrait for EditComment {
+    fn get_action(&self, target: &ItemData) -> Option<Action> {
+        let (thread_id, comment_id) = comment_of(target)?;
+        Some(Rc::new(move |app, _term| {
+            let Some(pr) = app.screen().pr.clone() else {
+                app.display_error(NO_REVIEW);
+                return Ok(());
+            };
+            let writing = pr
+                .editor
+                .borrow()
+                .as_ref()
+                .is_some_and(|editor| !editor.text.value().is_empty());
+            if writing {
+                if let Some(editor) = pr.editor.borrow_mut().as_mut() {
+                    editor.focused = true;
+                }
+                show_editor(app);
+                return Ok(());
+            }
+            let Some(comment) = pr.comment(&thread_id, &comment_id) else {
+                app.display_error("The comment has been deleted");
+                return Ok(());
+            };
+            if !comment.editable {
+                app.display_error("Only your own comments can be edited");
+                return Ok(());
+            }
+            let mut text = TextArea::default();
+            text.insert_str(&comment.body);
+            *pr.editor.borrow_mut() = Some(CommentEditor {
+                target: EditorTarget::Edit {
+                    thread_id: thread_id.clone(),
+                    comment_id: comment_id.clone(),
+                },
+                text,
+                focused: true,
+                width: 0,
+            });
+            show_editor(app);
+            Ok(())
+        }))
+    }
+
+    fn is_target_op(&self) -> bool {
+        true
+    }
+
+    fn display(&self, _state: &State) -> String {
+        "Edit your comment".into()
     }
 }
 

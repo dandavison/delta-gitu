@@ -104,6 +104,7 @@ pub(crate) enum Op {
     ToggleLocalOnly,
     ShowOnGithub,
     WriteComment,
+    EditComment,
     MessageAgent,
     OpenFile,
     RebaseAbort,
@@ -263,7 +264,8 @@ impl Op {
                 "Move the comment between your draft review, which sync posts, and local-only"
             }
             Op::ShowOnGithub => "Open the PR file, hunk, line or comment on GitHub, to comment there",
-            Op::WriteComment => "Write a comment or a reply, or edit your own comment",
+            Op::WriteComment => "Write a comment, or a reply to the thread",
+            Op::EditComment => "Edit your comment",
             Op::OpenFile => {
                 "Open the file under the cursor whole, as committed, to comment on for an agent, \
                  or else pick one"
@@ -502,6 +504,7 @@ impl Op {
             Op::ToggleLocalOnly => Box::new(pr::ToggleLocalOnly),
             Op::ShowOnGithub => Box::new(pr::ShowOnGithub),
             Op::WriteComment => Box::new(pr::WriteComment),
+            Op::EditComment => Box::new(pr::EditComment),
             Op::MessageAgent => Box::new(pr::MessageAgent),
             Op::OpenFile => Box::new(pr::OpenFile),
             Op::RebaseAbort => Box::new(rebase::RebaseAbort),

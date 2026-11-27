@@ -6,7 +6,8 @@ expression: ctx.redact_buffer()
 ▌ x                 toggle-viewed          Tick or untick the PR file's Viewed checkbox on GitHub                                                     |
 ▌ p                 toggle-local-only      Move the comment between your draft review, which sync posts, and local-only                               |
 ▌ o                 show-on-github         Open the PR file, hunk, line or comment on GitHub, to comment there                                        |
-▌ i                 write-comment          Write a comment or a reply, or edit your own comment                                                       |
+▌ i                 write-comment          Write a comment, or a reply to the thread                                                                  |
+▌ e                 edit-comment           Edit your comment                                                                                          |
 ▌ @                 message-agent          Send an agent a message about the thread or the PR                                                         |
 ▌ .                 open-file              Open the file under the cursor whole, as committed, to comment on for an agent, or else pick one           |
 ▌ Y                 show-refs              List branches and tags                                                                                     |
@@ -31,5 +32,4 @@ expression: ctx.redact_buffer()
 ▌ :                 edit-git-command       Edit the git command                                                                                       |
 ▌ &                 file-patterns          Set which files to show                                                                                    |
 ▌ d                 hide-file              Hide the file under the cursor                                                                             |
-▌ k up              move-up-line           Up a line, through a diff's lines too                                                                      |
 styles_hash: e39343c74ddcf565

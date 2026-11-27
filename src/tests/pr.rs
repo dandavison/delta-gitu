@@ -1190,7 +1190,7 @@ fn comments_in_a_submitted_review_are_drawn_in_the_submitted_style() {
 #[test]
 fn comment_styles_follow_the_features_in_force() {
     let mut ctx = setup_clone!();
-    ctx.config().general.diff_renderer.feature_keys = [("my-theme".into(), 'e')].into();
+    ctx.config().general.diff_renderer.feature_keys = [("my-theme".into(), 'w')].into();
     ctx.config().general.diff_renderer.options = crate::config::RendererOptions::new(
         |_, features, names| {
             let themed = features.is_some_and(|features| features.contains("my-theme"));
@@ -1207,7 +1207,7 @@ fn comment_styles_follow_the_features_in_force() {
     ctx.update(&mut app, keys("OO"));
     assert_ne!(cell(&ctx, "Why new?", 'W').fg, crate::style::Color::Red);
 
-    ctx.update(&mut app, keys("e"));
+    ctx.update(&mut app, keys("w"));
 
     assert_eq!(cell(&ctx, "Why new?", 'W').fg, crate::style::Color::Red);
 }
