@@ -16,6 +16,10 @@ pub struct FileWatcher {
     /// half a second. A change made before then is not seen. Only tests read it, to wait for it.
     #[cfg_attr(not(test), allow(dead_code))]
     watching: Arc<AtomicBool>,
+    /// The paths whose changes it has taken as reasons to refresh. Only tests read it, to say
+    /// what the watcher saw.
+    #[cfg_attr(not(test), allow(dead_code))]
+    seen: Arc<Mutex<Vec<PathBuf>>>,
     /// What went wrong in the watcher's thread, for the user to be told: until they are, the
     /// screens may not show changes made elsewhere.
     errors: Arc<Mutex<Vec<String>>>,
@@ -29,11 +33,19 @@ impl FileWatcher {
         let errors_w = Arc::clone(&errors);
         let watching = Arc::new(AtomicBool::new(false));
         let watching_w = Arc::clone(&watching);
+        let seen = Arc::new(Mutex::new(vec![]));
+        let seen_w = Arc::clone(&seen);
         let git_dir = repo.path().to_path_buf();
         let workdir = repo.workdir().expect("Bare repos unhandled").to_path_buf();
 
         std::thread::spawn(move || {
-            match watch(&git_dir, &workdir, pending_updates_w, Arc::clone(&errors_w)) {
+            match watch(
+                &git_dir,
+                &workdir,
+                pending_updates_w,
+                Arc::clone(&errors_w),
+                seen_w,
+            ) {
                 Ok(()) => watching_w.store(true, Ordering::Relaxed),
                 Err(e) => report(&errors_w, format!("File watcher stopped: {e}")),
             }
@@ -42,6 +54,7 @@ impl FileWatcher {
         Ok(Self {
             pending_updates,
             watching,
+            seen,
             errors,
         })
     }
@@ -54,6 +67,17 @@ impl FileWatcher {
     #[cfg(test)]
     pub fn is_watching(&self) -> bool {
         self.watching.load(Ordering::Relaxed)
+    }
+
+    /// The paths whose changes it has taken as reasons to refresh since last asked.
+    #[cfg(test)]
+    pub fn take_seen(&self) -> Vec<PathBuf> {
+        std::mem::take(
+            &mut *self
+                .seen
+                .lock()
+                .expect("no watcher thread panics holding it"),
+        )
     }
 
     /// What has gone wrong since last asked.
@@ -80,6 +104,7 @@ fn watch(
     workdir: &Path,
     pending_updates_w: Arc<AtomicBool>,
     errors: Arc<Mutex<Vec<String>>>,
+    seen: Arc<Mutex<Vec<PathBuf>>>,
 ) -> Res<()> {
     let repo = Repository::open(git_dir).map_err(Error::OpenRepo)?;
     repo.set_workdir(workdir, false).map_err(Error::OpenRepo)?;
@@ -124,6 +149,9 @@ fn watch(
             };
             if relevant {
                 log::info!("File changed: {:?} ({:?})", path, event.kind);
+                seen.lock()
+                    .expect("no watcher thread panics holding it")
+                    .push(path);
                 pending_updates_w.store(true, Ordering::Relaxed);
                 break;
             }
